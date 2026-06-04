@@ -1,0 +1,29 @@
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Playfair Display", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Custom palette matching MindHealth & MindPsic */
+  --color-toast-50: #FCFAF6;
+  --color-toast-100: #F6EFEA;
+  --color-toast-200: #F3E5DC;
+  --color-toast-300: #EAD0BF;
+  --color-toast-400: #D0A78E;
+  --color-toast-500: #B47C5A;
+  --color-charcoal-50: #F8F8F8;
+  --color-charcoal-100: #E6E6E6;
+  --color-charcoal-400: #666666;
+  --color-charcoal-700: #333333;
+  --color-charcoal-800: #222222;
+  --color-charcoal-900: #111111;
+  --color-charcoal-950: #080808;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-toast-50);
+  color: var(--color-charcoal-900);
+}

@@ -1,0 +1,6 @@
+{
+  "name": "MindPsic & MindHealth EHR Platform",
+  "description": "Plataforma de historias clínicas y gestión de videoconsultas psicológicas con el asistente clínico inteligente Dr.Mind.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
