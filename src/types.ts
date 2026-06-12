@@ -12,6 +12,7 @@ export interface User {
   role: UserRole;
   avatarUrl?: string;
   licenseNumber?: string;
+  tenantId?: string; // Identificador del tenant/clínica al que pertenece el usuario
 }
 
 export interface Patient {
@@ -207,4 +208,27 @@ export interface ClinicalAppointment {
 export interface VideoSessionExtended extends VideoSession {
   context: 'clinical' | 'research';
   subjectType: 'patient' | 'research_subject';
+}
+
+// ============================================================================
+// REAL CONNECTION TYPES (Agendamiento y Pacientes backend)
+// ============================================================================
+
+export interface BackendPatient {
+  id: string;
+  firstName: string;
+  lastName: string;
+  documentId: string;
+  email?: string;
+  phone?: string;
+}
+
+export interface BackendAppointment {
+  id: string;
+  patient: { id: string; firstName: string; lastName: string };
+  psychologist: { id: string; name: string };
+  dateTime: string;
+  type: string;
+  status: string;
+  notes?: string;
 }

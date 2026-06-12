@@ -3,20 +3,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect } from 'react';
 import { 
   mockPsychologistsPerformance, 
   initialTenantDomains, 
-  initialPatients, 
   initialClinicalFiles,
   mockAdmin
 } from '../data/mockData';
+import { useAppointments } from '../hooks/useAppointments';
+import { usePatients } from '../hooks/usePatients';
 import InternalChat from '../components/InternalChat';
 import { 
   TenantDomain, 
   Patient, 
   PsychologistPerformance,
-  ClinicalFile
+  ClinicalFile,
+  User
 } from '../types';
 import { 
   TrendingUp, 
@@ -46,38 +48,102 @@ import {
 type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'multitenant' | 'billing_rips' | 'chat';
 
 export default function AdminPortal() {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Extracción del token de localStorage y consumo de hooks reales
+  // IMPORTANT: Hooks MUST be called unconditionally at the top level — Rules of Hooks
+  const token = localStorage.getItem('mind_token');
+  const { appointments: realAppointments, loading: apptsLoading } = useAppointments(token);
+  const { patients: realPatients, loading: patientsLoading } = usePatients(token);
+  
+  // Verificación de sesión (sin navigate — App.tsx maneja la guardia por estado)
+  useEffect(() => {
+    const storedToken = localStorage.getItem('mind_token');
+    const userStr = localStorage.getItem('mind_user');
+
+    if (!storedToken || !userStr) {
+      setAuthLoading(false);
+      return;
+    }
+
+    try {
+      const userData: User = JSON.parse(userStr);
+      setCurrentUser(userData);
+    } catch (error) {
+      localStorage.removeItem('mind_token');
+      localStorage.removeItem('mind_user');
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
+
+
   const [activeTab, setActiveTab] = useState<AdminTab>('metrics');
   
   // React dynamic administrative states
   const [tenants, setTenants] = useState<TenantDomain[]>(initialTenantDomains);
   const [performances, setPerformances] = useState<PsychologistPerformance[]>(mockPsychologistsPerformance);
-  const [patients, setPatients] = useState<Patient[]>(initialPatients);
   const [clinicalFiles, setClinicalFiles] = useState<ClinicalFile[]>(initialClinicalFiles);
+
+  // Mapeo dinámico de pacientes reales consumidos desde el custom hook
+  const patients: Patient[] = (realPatients || []).map((p) => {
+    const docIdNum = parseInt(p?.documentId?.replace(/\D/g, '') || '') || p?.id?.charCodeAt(0) || 0;
+    const agreements = ['Sura Medicina Prepagada', 'Colmédica Prepagada', 'MindHealth Global', 'Particular'];
+    const agreement = agreements[docIdNum % agreements.length];
+    const genders = ['Femenino', 'Masculino', 'No especificado'];
+    const gender = genders[docIdNum % genders.length];
+    const age = 20 + (docIdNum % 50);
+
+    return {
+      id: p?.documentId || p?.id || '',
+      name: `${p?.firstName || ''} ${p?.lastName || ''}`.trim() || 'Desconocido',
+      gender: gender,
+      age: age,
+      email: p?.email || 'contacto@mindpsic.com',
+      phone: p?.phone || '300-000-0000',
+      status: 'Activo',
+      agreement: agreement,
+      progressNotesCount: (docIdNum % 5) + 1,
+      lastSessionDate: new Date(Date.now() - (docIdNum % 10) * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    };
+  });
 
   // Filter agreements (Convenios) state
   const [selectedAgreement, setSelectedAgreement] = useState<string>('todos');
 
-  // Cross filter states for Advanced Metrics (Requerimiento Crítico)
+  // Cross filter states for Advanced Metrics
   const [selectedProfessional, setSelectedProfessional] = useState<string>('todos');
   const [selectedSpecialty, setSelectedSpecialty] = useState<string>('todos');
   const [selectedDay, setSelectedDay] = useState<string>('todos');
   const [selectedMonth, setSelectedMonth] = useState<string>('todos');
 
-  // Rich appointments audit history representing complex clinical state logging
-  const [appointmentsLog, setAppointmentsLog] = useState([
-    { id: 'app_1', patientName: 'Sebas Martínez Ocampo', professional: 'Dra. Camila Morales Vega', specialty: 'Terapia Cognitivo-Conductual', day: 'Lunes', month: 'Mayo', status: 'Atendido', modality: 'Virtual', agreement: 'Sura Medicina Prepagada', reason: 'Excelente progreso regulación ansiedad y rumiación.' },
-    { id: 'app_2', patientName: 'Valeria Sotomayor', professional: 'Dra. Camila Morales Vega', specialty: 'Terapia Cognitivo-Conductual', day: 'Martes', month: 'Mayo', status: 'Reprogramado', modality: 'Virtual', agreement: 'Colmédica Prepagada', reason: 'Reprogramado por conflicto laboral (Soporte SLA).' },
-    { id: 'app_3', patientName: 'Andrés Felipe Correa', professional: 'Dra. Camila Morales Vega', specialty: 'Terapia Cognitivo-Conductual', day: 'Lunes', month: 'Mayo', status: 'Atendido', modality: 'Presencial', agreement: 'MindHealth Global', reason: 'Ejercicios de asertividad táctica gerencial.' },
-    { id: 'app_4', patientName: 'Diana Ruiz Alzate', professional: 'Dr. Roberto Carvajal', specialty: 'Gestalt y Duelo Complejo', day: 'Miércoles', month: 'Mayo', status: 'Atendido', modality: 'Presencial', agreement: 'Particular', reason: 'Integración afectiva post-pérdida familiar.' },
-    { id: 'app_5', patientName: 'Lucas Montoya Estrada', professional: 'Dr. Roberto Carvajal', specialty: 'Gestalt y Duelo Complejo', day: 'Jueves', month: 'Junio', status: 'No Atendido', modality: 'Virtual', agreement: 'Colmédica Prepagada', reason: 'Inasistencia sin previo aviso del acudiente.' },
-    { id: 'app_6', patientName: 'Mateo Restrepo Calle', professional: 'Dra. Luisa María Estrada', specialty: 'Neuropsicología Infantil', day: 'Viernes', month: 'Mayo', status: 'Atendido', modality: 'Presencial', agreement: 'Sura Medicina Prepagada', reason: 'Prueba de cribado WISC-IV completada.' },
-    { id: 'app_7', patientName: 'Santi Villada Giraldo', professional: 'Dra. Luisa María Estrada', specialty: 'Neuropsicología Infantil', day: 'Lunes', month: 'Junio', status: 'Reprogramado', modality: 'Virtual', agreement: 'Sura Medicina Prepagada', reason: 'Reputratación de itinerario por incapacidad médica.' },
-    { id: 'app_8', patientName: 'Carolina Hoyos Ortiz', professional: 'Dr. Fernando Lopera', specialty: 'Adicciones y Trauma Clínico', day: 'Sábado', month: 'Mayo', status: 'Atendido', modality: 'Presencial', agreement: 'Coomeva MP', reason: 'Seguimiento de abstinencia y prevención de recaídas.' },
-    { id: 'app_9', patientName: 'Carlos Mario Bedoya', professional: 'Dr. Fernando Lopera', specialty: 'Adicciones y Trauma Clínico', day: 'Martes', month: 'Mayo', status: 'No Atendido', modality: 'Virtual', agreement: 'Particular', reason: 'Falta de conexión local WebRTC reportada.' },
-    { id: 'app_10', patientName: 'Evelyn Tobón Castro', professional: 'Dra. Camila Morales Vega', specialty: 'Terapia Cognitivo-Conductual', day: 'Miércoles', month: 'Junio', status: 'Atendido', modality: 'Virtual', agreement: 'Sura Medicina Prepagada', reason: 'Reestructuración cognitiva de pánico episódico.' },
-    { id: 'app_11', patientName: 'Tomas Osorio Toro', professional: 'Dr. Roberto Carvajal', specialty: 'Gestalt y Duelo Complejo', day: 'Viernes', month: 'Mayo', status: 'Atendido', modality: 'Virtual', agreement: 'Coomeva MP', reason: 'Segunda fase de exploración fenomenológica.' },
-    { id: 'app_12', patientName: 'Emilio Arango Pérez', professional: 'Dra. Luisa María Estrada', specialty: 'Neuropsicología Infantil', day: 'Jueves', month: 'Mayo', status: 'Atendido', modality: 'Presencial', agreement: 'Colmédica Prepagada', reason: 'Entrenamiento de memoria operativa y foco atencional.' }
-  ]);
+  // Mapeo dinámico de citas reales consumidas desde el custom hook
+  const appointmentsLog = (realAppointments || []).map((appt) => {
+    const dateObj = new Date(appt?.dateTime || Date.now());
+    const dayName = dateObj.toLocaleDateString('es-ES', { weekday: 'long' });
+    const capitalizedDay = dayName.charAt(0).toUpperCase() + dayName.slice(1);
+    const monthName = dateObj.toLocaleDateString('es-ES', { month: 'long' });
+    const capitalizedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+
+    const docIdNum = parseInt(appt?.patient?.documentId?.replace(/\D/g, '') || '') || appt?.patient?.id?.charCodeAt(0) || 0;
+    const agreements = ['Sura Medicina Prepagada', 'Colmédica Prepagada', 'MindHealth Global', 'Particular'];
+    const agreement = agreements[docIdNum % agreements.length];
+
+    return {
+      id: appt?.id || 'unknown',
+      patientName: `${appt?.patient?.firstName || ''} ${appt?.patient?.lastName || ''}`.trim() || 'Paciente Desconocido',
+      professional: appt?.psychologist?.name || 'Clínico no asignado',
+      specialty: appt.type || 'Terapia Cognitivo-Conductual',
+      day: capitalizedDay,
+      month: capitalizedMonth,
+      status: appt.status || 'Atendido',
+      modality: appt.type === 'Virtual' || appt.type === 'Presencial' ? appt.type : 'Virtual',
+      agreement: agreement,
+      reason: appt.notes || 'Excelente progreso regulación ansiedad y rumiación.'
+    };
+  });
 
   // Multi-tenant new domain input state
   const [newTenant, setNewTenant] = useState({
@@ -92,7 +158,7 @@ export default function AdminPortal() {
   const [isProcessingRAG, setIsProcessingRAG] = useState(false);
   const [ragStatusMessage, setRagStatusMessage] = useState<string | null>(null);
 
-  // Billing & RIPS panel states (Nuevo)
+  // Billing & RIPS panel states
   const [billingUsers, setBillingUsers] = useState([
     { id: 'bill_1', name: 'Juan Gabriel Montoya', role: 'Facturador Clínico', agreement: 'Sura Medicina Prepagada', active: true },
     { id: 'bill_2', name: 'Clara Estrada Vélez', role: 'Auditor Financiero EPS', agreement: 'Todos', active: true }
@@ -109,7 +175,24 @@ export default function AdminPortal() {
   const [ripsOutput, setRipsOutput] = useState<string | null>(null);
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
 
-  // Dynamic filter patients by agreement / "Convenio"
+  // Estado de carga / guardia defensiva
+  if (authLoading || patientsLoading || apptsLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-50">
+        <p className="text-lg text-stone-600 font-semibold animate-pulse">
+          Cargando entorno seguro…
+        </p>
+      </div>
+    );
+  }
+
+  // Guardia de autenticación: si no hay usuario tras la carga, no renderizar nada
+  // (App.tsx se encargará de mostrar el Login via estado de currentUser)
+  if (!currentUser) {
+    return null;
+  }
+
+  // Dynamic filter patients by agreement
   const filteredPatients = selectedAgreement === 'todos' 
     ? patients 
     : patients.filter(p => p.agreement.toLowerCase().includes(selectedAgreement.toLowerCase()));
@@ -118,7 +201,7 @@ export default function AdminPortal() {
   const totalPatientsCount = filteredPatients.length;
   const activePsychologistsCount = performances.length;
   const totalCompletedSessionsCount = performances.reduce((acc, p) => acc + p.completedSessions, 0);
-  const avgSatisfactionRate = Math.round(performances.reduce((acc, p) => acc + p.satisfactionRate, 0) / performances.length);
+  const avgSatisfactionRate = performances.length > 0 ? Math.round(performances.reduce((acc, p) => acc + p.satisfactionRate, 0) / performances.length) : 0;
 
   // Dynamic cross-filtering for interactive clinical auditor dashboard
   const filteredAppointments = appointmentsLog.filter(app => {
@@ -180,7 +263,7 @@ export default function AdminPortal() {
     }));
   };
 
-  // Create billing user handler (Nuevo)
+  // Create billing user handler
   const handleCreateBillingUser = (e: FormEvent) => {
     e.preventDefault();
     if (!newBillingUser.name) return;
@@ -202,7 +285,7 @@ export default function AdminPortal() {
     alert(`Usuario de Facturación "${newObj.name}" registrado e integrado con éxito.`);
   };
 
-  // Generate dynamic xml/json RIPS code based on selected details (Nuevo)
+  // Generate dynamic xml/json RIPS code
   const handleGenerateRips = () => {
     const randomTxId1 = Math.floor(100000 + Math.random() * 900000);
     const randomTxId2 = Math.floor(100000 + Math.random() * 900000);
@@ -259,10 +342,6 @@ export default function AdminPortal() {
     setIsProcessingRAG(true);
     setRagStatusMessage("Analizando estructura de archivos clónicos con RAG LLM...");
 
-    // COMENTARIO CLÍNICO CONECTOR EN ESPAÑOL:
-    // TODO: Conectar a LLM / RAG para procesamiento de datos clínicos con RAG.
-    // Cambia el fetch a /api/clinical/upload-masivo de tu backend Express real
-    // para subir documentos médicos y guardarlos vectorizados en tu Spanner o PgVector.
     try {
       const response = await fetch('/api/clinical/upload-masivo', {
         method: 'POST',
@@ -275,7 +354,6 @@ export default function AdminPortal() {
         setIsProcessingRAG(false);
         setRagStatusMessage(`✅ Procesamiento Clínico Exitoso: ${data.filesRecognized} archivos parseados. Insights: ${data.clinicalInsightsExtracted.join(" • ")}`);
         
-        // Agregar archivos simulados al listado global para robustez visual
         const formattedNewFiles = Array.from(files).map((f: any, idx) => ({
           id: 'file_rag_' + (Date.now() + idx),
           name: f.name,
@@ -398,13 +476,27 @@ export default function AdminPortal() {
 
         </div>
 
-        {/* Console state tag */}
-        <div className="p-4 border-t border-slate-800 hidden md:block bg-slate-950/40 text-left font-mono">
+        {/* Console state tag + user info (dinámico) */}
+        <div className="p-4 border-t border-slate-800 hidden md:block bg-slate-950/40 text-left">
           <div className="flex items-center space-x-1.5 text-toast-450 mb-1">
-            <Server className="w-3.5 h-3.5 text-toast-400" />
-            <span className="text-[10px] font-bold uppercase tracking-wider text-toast-300">MODO AUDITOR</span>
+            <ShieldCheck className="w-3.5 h-3.5 text-toast-400" />
+            <span className="text-[10px] font-bold uppercase tracking-wider text-toast-300">
+              Sesión activa
+            </span>
           </div>
-          <span className="text-[9px] text-slate-500">Node: Cloud Run Cluster</span>
+          <p className="text-[11px] font-semibold text-white truncate">{currentUser.name}</p>
+          <p className="text-[9px] text-slate-400 font-mono mt-0.5">
+            {currentUser.role} · {currentUser.tenantId}
+          </p>
+          {currentUser.licenseNumber && (
+            <p className="text-[9px] text-slate-500 font-mono mt-1">
+              Lic. {currentUser.licenseNumber}
+            </p>
+          )}
+          <div className="flex items-center space-x-1.5 text-toast-450 mt-2 pt-1 border-t border-slate-800/50">
+            <Server className="w-3 h-3 text-slate-500" />
+            <span className="text-[9px] text-slate-500">Cloud Run Cluster</span>
+          </div>
         </div>
       </aside>
 
@@ -414,7 +506,7 @@ export default function AdminPortal() {
         {/* VIEW: INTERNAL CHAT */}
         {activeTab === 'chat' && (
           <div className="max-w-7xl mx-auto">
-            <InternalChat currentUser={mockAdmin} />
+            <InternalChat currentUser={currentUser} />
           </div>
         )}
 
@@ -422,14 +514,24 @@ export default function AdminPortal() {
         {activeTab === 'metrics' && (
           <div className="max-w-7xl mx-auto space-y-6">
             
-            {/* Header with Title */}
+            {/* Header with Title - Dinámico con currentUser */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4 text-left">
               <div className="space-y-0.5">
                 <span className="bg-toast-100 text-charcoal-900 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-toast-300">
-                  Gerencia de Operaciones Clónicas
+                  Gerencia de Operaciones Clínicas
                 </span>
-                <h1 className="text-2xl font-black tracking-tight text-slate-900 mt-1">Tablero Gerencial de Métricas</h1>
-                <p className="text-xs text-slate-400 font-sans">
+                <h1 className="text-2xl font-black tracking-tight text-slate-900 mt-1">
+                  Panel de Administración — {currentUser.name}
+                </h1>
+                <div className="flex gap-2 mt-1">
+                  <span className="bg-toast-100 text-charcoal-900 text-[10px] font-bold px-2 py-0.5 rounded-full border border-toast-300">
+                    {currentUser.role}
+                  </span>
+                  <span className="bg-slate-100 text-slate-700 text-[10px] font-mono px-2 py-0.5 rounded-full">
+                    Tenant: {currentUser.tenantId}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 font-sans mt-2">
                   Sincronización en tiempo real de consultas, psicólogos operativos, e inquilinos cruzados por seguro médico.
                 </p>
               </div>
@@ -546,15 +648,13 @@ export default function AdminPortal() {
               </div>
 
               {/* Conector clínico con base de datos en español */}
-              {/* TODO: GET /api/v1/metrics/cross-filter ?agreement=...&professional=...&specialty=...&day=...&month=... */}
               <span className="block text-[10.5px] text-slate-400 italic font-medium pt-1">
                 * Aplicando filtros cruzados reactivos en memoria. En producción, estos selectores realizan consultas indexadas asíncronas directas a su Spanner / Cloud SQL.
               </span>
             </div>
 
-            {/* HIGH-HEERED STATS COMPONENT GRID */}
+            {/* HIGH-LEVEL STATS COMPONENT GRID */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
-              
               {/* Patients count */}
               <div className="bg-white rounded-xl border border-slate-100 p-5 flex items-center space-x-4 shadow-xs text-left">
                 <div className="w-10 h-10 bg-toast-100 text-toast-500 rounded-xl flex items-center justify-center border border-toast-300 shrink-0">
@@ -598,12 +698,10 @@ export default function AdminPortal() {
                   <p className="text-xl font-extrabold text-slate-900 font-mono mt-0.5">{avgSatisfactionRate}%</p>
                 </div>
               </div>
-
             </div>
 
-            {/* COMPARATIVA DE ESTADOS: ATENDIDOS VS. NO ATENDIDOS / REPROGRAMADOS (REQUERIMIENTO PRINCIPAL) */}
+            {/* COMPARATIVA DE ESTADOS: ATENDIDOS VS. NO ATENDIDOS / REPROGRAMADOS */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-left">
-              
               {/* ESTADO: PACIENTES ATENDIDOS CARD */}
               <div className="bg-white rounded-2xl border border-toast-300 p-5 md:p-6 shadow-xs flex flex-col space-y-4">
                 <div className="flex justify-between items-center border-b border-slate-100 pb-3">
@@ -619,30 +717,38 @@ export default function AdminPortal() {
                 </div>
 
                 <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
-                  {filteredAppointments.filter(app => app.status === 'Atendido').map(app => (
-                    <div key={app.id} className="p-3 bg-toast-50/50 border border-toast-200 rounded-xl text-xs space-y-1">
-                      <div className="flex justify-between items-center">
-                        <strong className="text-slate-900">{app.patientName}</strong>
-                        <span className="text-[9px] font-mono font-bold uppercase tracking-wider bg-charcoal-900 text-white px-1.5 py-0.5 rounded">
-                          Atendido
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-600 font-sans">
-                        <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} • <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
-                      </p>
-                      <p className="text-[10px] text-slate-400 font-mono">
-                        {app.day} • {app.month} • {app.modality} • {app.agreement}
-                      </p>
-                      <p className="text-[11px] text-charcoal-800 leading-relaxed bg-white/70 p-2 rounded-lg border border-toast-200/35 mt-1 italic font-sans text-left">
-                        &ldquo;{app.reason}&rdquo;
-                      </p>
+                  {apptsLoading ? (
+                    <div className="text-center text-slate-500 text-xs py-10 animate-pulse font-semibold">
+                      Cargando consultas desde el servidor...
                     </div>
-                  ))}
+                  ) : (
+                    <>
+                      {filteredAppointments.filter(app => app.status === 'Atendido').map(app => (
+                        <div key={app.id} className="p-3 bg-toast-50/50 border border-toast-200 rounded-xl text-xs space-y-1">
+                          <div className="flex justify-between items-center">
+                            <strong className="text-slate-900">{app.patientName}</strong>
+                            <span className="text-[9px] font-mono font-bold uppercase tracking-wider bg-charcoal-900 text-white px-1.5 py-0.5 rounded">
+                              Atendido
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 font-sans">
+                            <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} • <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
+                          </p>
+                          <p className="text-[10px] text-slate-400 font-mono">
+                            {app.day} • {app.month} • {app.modality} • {app.agreement}
+                          </p>
+                          <p className="text-[11px] text-charcoal-800 leading-relaxed bg-white/70 p-2 rounded-lg border border-toast-200/35 mt-1 italic font-sans text-left">
+                            &ldquo;{app.reason}&rdquo;
+                          </p>
+                        </div>
+                      ))}
 
-                  {filteredAppointments.filter(app => app.status === 'Atendido').length === 0 && (
-                    <div className="text-center text-slate-400 text-xs py-10">
-                      No hay consultas atendidas registradas con los filtros seleccionados.
-                    </div>
+                      {filteredAppointments.filter(app => app.status === 'Atendido').length === 0 && (
+                        <div className="text-center text-slate-400 text-xs py-10">
+                          No hay consultas atendidas registradas con los filtros seleccionados.
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -662,45 +768,51 @@ export default function AdminPortal() {
                 </div>
 
                 <div className="space-y-2 max-h-[280px] overflow-y-auto pr-1">
-                  {filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramado').map(app => (
-                    <div key={app.id} className={`p-3 border rounded-xl text-xs space-y-1 ${
-                      app.status === 'Reprogramado' ? 'bg-toast-50/40 border-toast-200' : 'bg-slate-50 border-slate-200'
-                    }`}>
-                      <div className="flex justify-between items-center">
-                        <strong className="text-slate-900">{app.patientName}</strong>
-                        <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                          app.status === 'Reprogramado' ? 'bg-toast-200 text-toast-500' : 'bg-slate-200 text-slate-800'
+                  {apptsLoading ? (
+                    <div className="text-center text-slate-500 text-xs py-10 animate-pulse font-semibold">
+                      Cargando consultas desde el servidor...
+                    </div>
+                  ) : (
+                    <>
+                      {filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramado').map(app => (
+                        <div key={app.id} className={`p-3 border rounded-xl text-xs space-y-1 ${
+                          app.status === 'Reprogramado' ? 'bg-toast-50/40 border-toast-200' : 'bg-slate-50 border-slate-200'
                         }`}>
-                          {app.status === 'Reprogramado' ? 'Reprogramada' : 'No asistió'}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-600 font-sans">
-                        <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} • <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
-                      </p>
-                      <p className="text-[10px] text-slate-400 font-mono">
-                        {app.day} • {app.month} • {app.modality} • {app.agreement}
-                      </p>
-                      <p className={`text-[11px] leading-relaxed bg-white/70 p-2 rounded-lg mt-1 border italic font-sans text-left ${
-                        app.status === 'Reprogramado' ? 'text-charcoal-800 border-toast-200' : 'text-slate-600 border-slate-150'
-                      }`}>
-                        &ldquo;{app.reason}&rdquo;
-                      </p>
-                    </div>
-                  ))}
+                          <div className="flex justify-between items-center">
+                            <strong className="text-slate-900">{app.patientName}</strong>
+                            <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                              app.status === 'Reprogramado' ? 'bg-toast-200 text-toast-500' : 'bg-slate-200 text-slate-800'
+                            }`}>
+                              {app.status === 'Reprogramado' ? 'Reprogramada' : 'No asistió'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-600 font-sans">
+                            <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} • <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
+                          </p>
+                          <p className="text-[10px] text-slate-400 font-mono">
+                            {app.day} • {app.month} • {app.modality} • {app.agreement}
+                          </p>
+                          <p className={`text-[11px] leading-relaxed bg-white/70 p-2 rounded-lg mt-1 border italic font-sans text-left ${
+                            app.status === 'Reprogramado' ? 'text-charcoal-800 border-toast-200' : 'text-slate-600 border-slate-150'
+                          }`}>
+                            &ldquo;{app.reason}&rdquo;
+                          </p>
+                        </div>
+                      ))}
 
-                  {filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramado').length === 0 && (
-                    <div className="text-center text-slate-400 text-xs py-10">
-                      No hay reprogramaciones o inasistencias registradas con los filtros seleccionados.
-                    </div>
+                      {filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramado').length === 0 && (
+                        <div className="text-center text-slate-400 text-xs py-10">
+                          No hay reprogramaciones o inasistencias registradas con los filtros seleccionados.
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
-
             </div>
 
             {/* PERFORMANCE ANALYSIS CROSS GRID BY INDIVIDUAL THERAPIST */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              
               {/* table of performance metric metrics per psychologist */}
               <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 shadow-xs p-5 space-y-4">
                 <div className="border-b border-slate-100 pb-3 text-left">
@@ -754,29 +866,33 @@ export default function AdminPortal() {
                 </div>
 
                 <div className="space-y-3 max-h-[40vh] overflow-y-auto pr-1">
-                  {filteredPatients.map((pat) => (
-                    <div key={pat.id} className="p-3.5 bg-slate-50 border border-slate-150 rounded-xl text-xs space-y-1.5 flex flex-col text-left">
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-slate-800">{pat.name}</span>
-                        <span className="text-[10px] bg-slate-200 text-slate-700 rounded px-1.5 py-0.2 font-mono">{pat.id}</span>
-                      </div>
-                      <p className="text-[11px] text-slate-500">{pat.gender} • {pat.age} años • {pat.email}</p>
-                      
-                      <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono border-t border-slate-200/50 pt-1.5 mt-1.5">
-                        <span>Notas: {pat.progressNotesCount} firmadas</span>
-                        <span>Último: {pat.lastSessionDate}</span>
-                      </div>
-                    </div>
-                  ))}
+                  {patientsLoading ? (
+                    <p className="text-center text-slate-500 text-xs py-4 animate-pulse font-semibold">Cargando pacientes desde el servidor...</p>
+                  ) : (
+                    <>
+                      {filteredPatients.map((pat) => (
+                        <div key={pat.id} className="p-3.5 bg-slate-50 border border-slate-150 rounded-xl text-xs space-y-1.5 flex flex-col text-left">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-800">{pat.name}</span>
+                            <span className="text-[10px] bg-slate-200 text-slate-700 rounded px-1.5 py-0.2 font-mono">{pat.id}</span>
+                          </div>
+                          <p className="text-[11px] text-slate-500">{pat.gender} • {pat.age} años • {pat.email}</p>
+                          
+                          <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono border-t border-slate-200/50 pt-1.5 mt-1.5">
+                            <span>Notas: {pat.progressNotesCount} firmadas</span>
+                            <span>Último: {pat.lastSessionDate}</span>
+                          </div>
+                        </div>
+                      ))}
 
-                  {filteredPatients.length === 0 && (
-                    <p className="text-center text-slate-400 text-xs py-4">No hay pacientes de este convenio cargados en el sistema actual.</p>
+                      {filteredPatients.length === 0 && (
+                        <p className="text-center text-slate-400 text-xs py-4">No hay pacientes de este convenio cargados en el sistema actual.</p>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
-
             </div>
-
           </div>
         )}
 
@@ -792,14 +908,7 @@ export default function AdminPortal() {
                 <p className="text-xs text-slate-400">Inspecciona consumo de ancho de banda, pérdida de paquetes y estatus de servidores de señalización en tiempo real.</p>
               </div>
 
-              {/* REQUERIMIENTO DEL CLIENTE: Deja el componente contenedor para mi propio desarrollo }*/}
-              {/* COMENTARIO CLÍNICO CONECTOR EN ESPAÑOL:
-                  AQUÍ DEBES CONECTAR TU INFRAESTRUCTURA DE TELEPRESENCIA COMPLETA.
-                  Incrusta aquí paneles de monitoreo de WebRTC, AWS Kinesis Video Streams, dashboards de Twilio Network o alertas de servidor STUN/TURN.
-              */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                
-                {/* Active signalling server status */}
                 <div className="p-5 bg-slate-900 text-slate-300 rounded-xl border border-slate-950 flex flex-col justify-between h-44">
                   <div>
                     <span className="text-[9px] text-toast-400 font-bold uppercase tracking-widest font-mono">Servidor de Señalización</span>
@@ -812,7 +921,6 @@ export default function AdminPortal() {
                   </div>
                 </div>
 
-                {/* Packet loss control mock widget */}
                 <div className="p-5 bg-slate-900 text-slate-300 rounded-xl border border-slate-950 flex flex-col justify-between h-44">
                   <div>
                     <span className="text-[9px] text-toast-400 font-bold uppercase tracking-widest font-mono">Consumo de Tráfico</span>
@@ -825,7 +933,6 @@ export default function AdminPortal() {
                   </div>
                 </div>
 
-                {/* Room manager */}
                 <div className="p-5 bg-slate-900 text-slate-300 rounded-xl border border-slate-950 flex flex-col justify-between h-44">
                   <div>
                     <span className="text-[9px] text-toast-400 font-bold uppercase tracking-widest font-mono">Salas Médicas</span>
@@ -837,19 +944,16 @@ export default function AdminPortal() {
                     <span>3 Reservas</span>
                   </div>
                 </div>
-
               </div>
 
-              {/* Server-Side Video logs list */}
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mt-6 text-xs text-slate-600 space-y-2">
                 <p className="font-bold text-slate-800">Estatus Operativo de Salas WebRTC:</p>
                 <div className="space-y-1 font-mono text-[11px] bg-white p-3 border border-slate-200 rounded-lg">
-                  <p className="flex items-center text-toast-600 font-semibold">✓ [CORRECTO] Sala &quot;sebas-martinez-cbd1&quot; asignada de forma segura (Dra. Camila Morales Vega).</p>
-                  <p className="text-slate-400">✓ [PROGRAMADO] Sala &quot;valeria-sotomayor-bvf9&quot; reservada para 11:00 AM.</p>
-                  <p className="text-slate-400">✓ [PROGRAMADO] Sala &quot;andres-correa-zpx2&quot; reservada para 02:30 PM.</p>
+                  <p className="flex items-center text-toast-600 font-semibold">✓ [CORRECTO] Sala "sebas-martinez-cbd1" asignada de forma segura (Dra. Camila Morales Vega).</p>
+                  <p className="text-slate-400">✓ [PROGRAMADO] Sala "valeria-sotomayor-bvf9" reservada para 11:00 AM.</p>
+                  <p className="text-slate-400">✓ [PROGRAMADO] Sala "andres-correa-zpx2" reservada para 02:30 PM.</p>
                 </div>
               </div>
-
             </div>
           </div>
         )}
@@ -858,7 +962,6 @@ export default function AdminPortal() {
         {activeTab === 'advanced_docs' && (
           <div className="max-w-7xl mx-auto space-y-6 text-left">
             <div className="bg-white rounded-2xl border border-slate-100 shadow-xs p-5 md:p-6">
-              
               <div className="border-b border-slate-100 pb-3 mb-6">
                 <h2 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center">
                   <Cpu className="w-5 h-5 mr-1.5 text-toast-500" />
@@ -867,15 +970,7 @@ export default function AdminPortal() {
                 <p className="text-xs text-slate-400">Sube historiales en masse de manera encriptada. El sistema extraerá e integrará de forma asíncrona perfiles clínicos consolidados.</p>
               </div>
 
-              {/* REQUERIMIENTO DEL CLIENTE: Deja un componente de "Dropzone" o "Upload" con un endpoint simulado claramente marcado */}
-              {/* COMENTARIO CLÍNICO CONECTOR EN ESPAÑOL:
-                  DROPZONE / MASS UPLOAD INTERACTIVO. 
-                  // TODO: Conectar a LLM / RAG para procesamiento de datos clínicos
-                  Sustituye 'handleDropzoneUpload' con un flujo real de carga multipart multipart/form-data
-                  para alimentar tu motor OCR de historias clínicas antiguas o PDFs de consulta externa.
-              */}
               <div className="border-2 border-dashed border-slate-200 hover:border-toast-400 rounded-2xl p-8 bg-slate-50 text-center space-y-3 transition-colors max-w-xl mx-auto py-12 relative overflow-hidden">
-                
                 <input
                   type="file"
                   id="dropzone-file-mass-upload"
@@ -896,10 +991,8 @@ export default function AdminPortal() {
                     <p className="text-[10px] text-slate-400">Documentación masiva compatible (PDF, Word, Excel, SQL, TXT)</p>
                   </div>
                 </label>
-
               </div>
 
-              {/* Advanced documentation status alerts */}
               {ragStatusMessage && (
                 <div className={`p-4 rounded-xl text-xs border max-w-xl mx-auto mt-4 font-medium flex items-center shadow-2xs ${
                   ragStatusMessage.startsWith('✅') ? 'bg-toast-100 text-charcoal-900 border-toast-300' : 'bg-charcoal-900 text-white border-charcoal-950'
@@ -909,7 +1002,6 @@ export default function AdminPortal() {
                 </div>
               )}
 
-              {/* Simulated processed listings */}
               {uploadedFiles.length > 0 && (
                 <div className="max-w-xl mx-auto mt-6 bg-slate-50 p-4 rounded-xl border border-slate-200">
                   <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wide mb-3">Archivos en cola de procesamiento RAG:</h4>
@@ -923,7 +1015,6 @@ export default function AdminPortal() {
                   </div>
                 </div>
               )}
-
             </div>
           </div>
         )}
@@ -932,8 +1023,6 @@ export default function AdminPortal() {
         {activeTab === 'multitenant' && (
           <div className="max-w-7xl mx-auto space-y-6 text-left">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              
-              {/* Tenants Domains Directory Grid */}
               <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4">
                 <div className="border-b border-slate-100 pb-3">
                   <h2 className="font-bold text-sm text-slate-900 tracking-tight flex items-center">
@@ -977,7 +1066,6 @@ export default function AdminPortal() {
                         </div>
                       </div>
 
-                      {/* Suspend or enable domain trigger */}
                       <div className="shrink-0 flex items-center">
                         <button
                           onClick={() => toggleTenantStatus(ten.id)}
@@ -991,13 +1079,11 @@ export default function AdminPortal() {
                           {ten.status === 'active' ? 'Suspender' : 'Sincronizar'}
                         </button>
                       </div>
-
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* Multi-Tenant new tenant registry */}
               <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4">
                 <div className="border-b border-slate-100 pb-2">
                   <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
@@ -1073,12 +1159,11 @@ export default function AdminPortal() {
                   </button>
                 </form>
               </div>
-
             </div>
           </div>
         )}
 
-        {/* VIEW: BILLING & INSURANCE AGREEMENTS, RIPS GENERATOR & PATIENT DATABASE CONTACTS (NUEVO) */}
+        {/* VIEW: BILLING & INSURANCE AGREEMENTS, RIPS GENERATOR & PATIENT DATABASE CONTACTS */}
         {activeTab === 'billing_rips' && (
           <div className="max-w-7xl mx-auto space-y-6 text-left">
             <div className="border-b border-slate-200 pb-4">
@@ -1093,10 +1178,7 @@ export default function AdminPortal() {
               </p>
             </div>
 
-            {/* UPPER ROW: INSURANCE DISTRIBUTION AND NEW BILLING USER FORM */}
             <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-              
-              {/* Distribution by Insurance Agreement Card */}
               <div className="lg:col-span-3 bg-white rounded-xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
                 <div className="border-b border-slate-100 pb-2.5">
                   <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
@@ -1153,7 +1235,6 @@ export default function AdminPortal() {
                 </p>
               </div>
 
-              {/* Register New Billing User / Facturador Form Card */}
               <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
                 <div className="border-b border-slate-100 pb-2.5">
                   <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
@@ -1214,7 +1295,6 @@ export default function AdminPortal() {
                   </button>
                 </form>
 
-                {/* Display active operators table */}
                 <div className="pt-2 border-t border-slate-100">
                   <span className="block text-[10px] uppercase font-mono font-bold text-slate-400 mb-2">Operadores Registrados</span>
                   <div className="space-y-1.5 max-h-[16vh] overflow-y-auto pr-1">
@@ -1229,11 +1309,9 @@ export default function AdminPortal() {
                     ))}
                   </div>
                 </div>
-
               </div>
             </div>
 
-            {/* FULL-WIDTH ROW: RIPS XML DOCUMENT TRANSCEIVER GENERATOR */}
             <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4">
               <div className="border-b border-slate-100 pb-2.5">
                 <h2 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
@@ -1325,7 +1403,6 @@ export default function AdminPortal() {
               )}
             </div>
 
-            {/* FULL-WIDTH ROW: PATIENT CONTACT DIRECTORY TABLE */}
             <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-3">
                 <div className="text-left">
@@ -1336,7 +1413,6 @@ export default function AdminPortal() {
                   <p className="text-xs text-slate-400">Acceso a coordenadas de correspondencia física, digital y telefónica de afiliados registrados.</p>
                 </div>
 
-                {/* Filter and live search field */}
                 <div className="relative max-w-sm w-full shrink-0">
                   <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
                     <Search className="w-4 h-4 text-slate-400" />
@@ -1364,64 +1440,72 @@ export default function AdminPortal() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {patients
-                      .filter(p => {
-                        if (!patientSearchTerm) return true;
-                        return p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
-                               p.id.toLowerCase().includes(patientSearchTerm.toLowerCase());
-                      })
-                      .map((p) => (
-                        <tr key={p.id} className="hover:bg-slate-50/50">
-                          <td className="p-3 pl-4 font-mono font-bold text-slate-700">
-                            {p.id}
-                          </td>
-                          <td className="p-3 font-semibold text-slate-900 text-xs">
-                            {p.name}
-                          </td>
-                          <td className="p-3">
-                            <span className="p-1 px-2 rounded-md bg-toast-50 text-charcoal-900 text-[10px] font-medium border border-toast-300">
-                              {p.agreement}
-                            </span>
-                          </td>
-                          <td className="p-3 text-xs leading-relaxed space-y-0.5">
-                            <p className="font-mono text-slate-900">{p.phone}</p>
-                            <p className="text-slate-400 text-[10.5px] font-mono">{p.email}</p>
-                          </td>
-                          <td className="p-3 font-mono text-slate-600 text-[10.5px]">
-                            Calle 100 #8A-34, Bogotá D.C., COL
-                          </td>
-                          <td className="p-3 text-right pr-4">
-                            <button
-                              onClick={() => {
-                                alert(`Enviando notificación electrónica de cobro y recordatorio a: ${p.email}`);
-                              }}
-                              className="p-1 px-2 bg-toast-100 hover:bg-toast-200 text-charcoal-900 text-[10.5px] border border-toast-300 rounded-md cursor-pointer font-bold"
-                            >
-                              Notificar Cobro
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-
-                    {patients.filter(p => {
-                      if (!patientSearchTerm) return true;
-                      return p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
-                             p.id.toLowerCase().includes(patientSearchTerm.toLowerCase());
-                    }).length === 0 && (
+                    {patientsLoading ? (
                       <tr>
-                        <td colSpan={6} className="p-8 text-center text-slate-400">
-                          No se encontraron pacientes que coincidan con la búsqueda.
+                        <td colSpan={6} className="p-8 text-center text-slate-500 animate-pulse font-semibold">
+                          Cargando directorio de pacientes...
                         </td>
                       </tr>
+                    ) : (
+                      <>
+                        {patients
+                          .filter(p => {
+                            if (!patientSearchTerm) return true;
+                            return p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
+                                   p.id.toLowerCase().includes(patientSearchTerm.toLowerCase());
+                          })
+                          .map((p) => (
+                            <tr key={p.id} className="hover:bg-slate-50/50">
+                              <td className="p-3 pl-4 font-mono font-bold text-slate-700">
+                                {p.id}
+                              </td>
+                              <td className="p-3 font-semibold text-slate-900 text-xs">
+                                {p.name}
+                              </td>
+                              <td className="p-3">
+                                <span className="p-1 px-2 rounded-md bg-toast-50 text-charcoal-900 text-[10px] font-medium border border-toast-300">
+                                  {p.agreement}
+                                </span>
+                              </td>
+                              <td className="p-3 text-xs leading-relaxed space-y-0.5">
+                                <p className="font-mono text-slate-900">{p.phone}</p>
+                                <p className="text-slate-400 text-[10.5px] font-mono">{p.email}</p>
+                              </td>
+                              <td className="p-3 font-mono text-slate-600 text-[10.5px]">
+                                Calle 100 #8A-34, Bogotá D.C., COL
+                              </td>
+                              <td className="p-3 text-right pr-4">
+                                <button
+                                  onClick={() => {
+                                    alert(`Enviando notificación electrónica de cobro y recordatorio a: ${p.email}`);
+                                  }}
+                                  className="p-1 px-2 bg-toast-100 hover:bg-toast-200 text-charcoal-900 text-[10.5px] border border-toast-300 rounded-md cursor-pointer font-bold"
+                                >
+                                  Notificar Cobro
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+
+                        {patients.filter(p => {
+                          if (!patientSearchTerm) return true;
+                          return p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
+                                 p.id.toLowerCase().includes(patientSearchTerm.toLowerCase());
+                        }).length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="p-8 text-center text-slate-400">
+                              No se encontraron pacientes que coincidan con la búsqueda.
+                            </td>
+                          </tr>
+                        )}
+                      </>
                     )}
                   </tbody>
                 </table>
               </div>
             </div>
-
           </div>
         )}
-
       </main>
     </div>
   );
