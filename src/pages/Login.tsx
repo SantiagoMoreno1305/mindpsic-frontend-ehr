@@ -12,7 +12,9 @@
  */
 
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { User } from '../types';
+// NOTE: useNavigate removed — App.tsx uses state-based routing, not React Router routes.
+
 import {
   ShieldCheck,
   Mail,
@@ -35,13 +37,14 @@ const API_BASE_URL =
 interface LoginProps {
   /** Callback para abrir la política de datos (conservado de la UI original) */
   onOpenDataPolicy: () => void;
+  /** Callback invocado con el objeto User tras autenticación exitosa */
+  onLoginSuccess?: (user: User) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Componente
 // ---------------------------------------------------------------------------
-export default function Login({ onOpenDataPolicy }: LoginProps) {
-  const navigate = useNavigate();
+export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) {
 
   // ── Estados del formulario ──
   const [email, setEmail] = useState('');
@@ -64,6 +67,8 @@ export default function Login({ onOpenDataPolicy }: LoginProps) {
     setIsLoading(true);
 
     try {
+      console.log('[Login] 🚀 Iniciando petición a:', `${API_BASE_URL}/auth/login`);
+
       const response = await fetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
         headers: {
@@ -72,11 +77,13 @@ export default function Login({ onOpenDataPolicy }: LoginProps) {
         body: JSON.stringify({ email, password }),
       });
 
+      console.log('[Login] 📡 HTTP status recibido:', response.status);
+
       if (!response.ok) {
-        // Intentamos extraer el mensaje de error que devuelva el backend
         let msg = 'Credenciales inválidas';
         try {
           const errData = await response.json();
+          console.log('[Login] ❌ Error del servidor:', errData);
           msg = errData.message || msg;
         } catch {
           // Si el cuerpo no es JSON, usamos el mensaje genérico
@@ -85,24 +92,31 @@ export default function Login({ onOpenDataPolicy }: LoginProps) {
       }
 
       const data = await response.json();
+      console.log('[Login] ✅ Datos recibidos del backend:', data);
 
       // Verificamos que la respuesta contenga token y usuario
       if (!data.token || !data.user) {
+        console.error('[Login] ⚠️ Respuesta incompleta — falta token o user:', data);
         throw new Error('Respuesta inesperada del servidor.');
       }
 
-      // Almacenamiento seguro en localStorage
+      // Persistencia en localStorage
       localStorage.setItem('mind_token', data.token);
       localStorage.setItem('mind_user', JSON.stringify(data.user));
+      console.log('[Login] 💾 Token y usuario guardados en localStorage.');
+      console.log('[Login] 👤 Rol del usuario:', data.user.role);
 
-      // Redirección según el rol
-      const { role } = data.user;
-      if (role === 'admin' || role === 'director') {
-        navigate('/admin');
+      // Notificamos al componente padre (App.tsx) para actualizar el estado global.
+      // App.tsx usa renderizado condicional (no React Router <Routes>), así que
+      // llamar a onLoginSuccess es suficiente para mostrar el portal correcto.
+      if (onLoginSuccess) {
+        console.log('[Login] 🎯 Llamando onLoginSuccess — el portal se renderizará según el rol.');
+        onLoginSuccess(data.user as User);
       } else {
-        navigate('/portal');
+        console.warn('[Login] ⚠️ onLoginSuccess no fue provisto — revisa App.tsx.');
       }
     } catch (error: any) {
+      console.error('[Login] 💥 Error en handleSubmit:', error);
       setErrorMessage(error.message || 'Error al iniciar sesión. Intenta nuevamente.');
     } finally {
       setIsLoading(false);

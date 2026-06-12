@@ -28,14 +28,19 @@ export default function App() {
   const [isDataPolicyOpenFromFooter, setIsDataPolicyOpenFromFooter] = useState(false);
 
   const handleLoginSuccess = (user: User) => {
+    console.log('[App] ✅ handleLoginSuccess invocado — rol:', user.role);
     setCurrentUser(user);
     // Auto-open Dr.Mind on pristine psychologist login to greet the doctor
     if (user.role === 'psicologo') {
       setIsDrMindOpen(true);
     }
+    // Roles 'admin' y 'director' van al AdminPortal (bloque else en el JSX).
   };
 
   const handleLogout = () => {
+    console.log('[App] 🚪 Cerrando sesión — limpiando estado y localStorage.');
+    localStorage.removeItem('mind_token');
+    localStorage.removeItem('mind_user');
     setCurrentUser(null);
     setIsDrMindOpen(false);
     setDrMindContextPatient(null);
