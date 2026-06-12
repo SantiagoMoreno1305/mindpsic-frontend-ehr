@@ -127,7 +127,7 @@ export default function AdminPortal() {
     const monthName = dateObj.toLocaleDateString('es-ES', { month: 'long' });
     const capitalizedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
 
-    const docIdNum = parseInt(appt?.patient?.documentId?.replace(/\D/g, '') || '') || appt?.patient?.id?.charCodeAt(0) || 0;
+    const docIdNum = parseInt(appt?.patient?.id?.replace(/\D/g, '') || '') || appt?.patient?.id?.charCodeAt(0) || 0;
     const agreements = ['Sura Medicina Prepagada', 'Colmédica Prepagada', 'MindHealth Global', 'Particular'];
     const agreement = agreements[docIdNum % agreements.length];
 

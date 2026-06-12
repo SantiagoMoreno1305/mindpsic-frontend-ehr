@@ -149,7 +149,7 @@ export default function Navbar({ user, onLogout, onOpenDrMind, currentContext, o
                   <p className="text-xs font-bold text-stone-900 font-sans">{user.name}</p>
                   <p className="text-[10px] text-stone-400 font-mono uppercase tracking-wider flex items-center gap-1 justify-end">
                     <ShieldCheck className="w-3 h-3 text-emerald-500 shrink-0" />
-                    {user.role === 'admin' ? 'Coordinador' : 'Psicólogo Clínico'}
+                    {user.role === 'DIRECTIVO' ? 'Coordinador' : 'Psicólogo Clínico'}
                   </p>
                 </div>
 
@@ -157,12 +157,12 @@ export default function Navbar({ user, onLogout, onOpenDrMind, currentContext, o
                 <span
                   className={`
                     hidden sm:inline-flex items-center px-2.5 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-widest border select-none
-                    ${user.role === 'admin'
+                    ${user.role === 'DIRECTIVO'
                       ? 'bg-stone-950 text-white border-stone-900'
                       : 'bg-[#FAF6F3] text-[#A07060] border-[#E8DDD5]'}
                   `}
                 >
-                  {user.role === 'admin' ? 'Admin' : 'Clínico'}
+                  {user.role === 'DIRECTIVO' ? 'Directivo' : 'Clínico'}
                 </span>
               </div>
 

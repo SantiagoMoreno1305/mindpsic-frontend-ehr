@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
-import { User } from '../types';
+import { User, UserRole } from '../types';
 
 export interface ChatContact {
   id: string;
   name: string;
-  role: 'psicologo' | 'admin';
+  role: UserRole;
   avatarUrl?: string;
   online: boolean;
   specialty?: string;
@@ -27,7 +27,7 @@ const INITIAL_CONTACTS: ChatContact[] = [
   {
     id: 'psy_01',
     name: 'Dra. Camila Morales Vega',
-    role: 'psicologo',
+    role: 'ESPECIALISTA_B2B',
     avatarUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=250',
     online: true,
     specialty: 'Terapia Cognitivo-Conductual',
@@ -38,7 +38,7 @@ const INITIAL_CONTACTS: ChatContact[] = [
   {
     id: 'psy_02',
     name: 'Dr. Roberto Carvajal',
-    role: 'psicologo',
+    role: 'ESPECIALISTA_B2B',
     avatarUrl: 'https://images.unsplash.com/photo-1537368910025-700350fe46c7?auto=format&fit=crop&q=80&w=250',
     online: false,
     specialty: 'Gestalt y Duelo Complejo',
@@ -49,7 +49,7 @@ const INITIAL_CONTACTS: ChatContact[] = [
   {
     id: 'psy_03',
     name: 'Dra. Luisa María Estrada',
-    role: 'psicologo',
+    role: 'ESPECIALISTA_B2B',
     avatarUrl: 'https://images.unsplash.com/photo-1594744803329-e58b31de215f?auto=format&fit=crop&q=80&w=250',
     online: true,
     specialty: 'Neuropsicología Infantil',
@@ -60,7 +60,7 @@ const INITIAL_CONTACTS: ChatContact[] = [
   {
     id: 'psy_04',
     name: 'Dr. Fernando Lopera',
-    role: 'psicologo',
+    role: 'ESPECIALISTA_B2B',
     avatarUrl: 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?auto=format&fit=crop&q=80&w=250',
     online: false,
     specialty: 'Adicciones y Trauma Clínico',
@@ -71,7 +71,7 @@ const INITIAL_CONTACTS: ChatContact[] = [
   {
     id: 'adm_01',
     name: 'Adm. Alejandro Restrepo',
-    role: 'admin',
+    role: 'DIRECTIVO',
     avatarUrl: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&q=80&w=250',
     online: true,
     lastMessage: 'Ya está habilitada la descarga del RIPS consolidado para Mayo.',
@@ -81,7 +81,7 @@ const INITIAL_CONTACTS: ChatContact[] = [
   {
     id: 'adm_02',
     name: 'Aud. Clara Estrada Vélez',
-    role: 'admin',
+    role: 'DIRECTIVO',
     avatarUrl: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&q=80&w=250',
     online: true,
     lastMessage: 'El convenio con Sura ha sido refrendado de manera exitosa.',

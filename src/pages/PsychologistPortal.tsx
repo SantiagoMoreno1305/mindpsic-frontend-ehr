@@ -539,7 +539,7 @@ export default function PsychologistPortal({
                 <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
                   Panel de {currentUser.name}{' '}
                   <span className="text-toast-300 font-sans font-normal text-sm block sm:inline sm:ml-2">
-                    — {currentUser.role === 'admin' || currentUser.role === 'director' ? 'Administración' : 'Psicólogo / Investigador'}
+                    — {currentUser.role === 'DIRECTIVO' ? 'Administración' : 'Psicólogo / Investigador'}
                   </span>
                 </h1>
                 <p className="text-toast-100 text-xs max-w-lg leading-relaxed font-sans">
@@ -570,10 +570,19 @@ export default function PsychologistPortal({
         {activeTab === 'video' && (
           <div className="max-w-7xl mx-auto space-y-6 text-left">
             {activeVideoCall ? (
-              <VideollamadaVercel
-                session={activeVideoCall}
-                onClose={() => setActiveVideoCall(null)}
-              />
+              <div className="relative">
+                <button
+                  onClick={() => setActiveVideoCall(null)}
+                  className="absolute top-2 right-2 z-10 bg-stone-900 text-white text-xs px-3 py-1 rounded-lg hover:bg-stone-700 transition cursor-pointer"
+                >
+                  Cerrar sala
+                </button>
+                <VideollamadaVercel
+                  pacienteId={activeVideoCall.patientId}
+                  salaId={activeVideoCall.id}
+                  tokenSesion={localStorage.getItem('mind_token') || ''}
+                />
+              </div>
             ) : (
               <div className="bg-white rounded-2xl border border-slate-100 p-6 text-center">
                 <p className="text-slate-500">Selecciona una cita desde el calendario para iniciar la videollamada.</p>

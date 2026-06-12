@@ -1,9 +1,67 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
+// ============================================================================
+// RBAC — 5 NIVELES CANÓNICOS (Grupo Mind)
+// Estos son los únicos valores válidos para el campo `role` en el sistema.
+// ============================================================================
 
-export type UserRole = 'psicologo' | 'admin' | 'director';
+/**
+ * Roles canónicos del sistema RBAC de 5 niveles del Grupo Mind.
+ *
+ * Jerarquía (de mayor a menor privilegio):
+ *  1. CEO            → Root / C-Level. Acceso total al holding. Bypass de tenantId.
+ *  2. DIRECTIVO      → Auditoría, liderazgo y métricas por dominio. Sin acceso al código fuente.
+ *  3. ESPECIALISTA_B2B → Psicólogos, Investigadores, Clientes Corporativos.
+ *  4. OPERATIVO      → Soporte auxiliar y RRHH. Sin acceso a datos clínicos sensibles.
+ *  5. USUARIO_B2C    → Pacientes y clientes finales. Solo acceso a su propia sesión.
+ */
+export type UserRole =
+  | 'CEO'
+  | 'DIRECTIVO'
+  | 'ESPECIALISTA_B2B'
+  | 'OPERATIVO'
+  | 'USUARIO_B2C';
+
+/**
+ * Alias legacy → nuevo rol canónico.
+ * Usar para migrar tokens JWT emitidos antes del RBAC v2.
+ * El backend debe leer este mapa en el middleware de auth para
+ * normalizar roles antes de emitirlos al frontend.
+ */
+export const LEGACY_ROLE_MAP: Record<string, UserRole> = {
+  // Roles legacy del EHR anterior
+  'psicologo':  'ESPECIALISTA_B2B',
+  'admin':      'DIRECTIVO',
+  'director':   'DIRECTIVO',
+  // Aliases cortos reconocidos por el gateway
+  'b2b':        'ESPECIALISTA_B2B',
+  'b2c':        'USUARIO_B2C',
+  'soporte':    'OPERATIVO',
+  'rrhh':       'OPERATIVO',
+  'root':       'CEO',
+};
+
+/** Etiquetas de presentación (UI) para cada rol canónico. */
+export const ROLE_LABELS: Record<UserRole, string> = {
+  CEO:               'CEO / Dirección General',
+  DIRECTIVO:         'Directivo / Auditoría',
+  ESPECIALISTA_B2B:  'Especialista B2B',
+  OPERATIVO:         'Operativo / RRHH',
+  USUARIO_B2C:       'Usuario / Paciente',
+};
+
+/**
+ * Resuelve un rol (canónico o legacy) al UserRole canónico.
+ * Devuelve 'USUARIO_B2C' como fallback seguro (mínimo privilegio).
+ */
+export function resolveRole(raw: string | undefined | null): UserRole {
+  if (!raw) return 'USUARIO_B2C';
+  const normalized = raw.trim().toLowerCase();
+  // Ya es canónico (comparación case-insensitive)
+  const canonical: UserRole[] = ['CEO','DIRECTIVO','ESPECIALISTA_B2B','OPERATIVO','USUARIO_B2C'];
+  const upperRaw = raw.trim().toUpperCase() as UserRole;
+  if (canonical.includes(upperRaw)) return upperRaw;
+  // Alias legacy
+  return LEGACY_ROLE_MAP[normalized] ?? 'USUARIO_B2C';
+}
 
 export interface User {
   id: string;

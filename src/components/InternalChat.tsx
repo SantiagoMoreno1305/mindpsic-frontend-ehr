@@ -193,7 +193,7 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
                       {activeContact.name}
                     </h3>
                     <p className="text-[10px] text-toast-500 font-bold uppercase tracking-wider font-mono">
-                      {activeContact.role === 'admin' ? 'Coordinación Administrativa' : `Colega Médico • ${activeContact.specialty}`}
+                      {activeContact.role === 'DIRECTIVO' ? 'Coordinación Administrativa' : `Colega Médico • ${activeContact.specialty}`}
                     </p>
                   </div>
                 </div>

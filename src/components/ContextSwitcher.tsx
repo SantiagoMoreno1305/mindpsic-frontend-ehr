@@ -7,7 +7,7 @@
  * Diseño premium, sin colores adicionales (paleta autorizada)
  */
 
-import { useState } from 'react';
+import React, { useState } from 'react';
 import { ChevronDown, Stethoscope, Beaker } from 'lucide-react';
 
 export type WorkspaceContext = 'clinical' | 'research';

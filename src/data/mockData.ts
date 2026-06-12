@@ -23,7 +23,7 @@ export const mockPsychologist: User = {
   id: 'psy_01',
   name: 'Camila Morales Vega',
   email: 'c.morales@mindhealth.com',
-  role: 'psicologo',
+  role: 'ESPECIALISTA_B2B',
   avatarUrl: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&q=80&w=200',
   licenseNumber: 'TP-109489241-COL'
 };
@@ -32,7 +32,7 @@ export const mockAdmin: User = {
   id: 'adm_01',
   name: 'Alejandro Restrepo',
   email: 'a.restrepo@mindpsic.com',
-  role: 'admin',
+  role: 'DIRECTIVO',
   avatarUrl: 'https://images.unsplash.com/photo-1560250097-0b93528c311a?auto=format&fit=crop&q=80&w=200'
 };
 
