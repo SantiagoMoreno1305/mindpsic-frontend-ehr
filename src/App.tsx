@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { User, Patient, resolveRole } from './types';
 import { WorkspaceContext } from './components/ContextSwitcher';
 import Login from './pages/Login';
@@ -23,6 +23,76 @@ export default function App() {
   // AI Assistant Drawer management
   const [isDrMindOpen, setIsDrMindOpen] = useState(false);
   const [drMindContextPatient, setDrMindContextPatient] = useState<Patient | null>(null);
+
+  // ============================================================================
+  // SESSION SYNC — Fuente única de verdad: Prisma (no el JWT)
+  //
+  // Al montar la app:
+  //  1. Restauramos el usuario desde localStorage para evitar pantalla de Login en refresh.
+  //  2. Llamamos a GET /auth/sync con el mind_token para obtener el role y tenantId
+  //     canónicos desde Prisma, ignorando cualquier valor desactualizado en el JWT.
+  // ============================================================================
+  useEffect(() => {
+    const token = localStorage.getItem('mind_token');
+    const userStr = localStorage.getItem('mind_user');
+
+    // Paso 1: Restaurar usuario desde localStorage (evita parpadeo hacia Login)
+    if (token && userStr) {
+      try {
+        const storedUser: User = JSON.parse(userStr);
+        const canonicalRole = resolveRole(storedUser.role);
+        setCurrentUser({ ...storedUser, role: canonicalRole });
+
+        // Paso 2: Sincronizar con Prisma para obtener el rol canónico real
+        const apiBase = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9000';
+        fetch(`${apiBase}/auth/sync`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        })
+          .then(async (res) => {
+            if (!res.ok) {
+              // Token expirado o inválido → forzar logout
+              if (res.status === 401 || res.status === 403) {
+                console.warn('[App][sync] Token inválido detectado → cerrando sesión.');
+                handleLogout();
+              } else {
+                console.warn('[App][sync] /auth/sync respondió', res.status, '— usando datos locales.');
+              }
+              return;
+            }
+
+            const syncData = await res.json();
+            console.log('[App][sync] ✅ Datos canónicos de Prisma recibidos:', syncData);
+
+            // Actualizamos el estado global con role y tenantId canónicos de Prisma.
+            // IMPORTANTE: ignoramos el rol que pudiera venir en el JWT local.
+            setCurrentUser((prev) => {
+              if (!prev) return prev;
+              const updatedUser: User = {
+                ...prev,
+                role: resolveRole(syncData.role),     // Fuente de verdad: Prisma
+                tenantId: syncData.tenantId ?? prev.tenantId, // Fuente de verdad: Prisma
+              };
+              // Persistir el usuario actualizado en localStorage
+              localStorage.setItem('mind_user', JSON.stringify(updatedUser));
+              console.log('[App][sync] Estado global actualizado con datos de Prisma:', updatedUser.role, updatedUser.tenantId);
+              return updatedUser;
+            });
+          })
+          .catch((err) => {
+            // No crítico — se usa el usuario local. El backend podría no estar disponible.
+            console.warn('[App][sync] /auth/sync no disponible (red/backend). Usando datos locales.', err.message);
+          });
+      } catch {
+        // Datos corruptos en localStorage → limpiar
+        localStorage.removeItem('mind_token');
+        localStorage.removeItem('mind_user');
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleLoginSuccess = (rawUser: User) => {
     // Normalize the role to a canonical RBAC level before storing.

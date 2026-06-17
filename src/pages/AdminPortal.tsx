@@ -175,6 +175,92 @@ export default function AdminPortal() {
   const [ripsOutput, setRipsOutput] = useState<string | null>(null);
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
 
+  // ─── Estado del formulario de aprovisionamiento RBAC ──────────────────────
+  const [provisionForm, setProvisionForm] = useState({
+    firstName: '',
+    lastName: '',
+    email: '',
+    documentId: '',
+    role: 'USUARIO_B2C' as 'USUARIO_B2C' | 'ESPECIALISTA_B2B',
+  });
+  const [isProvisioning, setIsProvisioning] = useState(false);
+  const [provisionResult, setProvisionResult] = useState<{
+    type: 'success' | 'error';
+    message: string;
+    tempPassword?: string;
+  } | null>(null);
+
+  // ─── POST /users/provision ─────────────────────────────────────────────────
+  // Crea un nuevo usuario en Supabase Auth + Prisma con rol RBAC validado.
+  // El backend devuelve tempPassword (CSPRNG, uso único) para entregarlo al usuario.
+  const handleProvisionUser = async (e: FormEvent) => {
+    e.preventDefault();
+    setProvisionResult(null);
+
+    const token = localStorage.getItem('mind_token');
+    if (!token) {
+      setProvisionResult({ type: 'error', message: 'No hay sesión activa. Recarga la página.' });
+      return;
+    }
+
+    const { firstName, lastName, email, documentId, role } = provisionForm;
+
+    if (!firstName.trim() || !lastName.trim() || !email.trim() || !documentId.trim()) {
+      setProvisionResult({ type: 'error', message: 'Todos los campos son obligatorios.' });
+      return;
+    }
+
+    setIsProvisioning(true);
+
+    try {
+      const apiBase = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9000';
+      const response = await fetch(`${apiBase}/users/provision`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name: `${firstName.trim()} ${lastName.trim()}`,
+          email: email.trim().toLowerCase(),
+          role,
+          documentId: documentId.trim(),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok) {
+        // ✅ Éxito: mostrar tempPassword para entregar al usuario
+        setProvisionResult({
+          type: 'success',
+          message: `Usuario "${firstName} ${lastName}" provisionado exitosamente con rol ${role}.`,
+          tempPassword: data.tempPassword,
+        });
+        // Resetear el formulario
+        setProvisionForm({ firstName: '', lastName: '', email: '', documentId: '', role: 'USUARIO_B2C' });
+        console.log('[RBAC][provision] ✅ Usuario creado:', data.user?.id);
+      } else {
+        // ❌ Error del backend: mostrar código y detalle
+        const errorMsg = data.detail || data.error || `Error ${response.status} del servidor.`;
+        const errorCode = data.code ? ` [Código: ${data.code}]` : '';
+        setProvisionResult({
+          type: 'error',
+          message: `${errorMsg}${errorCode}`,
+        });
+        console.error('[RBAC][provision] ❌ Error backend:', data);
+      }
+    } catch (err: any) {
+      setProvisionResult({
+        type: 'error',
+        message: `Error de red al contactar el servidor: ${err.message}`,
+      });
+      console.error('[RBAC][provision] ❌ Excepción de red:', err);
+    } finally {
+      setIsProvisioning(false);
+    }
+  };
+
   // Estado de carga / guardia defensiva
   if (authLoading || patientsLoading || apptsLoading) {
     return (
@@ -1160,8 +1246,215 @@ export default function AdminPortal() {
                 </form>
               </div>
             </div>
+
+            {/* ──────────────────────────────────────────────────────────────────
+                PANEL: APROVISIONAMIENTO RBAC DE USUARIOS (FLUJO DE 7 PASOS)
+                Solo visible para CEO y DIRECTIVO. Llama a POST /users/provision.
+                Retorna tempPassword (CSPRNG) para entregar al nuevo usuario.
+            ────────────────────────────────────────────────────────────────── */}
+            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4">
+              <div className="border-b border-slate-100 pb-2.5 flex items-start justify-between">
+                <div>
+                  <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
+                    <PlusCircle className="w-4 h-4 mr-1.5 text-toast-500" />
+                    Aprovisionar Nuevo Usuario (RBAC Seguro)
+                  </h3>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Crea cuentas con flujo de 7 pasos: Supabase Auth + Prisma + contraseña temporal CSPRNG.
+                    El <code className="bg-slate-100 px-1 rounded">tenantId</code> se extrae automáticamente de tu JWT.
+                  </p>
+                </div>
+                <span className="text-[9px] font-mono font-bold uppercase tracking-widest bg-charcoal-900 text-toast-300 px-2 py-1 rounded-lg border border-charcoal-950 shrink-0 ml-3">
+                  {currentUser.role === 'CEO' ? 'CEO · Global' : 'DIRECTIVO · Tenant'}
+                </span>
+              </div>
+
+              <form onSubmit={handleProvisionUser} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-600 mb-1">Nombre(s)</label>
+                  <input
+                    id="provision-firstName"
+                    type="text"
+                    required
+                    value={provisionForm.firstName}
+                    onChange={(e) => setProvisionForm(prev => ({ ...prev, firstName: e.target.value }))}
+                    placeholder="e.g. Ana María"
+                    className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500 focus:bg-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-600 mb-1">Apellido(s)</label>
+                  <input
+                    id="provision-lastName"
+                    type="text"
+                    required
+                    value={provisionForm.lastName}
+                    onChange={(e) => setProvisionForm(prev => ({ ...prev, lastName: e.target.value }))}
+                    placeholder="e.g. Rodríguez Vega"
+                    className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500 focus:bg-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-600 mb-1">Email Institucional</label>
+                  <input
+                    id="provision-email"
+                    type="email"
+                    required
+                    value={provisionForm.email}
+                    onChange={(e) => setProvisionForm(prev => ({ ...prev, email: e.target.value }))}
+                    placeholder="e.g. ana.rodriguez@clinica.com"
+                    className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500 font-mono focus:bg-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-600 mb-1">Número de Documento</label>
+                  <input
+                    id="provision-documentId"
+                    type="text"
+                    required
+                    value={provisionForm.documentId}
+                    onChange={(e) => setProvisionForm(prev => ({ ...prev, documentId: e.target.value }))}
+                    placeholder="e.g. 1234567890"
+                    className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500 font-mono focus:bg-white"
+                  />
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-600 mb-2">Rol RBAC Asignado</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label
+                      htmlFor="role-paciente"
+                      className={`flex items-start gap-3 p-3 border-2 rounded-xl cursor-pointer transition-all ${
+                        provisionForm.role === 'USUARIO_B2C'
+                          ? 'border-toast-400 bg-toast-50'
+                          : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                      }`}
+                    >
+                      <input
+                        id="role-paciente"
+                        type="radio"
+                        name="provision-role"
+                        value="USUARIO_B2C"
+                        checked={provisionForm.role === 'USUARIO_B2C'}
+                        onChange={() => setProvisionForm(prev => ({ ...prev, role: 'USUARIO_B2C' }))}
+                        className="mt-0.5 accent-toast-500"
+                      />
+                      <div>
+                        <p className="text-xs font-bold text-slate-800">Paciente / Cliente B2C</p>
+                        <p className="text-[10px] text-slate-400 font-mono">USUARIO_B2C · Nivel 5</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5">Acceso al portal del paciente. Sin acceso al EHR interno.</p>
+                      </div>
+                    </label>
+
+                    <label
+                      htmlFor="role-especialista"
+                      className={`flex items-start gap-3 p-3 border-2 rounded-xl cursor-pointer transition-all ${
+                        provisionForm.role === 'ESPECIALISTA_B2B'
+                          ? 'border-charcoal-700 bg-charcoal-950/5'
+                          : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                      }`}
+                    >
+                      <input
+                        id="role-especialista"
+                        type="radio"
+                        name="provision-role"
+                        value="ESPECIALISTA_B2B"
+                        checked={provisionForm.role === 'ESPECIALISTA_B2B'}
+                        onChange={() => setProvisionForm(prev => ({ ...prev, role: 'ESPECIALISTA_B2B' }))}
+                        className="mt-0.5"
+                      />
+                      <div>
+                        <p className="text-xs font-bold text-slate-800">Especialista / Colega B2B</p>
+                        <p className="text-[10px] text-slate-400 font-mono">ESPECIALISTA_B2B · Nivel 3</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5">Acceso al EHR clínico, historias y videollamadas.</p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <button
+                    id="btn-submit-provision"
+                    type="submit"
+                    disabled={isProvisioning}
+                    className="w-full bg-charcoal-900 hover:bg-charcoal-950 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold p-3 rounded-xl text-xs transition-all shadow-md cursor-pointer text-center flex items-center justify-center gap-2"
+                  >
+                    {isProvisioning ? (
+                      <>
+                        <svg className="animate-spin h-4 w-4 text-toast-300" viewBox="0 0 24 24" fill="none">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                        </svg>
+                        <span>Ejecutando flujo de 7 pasos RBAC…</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheck className="w-4 h-4 text-toast-300" />
+                        <span>Aprovisionar Usuario Seguro</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+
+              {/* Resultado del aprovisionamiento */}
+              {provisionResult && (
+                <div
+                  id="provision-result-panel"
+                  className={`mt-2 p-4 rounded-xl border text-xs space-y-2 ${
+                    provisionResult.type === 'success'
+                      ? 'bg-toast-50 border-toast-300 text-charcoal-900'
+                      : 'bg-red-50 border-red-200 text-red-800'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 font-bold">
+                    {provisionResult.type === 'success' ? (
+                      <CheckCircle className="w-4 h-4 text-toast-500 shrink-0" />
+                    ) : (
+                      <svg className="w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    )}
+                    <span>{provisionResult.message}</span>
+                  </div>
+
+                  {provisionResult.tempPassword && (
+                    <div className="mt-3 p-3 bg-charcoal-950 rounded-lg border border-charcoal-800">
+                      <p className="text-[10px] text-toast-400 font-bold uppercase tracking-widest font-mono mb-1.5">
+                        🔑 Contraseña temporal (uso único — entregar de forma segura al usuario)
+                      </p>
+                      <div className="flex items-center justify-between gap-2">
+                        <code
+                          id="provision-temp-password"
+                          className="text-toast-300 font-mono text-sm font-bold tracking-wider select-all"
+                        >
+                          {provisionResult.tempPassword}
+                        </code>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(provisionResult.tempPassword!);
+                            alert('✅ Contraseña copiada al portapapeles.');
+                          }}
+                          className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-white text-[10px] font-bold rounded cursor-pointer border border-slate-700 transition-colors shrink-0"
+                        >
+                          Copiar
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-500 font-mono mt-2 leading-relaxed">
+                        ⚠️ El usuario deberá cambiar esta contraseña en su primer inicio de sesión.
+                        No la almacenes en texto plano ni la envíes por correo sin cifrar.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
+
 
         {/* VIEW: BILLING & INSURANCE AGREEMENTS, RIPS GENERATOR & PATIENT DATABASE CONTACTS */}
         {activeTab === 'billing_rips' && (
