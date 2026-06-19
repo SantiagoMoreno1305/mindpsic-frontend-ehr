@@ -6,15 +6,12 @@
 import { useState, FormEvent, useEffect } from 'react';
 import { 
   mockPsychologistsPerformance, 
-  initialTenantDomains, 
-  initialClinicalFiles,
-  mockAdmin
+  initialClinicalFiles
 } from '../data/mockData';
 import { useAppointments } from '../hooks/useAppointments';
 import { usePatients } from '../hooks/usePatients';
 import InternalChat from '../components/InternalChat';
 import { 
-  TenantDomain, 
   Patient, 
   PsychologistPerformance,
   ClinicalFile,
@@ -23,15 +20,10 @@ import {
 import { 
   TrendingUp, 
   Users, 
-  Network, 
-  FileText, 
-  Globe, 
   UploadCloud, 
-  Database,
   Search, 
   ShieldCheck, 
-  Cpu, 
-  PlusCircle, 
+  Cpu,
   CheckCircle,
   Video, 
   BarChart3,
@@ -40,12 +32,13 @@ import {
   DollarSign,
   Receipt,
   FileCode,
-  Briefcase,
   Filter,
-  MessageSquare
+  MessageSquare,
+  UserPlus,
+  PlusCircle
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'multitenant' | 'billing_rips' | 'chat';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'equipo' | 'billing_rips' | 'chat';
 
 export default function AdminPortal() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -83,7 +76,6 @@ export default function AdminPortal() {
   const [activeTab, setActiveTab] = useState<AdminTab>('metrics');
   
   // React dynamic administrative states
-  const [tenants, setTenants] = useState<TenantDomain[]>(initialTenantDomains);
   const [performances, setPerformances] = useState<PsychologistPerformance[]>(mockPsychologistsPerformance);
   const [clinicalFiles, setClinicalFiles] = useState<ClinicalFile[]>(initialClinicalFiles);
 
@@ -145,13 +137,6 @@ export default function AdminPortal() {
     };
   });
 
-  // Multi-tenant new domain input state
-  const [newTenant, setNewTenant] = useState({
-    organization: '',
-    domain: '',
-    usersLimit: 100,
-    region: 'us-west2 (Oregon)'
-  });
 
   // Advanced Docs multi-upload states
   const [uploadedFiles, setUploadedFiles] = useState<any[]>([]);
@@ -309,45 +294,6 @@ export default function AdminPortal() {
   const attendedCount = filteredAppointments.filter(app => app.status === 'Atendido').length;
   const unattendedOrReprogrammedCount = filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramado').length;
 
-  // New Domain tenant registry handler
-  const handleCreateTenant = (e: FormEvent) => {
-    e.preventDefault();
-    if (!newTenant.organization || !newTenant.domain) return;
-
-    const domainRef: TenantDomain = {
-      id: 'ten_' + Date.now(),
-      organization: newTenant.organization,
-      domain: newTenant.domain,
-      status: 'active',
-      dbConnection: `postgresql://${newTenant.organization.toLowerCase().replace(/[^a-z]/g, '')}_prod:********@cloudsql-uswest2.gcp.net/tenant_db`,
-      createdAt: new Date().toISOString().split('T')[0],
-      usersLimit: Number(newTenant.usersLimit),
-      usersActive: 1,
-      region: newTenant.region
-    };
-
-    setTenants(prev => [...prev, domainRef]);
-    setNewTenant({
-      organization: '',
-      domain: '',
-      usersLimit: 100,
-      region: 'us-west2 (Oregon)'
-    });
-    alert(`Tenant administrativo "${domainRef.organization}" registrado exitosamente.`);
-  };
-
-  // Toggle tenant domain suspension
-  const toggleTenantStatus = (id: string) => {
-    setTenants(prev => prev.map(t => {
-      if (t.id === id) {
-        return {
-          ...t,
-          status: t.status === 'active' ? 'suspended' : 'active'
-        };
-      }
-      return t;
-    }));
-  };
 
   // Create billing user handler
   const handleCreateBillingUser = (e: FormEvent) => {
@@ -512,19 +458,20 @@ export default function AdminPortal() {
             {activeTab === 'advanced_docs' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
-          {/* Multitenancy configurations */}
+
+          {/* Equipo / Aprovisionamiento RBAC */}
           <button
-            onClick={() => setActiveTab('multitenant')}
-            id="tab-adm-tenants"
+            onClick={() => setActiveTab('equipo')}
+            id="tab-adm-equipo"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
-              activeTab === 'multitenant' 
+              activeTab === 'equipo' 
                 ? 'bg-charcoal-900 text-white font-semibold' 
                 : 'hover:bg-slate-800 hover:text-white'
             }`}
           >
-            <Globe className="w-5 h-5 shrink-0" />
-            <span className="ml-3 text-xs hidden md:block">Dominios y Tenants</span>
-            {activeTab === 'multitenant' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+            <UserPlus className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Equipo y Accesos</span>
+            {activeTab === 'equipo' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
           {/* Billing & RIPS configurations */}
@@ -1105,146 +1052,21 @@ export default function AdminPortal() {
           </div>
         )}
 
-        {/* VIEW: MULTI-TENANCY CONTROL, TENANT MANAGEMENT & DATABASE CONFIGS */}
-        {activeTab === 'multitenant' && (
-          <div className="max-w-7xl mx-auto space-y-6 text-left">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4">
-                <div className="border-b border-slate-100 pb-3">
-                  <h2 className="font-bold text-sm text-slate-900 tracking-tight flex items-center">
-                    <Globe className="w-5 h-5 mr-1.5 text-toast-500" />
-                    Catálogo Activo de Dominios y Licencias (Multi-Tenant)
-                  </h2>
-                  <p className="text-xs text-slate-400">Sincronización instantánea de inquilinos y bases de datos asignadas al clúster MindPsic.</p>
-                </div>
 
-                <div className="space-y-3">
-                  {tenants.map((ten) => (
-                    <div 
-                      key={ten.id} 
-                      className="p-4 bg-slate-50 border border-slate-150 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
-                    >
-                      <div className="space-y-1.5 flex-1 pr-4">
-                        <div className="flex items-center space-x-2">
-                          <h3 className="font-extrabold text-slate-800 text-xs">{ten.organization}</h3>
-                          <span className={`text-[9px] font-bold uppercase rounded-md px-1.5 py-0.2 ${
-                            ten.status === 'active' 
-                              ? 'bg-toast-100 text-toast-500 border border-toast-300' 
-                              : 'bg-charcoal-900 text-white border border-charcoal-950'
-                          }`}>
-                            {ten.status === 'active' ? 'Conectado' : 'Suspendido'}
-                          </span>
-                        </div>
-                        
-                        <p className="text-slate-500 flex items-center font-mono text-[11px]">
-                          <Globe className="w-3.5 h-3.5 mr-1 text-slate-400" />
-                          Host: <span className="text-toast-500 font-semibold ml-1 underline">{ten.domain}</span>
-                        </p>
-
-                        <div className="p-1.5 bg-slate-900/5 hover:bg-slate-900/10 rounded-lg text-[10px] text-slate-600 font-mono truncate flex items-center border border-slate-200/50">
-                          <Database className="w-3.5 h-3.5 mr-1 text-slate-500 shrink-0" />
-                          <span className="truncate" title={ten.dbConnection}>{ten.dbConnection}</span>
-                        </div>
-
-                        <div className="flex flex-wrap text-[10px] text-slate-400 gap-x-4">
-                          <span>Ubicación: {ten.region}</span>
-                          <span>Usuarios activos: <strong>{ten.usersActive} / {ten.usersLimit}</strong></span>
-                        </div>
-                      </div>
-
-                      <div className="shrink-0 flex items-center">
-                        <button
-                          onClick={() => toggleTenantStatus(ten.id)}
-                          id={`btn-toggle-tenant-${ten.id}`}
-                          className={`px-3 py-1.5 rounded-lg font-bold text-xs transition-colors cursor-pointer border ${
-                            ten.status === 'active'
-                              ? 'bg-white hover:bg-slate-100 text-charcoal-900 border-slate-300'
-                              : 'bg-charcoal-900 hover:bg-charcoal-950 text-white border-charcoal-950'
-                          }`}
-                        >
-                          {ten.status === 'active' ? 'Suspender' : 'Sincronizar'}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4">
-                <div className="border-b border-slate-100 pb-2">
-                  <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
-                    <PlusCircle className="w-4 h-4 mr-1 text-toast-500" />
-                    Registrar Nuevo Inquilino
-                  </h3>
-                  <p className="text-[11px] text-slate-400">Sincronizar nuevo domínio de consultorio médico.</p>
-                </div>
-
-                <form onSubmit={handleCreateTenant} className="space-y-4">
-                  <div>
-                    <label className="block text-[10px] uppercase font-bold text-slate-700 mb-1">
-                      Nombre Inquilino / Clinica
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={newTenant.organization}
-                      onChange={(e) => setNewTenant(prev => ({ ...prev, organization: e.target.value }))}
-                      placeholder="e.g. Clínica Alivio Pereira"
-                      className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] uppercase font-bold text-slate-700 mb-1">
-                      Dominio DNS Reservado
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={newTenant.domain}
-                      onChange={(e) => setNewTenant(prev => ({ ...prev, domain: e.target.value }))}
-                      placeholder="e.g. pereira-alivio.mindpsic.com"
-                      className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500 font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] uppercase font-bold text-slate-700 mb-1">
-                      Límite de Psicólogos Permitidos
-                    </label>
-                    <input
-                      type="number"
-                      required
-                      value={newTenant.usersLimit}
-                      onChange={(e) => setNewTenant(prev => ({ ...prev, usersLimit: Number(e.target.value) }))}
-                      className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] uppercase font-bold text-slate-700 mb-1">
-                      Zona Región de Respaldos (GCP SQL)
-                    </label>
-                    <select
-                      value={newTenant.region}
-                      onChange={(e) => setNewTenant(prev => ({ ...prev, region: e.target.value }))}
-                      className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500 text-slate-900"
-                    >
-                      <option value="us-west2 (Oregon)">us-west2 (Oregon)</option>
-                      <option value="us-east4 (N. Virginia)">us-east4 (N. Virginia)</option>
-                      <option value="southamerica-east1 (São Paulo)">southamerica-east1 (São Paulo)</option>
-                    </select>
-                  </div>
-
-                  <button
-                    type="submit"
-                    id="btn-submit-tenancy"
-                    className="w-full bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold p-2.5 rounded-xl text-xs transition-all shadow-md cursor-pointer text-center"
-                  >
-                    Sincronizar Inquilino
-                  </button>
-                </form>
-              </div>
+        {/* VIEW: EQUIPO Y ACCESOS — Aprovisionamiento RBAC de Usuarios */}
+        {activeTab === 'equipo' && (
+          <div className="max-w-3xl mx-auto space-y-6 text-left">
+            <div className="border-b border-slate-200 pb-4">
+              <span className="bg-toast-100 text-charcoal-900 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-toast-300 font-mono">
+                Gestión de Accesos Clínicos
+              </span>
+              <h1 className="text-2xl font-black text-slate-900 tracking-tight mt-1">
+                Equipo y Aprovisionamiento de Usuarios
+              </h1>
+              <p className="text-xs text-slate-400 mt-1">
+                Crea cuentas de acceso al EHR para nuevos especialistas y pacientes dentro de tu organización.
+                El <code className="bg-slate-100 px-1 rounded">tenantId</code> se extrae automáticamente de tu JWT.
+              </p>
             </div>
 
             {/* ──────────────────────────────────────────────────────────────────
@@ -1256,7 +1078,7 @@ export default function AdminPortal() {
               <div className="border-b border-slate-100 pb-2.5 flex items-start justify-between">
                 <div>
                   <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
-                    <PlusCircle className="w-4 h-4 mr-1.5 text-toast-500" />
+                    <UserPlus className="w-4 h-4 mr-1.5 text-toast-500" />
                     Aprovisionar Nuevo Usuario (RBAC Seguro)
                   </h3>
                   <p className="text-[11px] text-slate-400 mt-0.5">

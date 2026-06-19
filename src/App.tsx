@@ -9,10 +9,12 @@ import { WorkspaceContext } from './components/ContextSwitcher';
 import Login from './pages/Login';
 import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
+import ForcePasswordChange from './pages/ForcePasswordChange';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 import DrMindChat from './components/DrMindChat';
-import { Bot, ShieldAlert } from 'lucide-react';
+import { Bot, ShieldAlert, AlertTriangle } from 'lucide-react';
+import { FORBIDDEN_ACCESS_EVENT } from './lib/apiClient';
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -23,6 +25,30 @@ export default function App() {
   // AI Assistant Drawer management
   const [isDrMindOpen, setIsDrMindOpen] = useState(false);
   const [drMindContextPatient, setDrMindContextPatient] = useState<Patient | null>(null);
+
+  // ============================================================================
+  // INTERCEPTOR GLOBAL 403 — Tenant suspendido
+  //
+  // apiClient.ts despacha CustomEvent('forbidden-access') cuando el backend
+  // responde 403 Forbidden (p.ej. tenant suspendido por falta de pago).
+  // Aquí lo capturamos, limpiamos la sesión y mostramos el banner amigable.
+  // ============================================================================
+  const [isSuspended, setIsSuspended] = useState(false);
+
+  // ============================================================================
+  // CASETA DE PEAJE — Primer ingreso con contraseña temporal
+  //
+  // Cuando un usuario es aprovisionado por un DIRECTIVO/CEO, recibe una
+  // contraseña temporal (patrón Mind_<hex>#). Login.tsx detecta esto y
+  // escribe la flag 'mind_must_change_pwd' = 'true' en localStorage.
+  //
+  // renderPortal() comprueba esta flag ANTES del switch de roles y renderiza
+  // ForcePasswordChange en lugar del portal clínico hasta que el usuario
+  // completa el flujo (nueva contraseña + Habeas Data).
+  // ============================================================================
+  const [mustChangePassword, setMustChangePassword] = useState(
+    () => localStorage.getItem('mind_must_change_pwd') === 'true'
+  );
 
   // ============================================================================
   // SESSION SYNC — Fuente única de verdad: Prisma (no el JWT)
@@ -114,10 +140,31 @@ export default function App() {
     console.log('[App] 🚪 Cerrando sesión — limpiando estado y localStorage.');
     localStorage.removeItem('mind_token');
     localStorage.removeItem('mind_user');
+    localStorage.removeItem('mind_must_change_pwd');
     setCurrentUser(null);
     setIsDrMindOpen(false);
     setDrMindContextPatient(null);
+    setIsSuspended(false);
+    setMustChangePassword(false);
   };
+
+  // ── Listener: forbidden-access (403) ──────────────────────────────────────
+  useEffect(() => {
+    const handleForbiddenAccess = (event: Event) => {
+      const detail = (event as CustomEvent).detail;
+      console.warn('[App] 🔒 forbidden-access recibido — suspendiendo sesión.', detail);
+      // Limpiar sesión pero mantener isSuspended=true para mostrar el banner
+      localStorage.removeItem('mind_token');
+      localStorage.removeItem('mind_user');
+      setCurrentUser(null);
+      setIsDrMindOpen(false);
+      setDrMindContextPatient(null);
+      setIsSuspended(true);
+    };
+
+    window.addEventListener(FORBIDDEN_ACCESS_EVENT, handleForbiddenAccess);
+    return () => window.removeEventListener(FORBIDDEN_ACCESS_EVENT, handleForbiddenAccess);
+  }, []);
 
   const handleOpenDrMindWithPatient = (patient: Patient) => {
     setDrMindContextPatient(patient);
@@ -134,14 +181,68 @@ export default function App() {
   //  USUARIO_B2C    → Pantalla bloqueada — pacientes usan portal externo
   // ============================================================================
   const renderPortal = () => {
+    // ── Banner: Tenant suspendido (403 Forbidden recibido del backend) ────────
+    if (isSuspended) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-[80vh] px-6 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center mb-6 shadow-sm">
+            <AlertTriangle className="w-8 h-8 text-amber-500" />
+          </div>
+          <span className="bg-amber-100 text-amber-800 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-amber-300 mb-4">
+            Acceso Restringido
+          </span>
+          <h2
+            className="text-slate-900 font-bold text-xl mb-2"
+            style={{ fontFamily: 'Georgia, serif' }}
+          >
+            Organización temporalmente suspendida
+          </h2>
+          <p className="text-slate-500 text-sm max-w-sm leading-relaxed mb-8">
+            El acceso para su organización se encuentra temporalmente suspendido.
+            Contacte a su administrador.
+          </p>
+          <button
+            onClick={() => setIsSuspended(false)}
+            className="px-5 py-2.5 bg-slate-950 text-white text-xs font-bold rounded-xl hover:bg-slate-800 transition-all cursor-pointer"
+          >
+            Volver al inicio de sesión
+          </button>
+        </div>
+      );
+    }
+
     if (!currentUser) {
       return (
         <Login
-          onLoginSuccess={handleLoginSuccess}
+          onLoginSuccess={(user, isTempPassword) => {
+            handleLoginSuccess(user);
+            if (isTempPassword) {
+              localStorage.setItem('mind_must_change_pwd', 'true');
+              setMustChangePassword(true);
+            }
+          }}
           onOpenDataPolicy={() => {
             const btn = document.getElementById('btn-footer-data-policy');
             if (btn) btn.click();
           }}
+        />
+      );
+    }
+
+    // ── Guardia: Primer ingreso — forzar cambio de contraseña ────────────────
+    // Colocado DESPUÉS de verificar currentUser, ANTES del switch de roles.
+    // Ningún rol puede saltarse este gate mientras la flag esté activa.
+    if (mustChangePassword) {
+      return (
+        <ForcePasswordChange
+          userEmail={currentUser.email ?? ''}
+          userName={currentUser.name ?? ''}
+          onCompleted={() => {
+            console.log('[App] ✅ Primer ingreso completado — desbloqueando portal.');
+            localStorage.removeItem('mind_must_change_pwd');
+            setMustChangePassword(false);
+          }}
+          onLogout={handleLogout}
         />
       );
     }

@@ -37,8 +37,13 @@ const API_BASE_URL =
 interface LoginProps {
   /** Callback para abrir la política de datos (conservado de la UI original) */
   onOpenDataPolicy: () => void;
-  /** Callback invocado con el objeto User tras autenticación exitosa */
-  onLoginSuccess?: (user: User) => void;
+  /**
+   * Callback invocado con el objeto User tras autenticación exitosa.
+   * @param user            Objeto de usuario autenticado
+   * @param isTempPassword  true si se detectó que el usuario usó una contraseña
+   *                        temporal (patrón Mind_<hex>#) — indica primer ingreso.
+   */
+  onLoginSuccess?: (user: User, isTempPassword: boolean) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,12 +111,27 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
       console.log('[Login] 💾 Token y usuario guardados en localStorage.');
       console.log('[Login] 👤 Rol del usuario:', data.user.role);
 
+      // ── Detección de Primer Ingreso (Contraseña Temporal) ────────────────
+      // El backend genera contraseñas temporales con el patrón:
+      //   Mind_<16 hex chars>#  → ej. Mind_a3f2e1b4c9d0e5f8#
+      // Si la contraseña del formulario coincide con este patrón, es un
+      // primer ingreso. También respetamos un campo `mustChangePassword`
+      // que el backend podría añadir en el futuro.
+      const TEMP_PASSWORD_REGEX = /^Mind_[0-9a-f]{16}#$/;
+      const isTempPassword =
+        TEMP_PASSWORD_REGEX.test(password) ||
+        data.user?.mustChangePassword === true;
+
+      if (isTempPassword) {
+        console.log('[Login] 🔑 Contraseña temporal detectada — primer ingreso requerido.');
+      }
+
       // Notificamos al componente padre (App.tsx) para actualizar el estado global.
       // App.tsx usa renderizado condicional (no React Router <Routes>), así que
       // llamar a onLoginSuccess es suficiente para mostrar el portal correcto.
       if (onLoginSuccess) {
         console.log('[Login] 🎯 Llamando onLoginSuccess — el portal se renderizará según el rol.');
-        onLoginSuccess(data.user as User);
+        onLoginSuccess(data.user as User, isTempPassword);
       } else {
         console.warn('[Login] ⚠️ onLoginSuccess no fue provisto — revisa App.tsx.');
       }
