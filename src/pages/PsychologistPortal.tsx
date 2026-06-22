@@ -560,8 +560,45 @@ export default function PsychologistPortal({
             {/* Aquí iría el resto del dashboard (calendario, pacientes recientes, notas clínicas, etc.) 
                 Por razones de espacio no se replica todo, pero la estructura es idéntica a la original,
                 usando currentUser en lugar de valores estáticos. */}
-            <div className="bg-white rounded-xl border border-slate-100 p-5 shadow-xs text-center text-slate-400">
-              [Contenido completo del dashboard omitido por brevedad, pero funcionalmente idéntico al original usando currentUser]
+            <div className="bg-white rounded-xl border border-slate-100 p-5 shadow-xs text-left">
+              <h2 className="text-lg font-bold mb-4 text-slate-800">Calendario de Citas</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {weeklyAppointments.map((cita) => (
+                  <div key={cita.id} className={`p-3 rounded-lg border-l-4 transition-all shadow-sm ${
+                      cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL'
+                        ? 'border-l-indigo-500 bg-indigo-50/50 hover:bg-indigo-50' 
+                        : 'border-l-emerald-500 bg-emerald-50/50 hover:bg-emerald-50'
+                    }`}>
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="font-semibold text-sm text-slate-800">
+                          {cita.patientName}
+                        </p>
+                        <p className="text-xs text-slate-500 font-mono mt-0.5">{cita.timeSlot}</p>
+                        
+                        <span className={`inline-flex items-center mt-2 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
+                          cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL'
+                            ? 'bg-white text-indigo-700 border-indigo-200'
+                            : 'bg-white text-emerald-700 border-emerald-200'
+                        }`}>
+                          {cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL' ? '📹 Virtual' : '🏢 Presencial'}
+                        </span>
+                      </div>
+                      
+                      {(cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL') && cita.roomUrl && (
+                        <a 
+                          href={cita.roomUrl} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1"
+                        >
+                          <span>Unirse</span>
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}

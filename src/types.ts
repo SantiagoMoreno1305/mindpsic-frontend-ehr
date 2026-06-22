@@ -289,4 +289,6 @@ export interface BackendAppointment {
   type: string;
   status: string;
   notes?: string;
+  modality?: 'VIRTUAL' | 'PRESENCIAL';
+  roomUrl?: string;
 }
