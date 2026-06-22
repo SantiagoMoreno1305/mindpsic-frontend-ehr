@@ -76,7 +76,7 @@ export default function AdminPortal() {
   const [activeTab, setActiveTab] = useState<AdminTab>('metrics');
   
   // React dynamic administrative states
-  const [performances, setPerformances] = useState<PsychologistPerformance[]>(mockPsychologistsPerformance);
+  const [performances, setPerformances] = useState<PsychologistPerformance[]>([]);
   const [clinicalFiles, setClinicalFiles] = useState<ClinicalFile[]>(initialClinicalFiles);
 
   // Mapeo dinámico de pacientes reales consumidos desde el custom hook
@@ -144,10 +144,7 @@ export default function AdminPortal() {
   const [ragStatusMessage, setRagStatusMessage] = useState<string | null>(null);
 
   // Billing & RIPS panel states
-  const [billingUsers, setBillingUsers] = useState([
-    { id: 'bill_1', name: 'Juan Gabriel Montoya', role: 'Facturador Clínico', agreement: 'Sura Medicina Prepagada', active: true },
-    { id: 'bill_2', name: 'Clara Estrada Vélez', role: 'Auditor Financiero EPS', agreement: 'Todos', active: true }
-  ]);
+  const [billingUsers, setBillingUsers] = useState([]);
   const [newBillingUser, setNewBillingUser] = useState({
     name: '',
     role: 'Facturador Clínico',
@@ -1307,7 +1304,7 @@ export default function AdminPortal() {
                   <div className="p-4 bg-charcoal-900 rounded-xl border border-charcoal-950 flex items-center justify-between text-white">
                     <div>
                       <span className="text-[10px] uppercase font-mono text-toast-300 block">MindHealth Global (Corp)</span>
-                      <span className="font-extrabold text-lg text-white font-mono">42 Pacientes</span>
+                      <span className="font-extrabold text-lg text-white font-mono">0 Pacientes</span>
                     </div>
                     <span className="text-[10px] bg-charcoal-950 text-toast-300 font-bold p-1 px-2 rounded">Activo 100%</span>
                   </div>
@@ -1315,7 +1312,7 @@ export default function AdminPortal() {
                   <div className="p-4 bg-toast-50/50 rounded-xl border border-toast-200 flex items-center justify-between">
                     <div>
                       <span className="text-[10px] uppercase font-mono text-charcoal-700 block">Sura Medicina Prepagada</span>
-                      <span className="font-extrabold text-lg text-slate-900 font-mono">30 Pacientes</span>
+                      <span className="font-extrabold text-lg text-slate-900 font-mono">0 Pacientes</span>
                     </div>
                     <span className="text-[10px] bg-toast-100 text-toast-500 font-bold p-1 px-2 rounded">Activo 100%</span>
                   </div>
@@ -1323,7 +1320,7 @@ export default function AdminPortal() {
                   <div className="p-4 bg-toast-50/50 rounded-xl border border-toast-200 flex items-center justify-between">
                     <div>
                       <span className="text-[10px] uppercase font-mono text-charcoal-700 block">Colmédica Prepagada</span>
-                      <span className="font-extrabold text-lg text-slate-900 font-mono">18 Pacientes</span>
+                      <span className="font-extrabold text-lg text-slate-900 font-mono">0 Pacientes</span>
                     </div>
                     <span className="text-[10px] bg-toast-100 text-toast-500 font-bold p-1 px-2 rounded">Activo 100%</span>
                   </div>
@@ -1331,7 +1328,7 @@ export default function AdminPortal() {
                   <div className="p-4 bg-toast-50/50 rounded-xl border border-toast-200 flex items-center justify-between">
                     <div>
                       <span className="text-[10px] uppercase font-mono text-charcoal-700 block">Coomeva Medicina Prepagada</span>
-                      <span className="font-extrabold text-lg text-slate-900 font-mono">15 Pacientes</span>
+                      <span className="font-extrabold text-lg text-slate-900 font-mono">0 Pacientes</span>
                     </div>
                     <span className="text-[10px] bg-toast-100 text-toast-500 font-bold p-1 px-2 rounded">Activo 100%</span>
                   </div>
@@ -1342,7 +1339,7 @@ export default function AdminPortal() {
                     <p className="font-bold text-slate-900">Particular (Directo Privado)</p>
                     <p className="text-[11px] text-slate-400">Pacientes con facturación autónoma por PSE o Tarjeta.</p>
                   </div>
-                  <strong className="text-slate-900 font-extrabold font-mono text-xs">25 Pacientes</strong>
+                  <strong className="text-slate-900 font-extrabold font-mono text-xs">0 Pacientes</strong>
                 </div>
 
                 <p className="text-[10.5px] text-slate-400 leading-relaxed italic block pt-1 bg-slate-50/40 p-2.5 rounded border border-slate-200/50">
