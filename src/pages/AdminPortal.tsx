@@ -11,6 +11,7 @@ import {
 import { useAppointments } from '../hooks/useAppointments';
 import { usePatients } from '../hooks/usePatients';
 import InternalChat from '../components/InternalChat';
+import VideollamadaVercel from '../components/VideollamadaVercel';
 import { 
   Patient, 
   PsychologistPerformance,
@@ -976,9 +977,25 @@ export default function AdminPortal() {
               <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mt-6 text-xs text-slate-600 space-y-2">
                 <p className="font-bold text-slate-800">Estatus Operativo de Salas WebRTC:</p>
                 <div className="space-y-1 font-mono text-[11px] bg-white p-3 border border-slate-200 rounded-lg">
-                  <p className="flex items-center text-toast-600 font-semibold">✓ [CORRECTO] Sala "sebas-martinez-cbd1" asignada de forma segura (Dra. Camila Morales Vega).</p>
-                  <p className="text-slate-400">✓ [PROGRAMADO] Sala "valeria-sotomayor-bvf9" reservada para 11:00 AM.</p>
-                  <p className="text-slate-400">✓ [PROGRAMADO] Sala "andres-correa-zpx2" reservada para 02:30 PM.</p>
+                  <p className="text-slate-400 italic">No hay salas activas en este momento.</p>
+                </div>
+              </div>
+
+              {/* INTEGRACIÓN DEL COMPONENTE DE VIDEO PARA C-LEVEL */}
+              <div className="mt-8 border-t border-slate-100 pt-6">
+                <div className="mb-4">
+                  <h3 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center">
+                    <Video className="w-4 h-4 mr-1.5 text-toast-500" />
+                    Espejo Clínico (Monitoreo C-Level)
+                  </h3>
+                  <p className="text-xs text-slate-400">Transmisión en vivo de la sala médica principal. La cámara se inicializa automáticamente para auditoría de calidad.</p>
+                </div>
+                <div className="relative rounded-xl overflow-hidden shadow-xs border border-slate-200 bg-black min-h-[400px]">
+                  <VideollamadaVercel
+                    pacienteId="monitoreo_directivo"
+                    salaId="sala_admin_principal"
+                    tokenSesion={localStorage.getItem('mind_token') || ''}
+                  />
                 </div>
               </div>
             </div>
