@@ -426,19 +426,21 @@ export default function AdminPortal() {
           </button>
 
           {/* Telehealth Controls Panel */}
-          <button
-            onClick={() => setActiveTab('video_admin')}
-            id="tab-adm-video"
-            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
-              activeTab === 'video_admin' 
-                ? 'bg-charcoal-900 text-white font-semibold' 
-                : 'hover:bg-slate-800 hover:text-white'
-            }`}
-          >
-            <Video className="w-5 h-5 shrink-0" />
-            <span className="ml-3 text-xs hidden md:block">Consolas de Video</span>
-            {activeTab === 'video_admin' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
-          </button>
+          {['CEO', 'DIRECTIVO', 'SUPER ADMIN', 'C-LEVEL', 'ESPECIALISTA_B2B'].includes(currentUser.role) && (
+            <button
+              onClick={() => setActiveTab('video_admin')}
+              id="tab-adm-video"
+              className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+                activeTab === 'video_admin' 
+                  ? 'bg-charcoal-900 text-white font-semibold' 
+                  : 'hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <Video className="w-5 h-5 shrink-0" />
+              <span className="ml-3 text-xs hidden md:block">Consolas de Video</span>
+              {activeTab === 'video_admin' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+            </button>
+          )}
 
           {/* advanced Document processing (RAG / AI Loading) */}
           <button
@@ -605,10 +607,9 @@ export default function AdminPortal() {
                     className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todos los Convenios</option>
-                    <option value="Sura">Sura Medicina Prepagada</option>
-                    <option value="Colmédica">Colmédica Prepagada</option>
-                    <option value="MindHealth Global">Particular / Corp Global</option>
-                    <option value="Particular">Particular Exclusivo</option>
+                    {[]?.map((opt: any, idx) => (
+                      <option key={idx} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -621,10 +622,9 @@ export default function AdminPortal() {
                     className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todos los Profesionales</option>
-                    <option value="Dra. Camila Morales Vega">Dra. Camila Morales Vega</option>
-                    <option value="Dr. Roberto Carvajal">Dr. Roberto Carvajal</option>
-                    <option value="Dra. Luisa María Estrada">Dra. Luisa María Estrada</option>
-                    <option value="Dr. Fernando Lopera">Dr. Fernando Lopera</option>
+                    {[]?.map((opt: any, idx) => (
+                      <option key={idx} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -637,10 +637,9 @@ export default function AdminPortal() {
                     className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todas las Especialidades</option>
-                    <option value="Terapia Cognitivo-Conductual">Terapia Cognitivo-Conductual</option>
-                    <option value="Gestalt y Duelo Complejo">Gestalt y Duelo</option>
-                    <option value="Neuropsicología Infantil">Neuropsicología Infantil</option>
-                    <option value="Adicciones y Trauma Clínico">Adicciones y Trauma</option>
+                    {[]?.map((opt: any, idx) => (
+                      <option key={idx} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -653,12 +652,9 @@ export default function AdminPortal() {
                     className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todos los Días</option>
-                    <option value="Lunes">Lunes</option>
-                    <option value="Martes">Martes</option>
-                    <option value="Miércoles">Miércoles</option>
-                    <option value="Jueves">Jueves</option>
-                    <option value="Viernes">Viernes</option>
-                    <option value="Sábado">Sábado</option>
+                    {[]?.map((opt: any, idx) => (
+                      <option key={idx} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -671,8 +667,9 @@ export default function AdminPortal() {
                     className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todos los Meses</option>
-                    <option value="Mayo">Mayo</option>
-                    <option value="Junio">Junio</option>
+                    {[]?.map((opt: any, idx) => (
+                      <option key={idx} value={opt.value}>{opt.label}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -927,7 +924,7 @@ export default function AdminPortal() {
         )}
 
         {/* VIEW: VIDEO-CALL QUALITY CONTROL & BITRATE HUD */}
-        {activeTab === 'video_admin' && (
+        {activeTab === 'video_admin' && ['CEO', 'DIRECTIVO', 'SUPER ADMIN', 'C-LEVEL', 'ESPECIALISTA_B2B'].includes(currentUser.role) && (
           <div className="max-w-7xl mx-auto space-y-6 text-left">
             <div className="bg-white rounded-2xl border border-slate-100 shadow-xs p-5 md:p-6">
               <div className="border-b border-slate-100 pb-3 mb-6">
