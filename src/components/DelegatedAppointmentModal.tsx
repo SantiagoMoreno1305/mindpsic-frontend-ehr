@@ -56,7 +56,6 @@ export default function DelegatedAppointmentModal({
     timeSlot: '',
     appointmentType: 'clinico',
     modality: 'Virtual' as 'Virtual' | 'Presencial',
-    roomUrl: '',
     location: '',
     notes: '',
   });
@@ -117,7 +116,8 @@ export default function DelegatedAppointmentModal({
           timeSlot: form.timeSlot || form.dateTime?.split('T')[1]?.slice(0, 5) || '08:00',
           appointmentType: form.appointmentType,
           modality: form.modality,
-          roomUrl: form.modality === 'Virtual' ? form.roomUrl : null,
+          // WebRTC Control Hub: roomUrl vacío para asignación dinámica
+          roomUrl: form.modality === 'Virtual' ? '' : null,
           notes: form.notes || null,
           status: 'Confirmada',
         }),
@@ -146,7 +146,6 @@ export default function DelegatedAppointmentModal({
       timeSlot: '',
       appointmentType: 'clinico',
       modality: 'Virtual',
-      roomUrl: '',
       location: '',
       notes: '',
     });
@@ -270,7 +269,7 @@ export default function DelegatedAppointmentModal({
                 <button
                   type="button"
                   onClick={() =>
-                    setForm({ ...form, modality: 'Presencial', roomUrl: '' })
+                    setForm({ ...form, modality: 'Presencial' })
                   }
                   className={`p-2.5 rounded-lg text-sm font-medium border flex items-center justify-center gap-2 transition-all ${
                     form.modality === 'Presencial'
@@ -285,20 +284,12 @@ export default function DelegatedAppointmentModal({
 
             {/* ── Campo condicional de modalidad ────────────────────────── */}
             {form.modality === 'Virtual' ? (
-              <div>
-                <label className="block text-[11px] font-semibold text-indigo-700 mb-1">
-                  Enlace Sala Virtual (Jitsi / Meet)
-                </label>
-                <input
-                  type="url"
-                  required
-                  value={form.roomUrl}
-                  onChange={(e) =>
-                    setForm({ ...form, roomUrl: e.target.value })
-                  }
-                  className="w-full border border-indigo-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 bg-indigo-50/30 outline-none"
-                  placeholder="https://meet.jit.si/sala-paciente"
-                />
+              <div className="flex items-center gap-2 p-2.5 rounded-lg bg-indigo-50/50 border border-indigo-100">
+                <span className="text-indigo-500 text-base">🔗</span>
+                <span className="text-[11px] text-indigo-600 font-medium">
+                  La sala virtual será asignada automáticamente por el
+                  enrutador WebRTC al confirmar la cita.
+                </span>
               </div>
             ) : (
               <div>
