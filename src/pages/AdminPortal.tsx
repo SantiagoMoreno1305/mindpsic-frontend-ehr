@@ -12,6 +12,7 @@ import { useAppointments } from '../hooks/useAppointments';
 import { usePatients } from '../hooks/usePatients';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
+import DelegatedAppointmentModal from '../components/DelegatedAppointmentModal';
 import { 
   Patient, 
   PsychologistPerformance,
@@ -36,7 +37,9 @@ import {
   Filter,
   MessageSquare,
   UserPlus,
-  PlusCircle
+  PlusCircle,
+  CalendarPlus,
+  ShieldAlert
 } from 'lucide-react';
 
 type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'equipo' | 'billing_rips' | 'chat';
@@ -44,6 +47,8 @@ type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'equipo' | 'billin
 export default function AdminPortal() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [showDelegatedModal, setShowDelegatedModal] = useState(false);
 
   // Extracción del token de localStorage y consumo de hooks reales
   // IMPORTANT: Hooks MUST be called unconditionally at the top level — Rules of Hooks
@@ -51,7 +56,7 @@ export default function AdminPortal() {
   const { appointments: realAppointments, loading: apptsLoading } = useAppointments(token);
   const { patients: realPatients, loading: patientsLoading } = usePatients(token);
   
-  // Verificación de sesión (sin navigate — App.tsx maneja la guardia por estado)
+  // Verificación de sesión + RBAC (sin navigate — App.tsx maneja la guardia por estado)
   useEffect(() => {
     const storedToken = localStorage.getItem('mind_token');
     const userStr = localStorage.getItem('mind_user');
@@ -64,6 +69,12 @@ export default function AdminPortal() {
     try {
       const userData: User = JSON.parse(userStr);
       setCurrentUser(userData);
+
+      // ── RBAC Guard: Solo CEO y DIRECTIVO pueden acceder al AdminPortal ──
+      const ADMIN_ROLES = ['CEO', 'DIRECTIVO'];
+      if (!ADMIN_ROLES.includes(userData.role)) {
+        setAccessDenied(true);
+      }
     } catch (error) {
       localStorage.removeItem('mind_token');
       localStorage.removeItem('mind_user');
@@ -174,6 +185,28 @@ export default function AdminPortal() {
   // (App.tsx se encargará de mostrar el Login via estado de currentUser)
   if (!currentUser) {
     return null;
+  }
+
+  // ── RBAC: Pantalla de acceso denegado para roles no autorizados ─────────
+  if (accessDenied) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-slate-50">
+        <div className="bg-white border border-red-200 rounded-2xl shadow-lg max-w-md w-full p-8 text-center space-y-4">
+          <div className="w-14 h-14 mx-auto bg-red-50 rounded-full flex items-center justify-center">
+            <ShieldAlert className="w-7 h-7 text-red-500" />
+          </div>
+          <h2 className="text-lg font-bold text-slate-800">Acceso Restringido</h2>
+          <p className="text-sm text-slate-500">
+            Tu rol actual (<strong className="text-slate-700">{currentUser.role}</strong>) no tiene permisos para
+            acceder al Portal Administrativo. Solo los roles <strong>CEO</strong> y <strong>DIRECTIVO</strong> pueden
+            operar esta vista.
+          </p>
+          <p className="text-xs text-slate-400">
+            Si crees que esto es un error, contacta al administrador de tu clínica.
+          </p>
+        </div>
+      </div>
+    );
   }
 
   // Dynamic filter patients by agreement
@@ -483,6 +516,15 @@ export default function AdminPortal() {
                   Sincronización en tiempo real de consultas, psicólogos operativos, e inquilinos cruzados por seguro médico.
                 </p>
               </div>
+
+              {/* ── Botón de Agendamiento Delegado ──────────────────────── */}
+              <button
+                onClick={() => setShowDelegatedModal(true)}
+                className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-md transition-colors shrink-0 cursor-pointer"
+              >
+                <CalendarPlus className="w-4 h-4" />
+                Agendar Cita Delegada
+              </button>
             </div>
 
             {/* COMPLEJO PANEL DE FILTROS CRUZADOS (REQUERIMIENTO PRINCIPAL DE UX/UI) */}
@@ -1353,6 +1395,15 @@ export default function AdminPortal() {
             </div>
           </div>
         )}
+
+        {/* ── Modal de Agendamiento Delegado ──────────────────────────── */}
+        <DelegatedAppointmentModal
+          isOpen={showDelegatedModal}
+          onClose={() => setShowDelegatedModal(false)}
+          onSuccess={() => {
+            // Opcionalmente refrescar la lista de citas del dashboard
+          }}
+        />
       </main>
     </div>
   );

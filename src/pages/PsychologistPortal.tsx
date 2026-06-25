@@ -198,7 +198,7 @@ export default function PsychologistPortal({
       atencionType: appt.type || 'psicología clínica',
       estatus: appt.status || 'Confirmada',
       modalidad: appt.type === 'Virtual' || appt.type === 'Presencial' ? appt.type : 'Virtual',
-      roomUrl: appt.meetingLink || 'https://meet.jit.si/mind_psic_default'
+      roomUrl: appt.roomUrl || 'https://meet.jit.si/mind_psic_default'
     };
   });
   const [reprogramaciones, setReprogramaciones] = useState([

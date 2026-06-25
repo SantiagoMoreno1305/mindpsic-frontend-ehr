@@ -71,6 +71,8 @@ export interface User {
   avatarUrl?: string;
   licenseNumber?: string;
   tenantId?: string; // Identificador del tenant/clínica al que pertenece el usuario
+  specialty?: string; // Especialidad clínica (ej. 'Psicología Clínica')
+  level?: string;     // Nivel del especialista (ej. 'Nivel 2')
 }
 
 export interface Patient {
