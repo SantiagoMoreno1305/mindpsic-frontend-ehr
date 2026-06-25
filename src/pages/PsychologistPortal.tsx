@@ -11,6 +11,7 @@
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import { useState, FormEvent, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAppointments } from '../hooks/useAppointments';
 import {
   User,
   Patient,
@@ -82,6 +83,9 @@ export default function PsychologistPortal({
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
+
+  const token = localStorage.getItem('mind_token');
+  const { appointments: realAppointments, loading: apptsLoading } = useAppointments(token);
 
   // ---------------------------------------------------------------
   // 1. Verificación de sesión al montar el componente
@@ -183,16 +187,20 @@ export default function PsychologistPortal({
   const [noteAlert, setNoteAlert] = useState<string | null>(null);
   const [calendarViewMode, setCalendarViewMode] = useState<'semana' | 'dia'>('semana');
   const [selectedCalendarDay, setSelectedCalendarDay] = useState<number>(0);
-  const [weeklyAppointments, setWeeklyAppointments] = useState([
-    { id: 'ap_1', patientName: 'Sebas Martínez Ocampo', patientId: 'pat_01', dayIndex: 0, timeSlot: '08:00 - 09:00', atencionType: 'psicología clínica', estatus: 'Confirmada', modalidad: 'Virtual', roomUrl: 'https://meet.jit.si/mind_sebas_martinez' },
-    { id: 'ap_2', patientName: 'Valeria Sotomayor', patientId: 'pat_02', dayIndex: 0, timeSlot: '10:00 - 11:00', atencionType: 'psicología del sueño', estatus: 'Confirmada', modalidad: 'Virtual', roomUrl: 'https://meet.jit.si/mind_valeria_sotomayor' },
-    { id: 'ap_3', patientName: 'Andrés Felipe Correa', patientId: 'pat_03', dayIndex: 1, timeSlot: '09:00 - 10:00', atencionType: 'neuropsicología', estatus: 'Pendiente', modalidad: 'Presencial', roomUrl: '' },
-    { id: 'ap_4', patientName: 'Daniela Castro Pérez', patientId: 'pat_04', dayIndex: 2, timeSlot: '11:00 - 12:00', atencionType: 'psicología de la sexualidad', estatus: 'Confirmada', modalidad: 'Virtual', roomUrl: 'https://meet.jit.si/mind_daniela_castro' },
-    { id: 'ap_5', patientName: 'Mauricio Gómez Ruiz', patientId: 'pat_05', dayIndex: 3, timeSlot: '14:30 - 15:30', atencionType: 'psicooncología', estatus: 'Confirmada', modalidad: 'Presencial', roomUrl: '' },
-    { id: 'ap_6', patientName: 'Sebas Martínez Ocampo', patientId: 'pat_01', dayIndex: 4, timeSlot: '16:00 - 17:00', atencionType: 'psicología clínica', estatus: 'Pendiente', modalidad: 'Virtual', roomUrl: 'https://meet.jit.si/mind_sebas_martinez_2' },
-    { id: 'ap_7', patientName: 'Andrés Felipe Correa', patientId: 'pat_03', dayIndex: 5, timeSlot: '10:00 - 11:00', atencionType: 'otro', estatus: 'Confirmada', modalidad: 'Presencial', roomUrl: '' },
-    { id: 'ap_8', patientName: 'Dr. Roberto Carvajal (Sujeto A)', patientId: 'pat_02', dayIndex: 0, timeSlot: '15:00 - 16:00', atencionType: 'toma de datos/investigación', estatus: 'Confirmada', modalidad: 'Virtual', roomUrl: 'https://meet.jit.si/mind_research_session_8' }
-  ]);
+  const weeklyAppointments = (realAppointments || []).map((appt) => {
+    const dateObj = new Date(appt?.dateTime || Date.now());
+    return {
+      id: appt?.id || 'unknown',
+      patientName: `${appt?.patient?.firstName || ''} ${appt?.patient?.lastName || ''}`.trim() || 'Paciente Desconocido',
+      patientId: appt?.patient?.id || 'unknown',
+      dayIndex: dateObj.getDay(),
+      timeSlot: `${dateObj.getHours().toString().padStart(2, '0')}:${dateObj.getMinutes().toString().padStart(2, '0')} - ${(dateObj.getHours() + 1).toString().padStart(2, '0')}:${dateObj.getMinutes().toString().padStart(2, '0')}`,
+      atencionType: appt.type || 'psicología clínica',
+      estatus: appt.status || 'Confirmada',
+      modalidad: appt.type === 'Virtual' || appt.type === 'Presencial' ? appt.type : 'Virtual',
+      roomUrl: appt.meetingLink || 'https://meet.jit.si/mind_psic_default'
+    };
+  });
   const [reprogramaciones, setReprogramaciones] = useState([
     { id: 'rep_1', patientName: 'Valeria Sotomayor', originalTime: 'Mar 15:00', requestedTime: 'Mar 17:30', reason: 'Cruce imprevisto con horario laboral unificado' },
     { id: 'rep_2', patientName: 'Mauricio Gómez Ruiz', originalTime: 'Jue 09:00', requestedTime: 'Vier 11:30', reason: 'Incapacidad médica certificada por migraña' },
@@ -275,7 +283,7 @@ export default function PsychologistPortal({
   }, [activeTab]);
 
   // Mientras se verifica la sesión o currentUser es null, mostramos carga
-  if (authLoading || !currentUser) {
+  if (authLoading || !currentUser || apptsLoading) {
     return (
       <div className="flex items-center justify-center h-screen bg-slate-50">
         <p className="text-lg text-stone-600 font-semibold animate-pulse">
