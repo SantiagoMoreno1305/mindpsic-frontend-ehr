@@ -9,7 +9,7 @@ interface VideollamadaProps {
 
 const VideollamadaVercel: React.FC<VideollamadaProps> = ({ pacienteId, salaId, tokenSesion }) => {
   // Construimos la URL dinámica hacia tu Vercel
-  const urlVercel = `https://mindhealth-nextjs.vercel.app/?paciente=${pacienteId}&room=${salaId}&token=${tokenSesion || ''}`;
+  const urlVercel = `https://mindhealthips.com/?paciente=${pacienteId}&room=${salaId}&token=${tokenSesion || ''}`;
 
   return (
     <div className="w-full h-[600px] rounded-xl overflow-hidden border border-gray-800 bg-[#FAF6F3]">
