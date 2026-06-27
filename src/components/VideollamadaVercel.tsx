@@ -13,11 +13,11 @@ const VideollamadaVercel: React.FC<VideollamadaProps> = ({ pacienteId, salaId, t
 
   return (
     <div className="w-full h-[600px] rounded-xl overflow-hidden border border-gray-800 bg-[#FAF6F3]">
-      <iframe 
-        src={urlVercel} 
-        width="100%" 
-        height="100%" 
-        allow="camera; microphone; fullscreen; display-capture" 
+      <iframe
+        src={urlVercel}
+        width="100%"
+        height="100%"
+        allow="camera; microphone; fullscreen; display-capture"
         className="border-none"
         title="Conectar con plataforma MindHealth"
       />

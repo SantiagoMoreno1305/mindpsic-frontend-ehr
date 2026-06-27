@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User } from '../types';
+import { User, UserRole } from '../types';
 import { useChatModel } from '../hooks/useChatModel';
 import { 
   Send, 
@@ -12,6 +12,22 @@ import {
   Network,
   User as UserIcon
 } from 'lucide-react';
+
+// ── Etiquetas de rol para el banner del chat ─────────────────────────────────
+const CHAT_ROLE_LABELS: Record<UserRole, string> = {
+  CEO:              'CEO / Director',
+  DIRECTIVO:        'Directivo',
+  ESPECIALISTA_B2B: 'Psicólogo Clínico',
+  OPERATIVO:        'Operativo / RRHH',
+  USUARIO_B2C:      'Usuario / Paciente',
+};
+
+/** Devuelve la etiqueta de rol + especialidad (si aplica) para el banner. */
+function getRoleLabel(role: UserRole, specialty?: string): string {
+  const base = CHAT_ROLE_LABELS[role] ?? role;
+  if (specialty && role === 'ESPECIALISTA_B2B') return `${base} • ${specialty}`;
+  return base;
+}
 
 interface InternalChatProps {
   currentUser: User | null;
@@ -193,7 +209,7 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
                       {activeContact.name}
                     </h3>
                     <p className="text-[10px] text-toast-500 font-bold uppercase tracking-wider font-mono">
-                      {activeContact.role === 'DIRECTIVO' ? 'Coordinación Administrativa' : `Colega Médico • ${activeContact.specialty}`}
+                      {getRoleLabel(activeContact.role, activeContact.specialty)}
                     </p>
                   </div>
                 </div>
