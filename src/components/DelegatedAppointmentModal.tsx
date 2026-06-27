@@ -68,7 +68,8 @@ export default function DelegatedAppointmentModal({
 
   const fetchSelectorsData = async () => {
     setIsLoadingData(true);
-    const token = localStorage.getItem('mind_token');
+    const token  = localStorage.getItem('mind_token');
+    const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, ''); // sin slash final
     const headers: HeadersInit = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
@@ -76,21 +77,27 @@ export default function DelegatedAppointmentModal({
 
     try {
       const [specRes, patRes] = await Promise.all([
-        fetch('/api/users/specialists', { headers }),
-        fetch('/api/appointments/patients', { headers }),
+        fetch(`${apiUrl}/api/users/specialists`, { headers }),
+        fetch(`${apiUrl}/api/appointments/patients`, { headers }),
       ]);
 
       if (specRes.ok) {
         const specData = await specRes.json();
-        setSpecialists(Array.isArray(specData) ? specData : []);
+        const list = Array.isArray(specData) ? specData : [];
+        console.log(`[DelegatedModal] Especialistas recibidos: ${list.length}`, list);
+        setSpecialists(list);
+      } else {
+        console.error(`[DelegatedModal] /specialists respondió HTTP ${specRes.status}`);
       }
 
       if (patRes.ok) {
         const patData = await patRes.json();
         setPatients(Array.isArray(patData) ? patData : []);
+      } else {
+        console.error(`[DelegatedModal] /patients respondió HTTP ${patRes.status}`);
       }
     } catch (err) {
-      console.error('[DelegatedModal] Error cargando datos:', err);
+      console.error('[DelegatedModal] Error cargando datos de selectores:', err);
     } finally {
       setIsLoadingData(false);
     }
@@ -102,24 +109,25 @@ export default function DelegatedAppointmentModal({
     setIsSubmitting(true);
 
     try {
-      const token = localStorage.getItem('mind_token');
-      const res = await fetch('/api/appointments', {
+      const token  = localStorage.getItem('mind_token');
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/appointments`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          patientId: form.patientId,
-          userId: form.userId,
-          date: form.dateTime,
-          timeSlot: form.timeSlot || form.dateTime?.split('T')[1]?.slice(0, 5) || '08:00',
+          patientId:       form.patientId,
+          userId:          form.userId,   // ID del psicólogo seleccionado (guardado en Prisma → PsychologistPortal lo carga)
+          date:            form.dateTime,
+          timeSlot:        form.timeSlot || form.dateTime?.split('T')[1]?.slice(0, 5) || '08:00',
           appointmentType: form.appointmentType,
-          modality: form.modality,
+          modality:        form.modality,
           // WebRTC Control Hub: roomUrl vacío para asignación dinámica
-          roomUrl: form.modality === 'Virtual' ? '' : null,
-          notes: form.notes || null,
-          status: 'Confirmada',
+          roomUrl:         form.modality === 'Virtual' ? '' : null,
+          notes:           form.notes || null,
+          status:          'Confirmada',
         }),
       });
 
