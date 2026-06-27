@@ -64,7 +64,7 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
         <div className="flex items-center space-x-2 shrink-0">
           <div className="bg-charcoal-900/60 border border-toast-300/25 px-2.5 py-1 rounded-lg text-[10px] text-toast-200 font-mono flex items-center">
             <span className="w-2 h-2 rounded-full bg-toast-400 mr-1.5 animate-pulse" />
-            REDIS: gateway_v4 [ACTIVE]
+            REDIS: gateway_comunicacion_mind [ACTIVE]
           </div>
         </div>
       </div>
@@ -271,7 +271,7 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
                 </div>
                 <p className="text-[9px] text-toast-400 text-left mt-1.5 flex items-center font-mono">
                   <AlertCircle className="w-3 h-3 mr-1" />
-                  // TODO: Conectar WebSocket a backend de mensajería con REDIS pub/sub integrado vía gateway_v4.
+                  // TODO: Conectar WebSocket a backend de mensajería con REDIS pub/sub integrado vía gateway_comunicacion_mind.
                 </p>
               </form>
             </>

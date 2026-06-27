@@ -22,9 +22,6 @@ export interface DirectMessage {
   isRead: boolean;
 }
 
-// Initial seed contact data matching our mock dataset names
-const INITIAL_CONTACTS: ChatContact[] = [];
-
 // Seed message history indexed by contact id
 const INITIAL_HISTORIES: Record<string, DirectMessage[]> = {};
 
@@ -35,16 +32,47 @@ export function useChatModel(currentUser: User | null) {
   const [isTyping, setIsTyping] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Hydrate contacts lists based on who is logged in (excluding self)
+  // Fetch colleagues from backend API using JWT from localStorage
   useEffect(() => {
-    if (currentUser) {
-      const filtered = INITIAL_CONTACTS.filter(c => c.id !== currentUser.id);
-      setContacts(filtered);
-      // Default set first contact as active
-      if (filtered.length > 0) {
-        setActiveContact(filtered[0]);
-      }
-    }
+    if (!currentUser) return;
+
+    const token = localStorage.getItem('mind_token');
+    const apiUrl = import.meta.env.VITE_API_URL;
+
+    fetch(`${apiUrl}/users/colleagues`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+    })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: any[]) => {
+        // Normalize backend user shape → ChatContact shape
+        const mapped: ChatContact[] = data
+          .filter((u) => u.id !== currentUser.id)
+          .map((u) => ({
+            id: u.id,
+            name: u.name ?? `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
+            role: u.role as UserRole,
+            avatarUrl: u.avatarUrl ?? u.profilePicture ?? undefined,
+            online: u.online ?? false,
+            specialty: u.specialty ?? undefined,
+            lastMessage: undefined,
+            lastMessageTime: undefined,
+            unreadCount: 0,
+          }));
+        setContacts(mapped);
+        if (mapped.length > 0) {
+          setActiveContact(mapped[0]);
+        }
+      })
+      .catch((err) => {
+        console.error('[useChatModel] Error fetching colleagues:', err);
+      });
   }, [currentUser]);
 
   // Handle selecting an active chat contact
@@ -117,7 +145,7 @@ export function useChatModel(currentUser: User | null) {
     //       }
     //    }));
     // 
-    // 3. El servidor recibe por el puerto 3000 de gateway_v4, publica en el canal Redis Pub/Sub:
+    // 3. El servidor recibe por gateway_comunicacion_mind, publica en el canal Redis Pub/Sub:
     //    redisPublisher.publish(`chat:user:${messageObj.receiverId}`, JSON.stringify(payload));
     // 4. Los suscriptores de Redis en otros nodos del clúster Cloud Run capturan el pub/sub
     //    y lo retransmiten vía WebSocket activo al cliente receptor correspondiente.
