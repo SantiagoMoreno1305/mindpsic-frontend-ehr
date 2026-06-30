@@ -48,6 +48,14 @@ export default function DelegatedAppointmentModal({
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // ── Patient Provisioning State ──────────────────────────────────────────
+  const [isCreatingPatient, setIsCreatingPatient] = useState(false);
+  const [isProvisioning, setIsProvisioning] = useState(false);
+  const [newPatientName, setNewPatientName] = useState('');
+  const [newPatientEmail, setNewPatientEmail] = useState('');
+  const [newPatientPhone, setNewPatientPhone] = useState('');
+  const [newPatientDocument, setNewPatientDocument] = useState('');
+
   // ── Form state ──────────────────────────────────────────────────────────
   const [form, setForm] = useState({
     userId: '',        // ID del especialista seleccionado
@@ -146,6 +154,64 @@ export default function DelegatedAppointmentModal({
     }
   };
 
+  const provisionPatient = async () => {
+    if (!newPatientName || !newPatientDocument) {
+      alert('Por favor, ingresa al menos el nombre y el documento del paciente.');
+      return;
+    }
+    
+    setIsProvisioning(true);
+    try {
+      const token  = localStorage.getItem('mind_token');
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/users/provision`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: newPatientName,
+          email: newPatientEmail,
+          phone: newPatientPhone,
+          documentId: newPatientDocument,
+          role: 'USUARIO_B2C'
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+
+      const newPatient = await res.json();
+      
+      const newOption: PatientOption = {
+        id: newPatient.id || newPatient.userId, // Asegurarnos de mapear el ID correcto
+        firstName: newPatientName.split(' ')[0],
+        lastName: newPatientName.split(' ').slice(1).join(' ') || '',
+        documentId: newPatientDocument,
+        email: newPatientEmail,
+      };
+
+      setPatients(prev => [...prev, newOption]);
+      setForm(prev => ({ ...prev, patientId: newOption.id }));
+      setIsCreatingPatient(false);
+      
+      // Reset fields
+      setNewPatientName('');
+      setNewPatientEmail('');
+      setNewPatientPhone('');
+      setNewPatientDocument('');
+      
+      alert('✅ Paciente creado y seleccionado exitosamente.');
+    } catch (err: any) {
+      alert(`❌ Error al crear paciente: ${err.message}`);
+    } finally {
+      setIsProvisioning(false);
+    }
+  };
+
   const resetAndClose = () => {
     setForm({
       userId: '',
@@ -217,26 +283,71 @@ export default function DelegatedAppointmentModal({
 
             {/* ── Selector de Paciente ──────────────────────────────────── */}
             <div>
-              <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                Paciente
-              </label>
-              <select
-                required
-                value={form.patientId}
-                onChange={(e) =>
-                  setForm({ ...form, patientId: e.target.value })
-                }
-                className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-              >
-                <option value="" disabled>
-                  — Seleccione un paciente —
-                </option>
-                {patients.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.firstName} {p.lastName} — Doc: {p.documentId}
+              <div className="flex justify-between items-end mb-1">
+                <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                  Paciente
+                </label>
+                {!isCreatingPatient && (
+                  <button
+                    type="button"
+                    onClick={() => setIsCreatingPatient(true)}
+                    className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+                  >
+                    ➕ Crear nuevo paciente
+                  </button>
+                )}
+              </div>
+              
+              {isCreatingPatient ? (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-500 mb-1">Nombre Completo *</label>
+                      <input type="text" value={newPatientName} onChange={e => setNewPatientName(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="Ej. Juan Pérez" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-500 mb-1">Documento *</label>
+                      <input type="text" value={newPatientDocument} onChange={e => setNewPatientDocument(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="Ej. 12345678" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-500 mb-1">Correo Electrónico</label>
+                      <input type="email" value={newPatientEmail} onChange={e => setNewPatientEmail(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="juan@correo.com" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-500 mb-1">Teléfono</label>
+                      <input type="text" value={newPatientPhone} onChange={e => setNewPatientPhone(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="+57 300..." />
+                    </div>
+                  </div>
+                  <div className="flex justify-end gap-2 pt-1">
+                    <button type="button" onClick={() => setIsCreatingPatient(false)} className="px-3 py-1.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-200 rounded-md transition-colors">
+                      Cancelar
+                    </button>
+                    <button type="button" onClick={provisionPatient} disabled={isProvisioning} className="px-3 py-1.5 text-[11px] font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md transition-colors disabled:opacity-50">
+                      {isProvisioning ? 'Guardando...' : 'Guardar Paciente'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <select
+                  required
+                  value={form.patientId}
+                  onChange={(e) =>
+                    setForm({ ...form, patientId: e.target.value })
+                  }
+                  className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                >
+                  <option value="" disabled>
+                    — Seleccione un paciente —
                   </option>
-                ))}
-              </select>
+                  {patients.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.firstName} {p.lastName} — Doc: {p.documentId}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             {/* ── Fecha y Hora ──────────────────────────────────────────── */}
