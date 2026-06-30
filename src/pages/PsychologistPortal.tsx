@@ -88,7 +88,7 @@ export default function PsychologistPortal({
   const wsRef = useRef<WebSocket | null>(null);
 
   const token = localStorage.getItem('mind_token');
-  const { appointments: realAppointments, loading: apptsLoading } = useAppointments(token);
+  const { appointments: realAppointments, loading: apptsLoading, refetch: refetchAppointments } = useAppointments(token);
   const { unreadCount } = useGlobalChat();
 
   // ---------------------------------------------------------------
@@ -110,11 +110,18 @@ export default function PsychologistPortal({
         if (!res.ok) return;
         const unread = await res.json();
         
+        let shouldRefetch = false;
+
         unread.forEach((notif: any) => {
           if (notif.type === 'NEW_APPOINTMENT') {
             toast.success(notif.message, { duration: 6000, position: 'top-right' });
+            shouldRefetch = true;
           }
         });
+
+        if (shouldRefetch) {
+          refetchAppointments();
+        }
         
         if (unread.length > 0) {
           const ids = unread.map((n: any) => n.id);
@@ -136,6 +143,7 @@ export default function PsychologistPortal({
     const intervalId = setInterval(checkNotifications, 45000); // Polling cada 45 segundos
     
     return () => clearInterval(intervalId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, currentUser]);
 
   // ---------------------------------------------------------------
@@ -520,7 +528,7 @@ export default function PsychologistPortal({
             <div className="relative">
               <MessageSquare className="w-5 h-5 shrink-0" />
               {unreadCount > 0 && (
-                <span className="bg-toast-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full absolute -top-2 -right-2 z-10 shadow-sm shadow-black/20 ring-1 ring-charcoal-950">
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] font-bold h-4 w-4 flex items-center justify-center rounded-full animate-bounce">
                   {unreadCount}
                 </span>
               )}

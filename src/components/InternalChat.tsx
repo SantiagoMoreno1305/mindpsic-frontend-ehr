@@ -112,14 +112,19 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
                 No se encontraron contactos.
               </div>
             ) : (
-              contacts.map((contact) => (
+              contacts.map((contact) => {
+                const hasUnread = contact.unreadCount > 0 && activeContact?.id !== contact.id;
+
+                return (
                 <button
                   key={contact.id}
                   onClick={() => selectContact(contact)}
                   className={`w-full text-left p-2.5 rounded-xl transition-all border flex items-center space-x-3 cursor-pointer ${
                     activeContact?.id === contact.id
                       ? 'bg-charcoal-900 border-charcoal-950 text-white shadow-xs'
-                      : 'bg-white hover:bg-toast-100 border-toast-200 text-charcoal-850'
+                      : hasUnread
+                        ? 'bg-emerald-50 hover:bg-emerald-100 border-emerald-200'
+                        : 'bg-white hover:bg-toast-100 border-toast-200 text-charcoal-850'
                   }`}
                 >
                   <div className="relative shrink-0">
@@ -142,12 +147,12 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
-                      <h4 className="text-xs font-bold truncate pr-1">
+                      <h4 className={`text-xs truncate pr-1 ${hasUnread ? 'font-bold text-slate-900' : 'font-bold'}`}>
                         {contact.name}
                       </h4>
                       {contact.lastMessageTime && (
                         <span className={`text-[9px] font-mono leading-none font-semibold ${
-                          activeContact?.id === contact.id ? 'text-toast-300' : 'text-toast-400'
+                          activeContact?.id === contact.id ? 'text-toast-300' : hasUnread ? 'text-emerald-600' : 'text-toast-400'
                         }`}>
                           {contact.lastMessageTime}
                         </span>
@@ -162,20 +167,18 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
                     )}
                     {contact.lastMessage && (
                       <p className={`text-[10px] truncate mt-1 ${
-                        activeContact?.id === contact.id ? 'text-toast-100/70' : 'text-charcoal-400'
+                        activeContact?.id === contact.id ? 'text-toast-100/70' : hasUnread ? 'font-semibold text-slate-800' : 'text-charcoal-400'
                       }`}>
                         {contact.lastMessage}
                       </p>
                     )}
                   </div>
 
-                  {contact.unreadCount > 0 && activeContact?.id !== contact.id && (
-                    <span className="bg-toast-500 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0">
-                      {contact.unreadCount}
-                    </span>
+                  {hasUnread && (
+                    <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full shrink-0"></div>
                   )}
                 </button>
-              ))
+              )})
             )}
           </div>
         </div>
