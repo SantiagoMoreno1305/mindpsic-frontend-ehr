@@ -12,6 +12,7 @@ import VideollamadaVercel from '../components/VideollamadaVercel';
 import { useState, FormEvent, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppointments } from '../hooks/useAppointments';
+import { toast } from 'react-hot-toast';
 import {
   User,
   Patient,
@@ -86,6 +87,53 @@ export default function PsychologistPortal({
 
   const token = localStorage.getItem('mind_token');
   const { appointments: realAppointments, loading: apptsLoading } = useAppointments(token);
+
+  // ---------------------------------------------------------------
+  // Notificaciones de Citas Delegadas
+  // ---------------------------------------------------------------
+  useEffect(() => {
+    if (authLoading || !currentUser) return;
+
+    const checkNotifications = async () => {
+      try {
+        const token = localStorage.getItem('mind_token');
+        if (!token) return;
+
+        const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+        const res = await fetch(`${apiBase}/api/notifications/unread`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (!res.ok) return;
+        const unread = await res.json();
+        
+        unread.forEach((notif: any) => {
+          if (notif.type === 'NEW_APPOINTMENT') {
+            toast.success(notif.message, { duration: 6000, position: 'top-right' });
+          }
+        });
+        
+        if (unread.length > 0) {
+          const ids = unread.map((n: any) => n.id);
+          await fetch(`${apiBase}/api/notifications/mark-read`, {
+             method: 'POST', 
+             body: JSON.stringify({ ids }),
+             headers: { 
+               'Content-Type': 'application/json',
+               'Authorization': `Bearer ${token}`
+             }
+          });
+        }
+      } catch (error) {
+        // Fallo silencioso en frontend
+      }
+    };
+
+    checkNotifications(); // Chequeo inicial
+    const intervalId = setInterval(checkNotifications, 45000); // Polling cada 45 segundos
+    
+    return () => clearInterval(intervalId);
+  }, [authLoading, currentUser]);
 
   // ---------------------------------------------------------------
   // 1. Verificación de sesión al montar el componente

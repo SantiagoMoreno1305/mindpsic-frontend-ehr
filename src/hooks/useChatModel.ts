@@ -13,6 +13,7 @@
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { User, UserRole } from '../types';
+import { toast } from 'react-hot-toast';
 
 // ── Intervalo del Long Polling (ms) ─────────────────────────────────────────
 const POLL_INTERVAL_MS = 4000; // 4 segundos — balance entre latencia y carga del servidor
@@ -152,6 +153,18 @@ export function useChatModel(currentUser: User | null) {
         if (!Array.isArray(raw) || raw.length === 0) return;
 
         const newMsgs = raw.map(normalizeMessage);
+
+        // --- INYECCIÓN: TOAST DE CHAT ---
+        newMsgs.forEach((msg) => {
+          // Si el mensaje NO es mío Y NO estoy viendo ese chat actualmente
+          if (msg.senderId !== currentUser.id && msg.senderId !== activeContactRef.current?.id) {
+            toast(`Nuevo mensaje recibido`, {
+              icon: '💬',
+              duration: 4000,
+              position: 'top-right'
+            });
+          }
+        });
 
         // Actualizar cursor al mensaje más reciente
         const latestCreatedAt = newMsgs.at(-1)?.createdAt;
