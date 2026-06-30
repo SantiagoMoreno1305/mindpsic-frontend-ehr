@@ -9,9 +9,11 @@
  */
 
 import VideollamadaVercel from '../components/VideollamadaVercel';
+import ClinicalHistoryEditor from '../components/EHR/ClinicalHistoryEditor';
 import { useState, FormEvent, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppointments } from '../hooks/useAppointments';
+import { useGlobalChat } from '../hooks/useGlobalChat';
 import { toast } from 'react-hot-toast';
 import {
   User,
@@ -87,6 +89,7 @@ export default function PsychologistPortal({
 
   const token = localStorage.getItem('mind_token');
   const { appointments: realAppointments, loading: apptsLoading } = useAppointments(token);
+  const { unreadCount } = useGlobalChat();
 
   // ---------------------------------------------------------------
   // Notificaciones de Citas Delegadas
@@ -212,6 +215,9 @@ export default function PsychologistPortal({
   // ---------------------------------------------------------------
   // Estados clínicos y de investigación
   // ---------------------------------------------------------------
+  const [currentView, setCurrentView] = useState<'dashboard' | 'history'>('dashboard');
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [patients, setPatients] = useState<Patient[]>(initialPatients);
   const [progressNotes, setProgressNotes] = useState<ProgressNote[]>(initialProgressNotes);
@@ -513,7 +519,14 @@ export default function PsychologistPortal({
           >
             <div className="relative">
               <MessageSquare className="w-5 h-5 shrink-0" />
-              <span className="absolute -top-1.5 -right-1.5 w-2 h-2 rounded-full bg-toast-500 animate-pulse" />
+              {unreadCount > 0 && (
+                <span className="bg-toast-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full absolute -top-2 -right-2 z-10 shadow-sm shadow-black/20 ring-1 ring-charcoal-950">
+                  {unreadCount}
+                </span>
+              )}
+              {unreadCount === 0 && (
+                <span className="absolute -top-1.5 -right-1.5 w-2 h-2 rounded-full bg-toast-500 animate-pulse" />
+              )}
             </div>
             <span className="ml-3 text-xs hidden md:block">Mensajería Clínica</span>
             {activeTab === 'chat' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
@@ -575,7 +588,16 @@ export default function PsychologistPortal({
         )}
 
         {/* VIEW: DASHBOARD */}
-        {activeTab === 'dashboard' && (
+        {activeTab === 'dashboard' && currentView === 'history' && selectedPatientId && (
+          <div className="max-w-7xl mx-auto">
+            <ClinicalHistoryEditor 
+              patientId={selectedPatientId} 
+              onBack={() => setCurrentView('dashboard')} 
+            />
+          </div>
+        )}
+
+        {activeTab === 'dashboard' && currentView === 'dashboard' && (
           <div className="max-w-7xl mx-auto space-y-6">
             {/* MindPsic Welcome & Active Profile Information Banner – CON DATOS REALES */}
             <div className="bg-gradient-to-r from-charcoal-900 to-charcoal-950 border border-toast-300 rounded-2xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -651,6 +673,17 @@ export default function PsychologistPortal({
                           <span>Unirse</span>
                         </a>
                       )}
+                      
+                      <button
+                        onClick={() => {
+                          setSelectedPatientId(cita.patientId);
+                          setCurrentView('history');
+                        }}
+                        className="text-[10px] bg-charcoal-800 hover:bg-charcoal-900 text-white px-3 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 ml-2"
+                      >
+                        <FileText className="w-3 h-3" />
+                        <span>Ver Historia</span>
+                      </button>
                     </div>
                   </div>
                 ))}
