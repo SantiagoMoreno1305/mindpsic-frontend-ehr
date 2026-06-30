@@ -49,6 +49,7 @@ export default function AdminPortal() {
   const [authLoading, setAuthLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
   const [showDelegatedModal, setShowDelegatedModal] = useState(false);
+  const [editingAppointment, setEditingAppointment] = useState<any>(null);
 
   // Extracción del token de localStorage y consumo de hooks reales
   // IMPORTANT: Hooks MUST be called unconditionally at the top level — Rules of Hooks
@@ -517,9 +518,11 @@ export default function AdminPortal() {
                 </p>
               </div>
 
-              {/* ── Botón de Agendamiento Delegado ──────────────────────── */}
               <button
-                onClick={() => setShowDelegatedModal(true)}
+                onClick={() => {
+                  setEditingAppointment(null);
+                  setShowDelegatedModal(true);
+                }}
                 className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-md transition-colors shrink-0 cursor-pointer"
               >
                 <CalendarPlus className="w-4 h-4" />
@@ -712,9 +715,23 @@ export default function AdminPortal() {
                         <div key={app.id} className="p-3 bg-toast-50/50 border border-toast-200 rounded-xl text-xs space-y-1">
                           <div className="flex justify-between items-center">
                             <strong className="text-slate-900">{app.patientName}</strong>
-                            <span className="text-[9px] font-mono font-bold uppercase tracking-wider bg-charcoal-900 text-white px-1.5 py-0.5 rounded">
-                              Atendido
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  const realAppt = realAppointments?.find((r: any) => r.id === app.id);
+                                  if (realAppt) {
+                                    setEditingAppointment(realAppt);
+                                    setShowDelegatedModal(true);
+                                  }
+                                }}
+                                className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold underline cursor-pointer"
+                              >
+                                Editar
+                              </button>
+                              <span className="text-[9px] font-mono font-bold uppercase tracking-wider bg-charcoal-900 text-white px-1.5 py-0.5 rounded">
+                                Atendido
+                              </span>
+                            </div>
                           </div>
                           <p className="text-[11px] text-slate-600 font-sans">
                             <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} • <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
@@ -765,11 +782,25 @@ export default function AdminPortal() {
                         }`}>
                           <div className="flex justify-between items-center">
                             <strong className="text-slate-900">{app.patientName}</strong>
-                            <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                              app.status === 'Reprogramado' ? 'bg-toast-200 text-toast-500' : 'bg-slate-200 text-slate-800'
-                            }`}>
-                              {app.status === 'Reprogramado' ? 'Reprogramada' : 'No asistió'}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => {
+                                  const realAppt = realAppointments?.find((r: any) => r.id === app.id);
+                                  if (realAppt) {
+                                    setEditingAppointment(realAppt);
+                                    setShowDelegatedModal(true);
+                                  }
+                                }}
+                                className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold underline cursor-pointer"
+                              >
+                                Editar
+                              </button>
+                              <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                                app.status === 'Reprogramado' ? 'bg-toast-200 text-toast-500' : 'bg-slate-200 text-slate-800'
+                              }`}>
+                                {app.status === 'Reprogramado' ? 'Reprogramada' : 'No asistió'}
+                              </span>
+                            </div>
                           </div>
                           <p className="text-[11px] text-slate-600 font-sans">
                             <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} • <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
@@ -1399,9 +1430,13 @@ export default function AdminPortal() {
         {/* ── Modal de Agendamiento Delegado ──────────────────────────── */}
         <DelegatedAppointmentModal
           isOpen={showDelegatedModal}
-          onClose={() => setShowDelegatedModal(false)}
+          onClose={() => {
+            setShowDelegatedModal(false);
+            setEditingAppointment(null);
+          }}
+          initialData={editingAppointment}
           onSuccess={() => {
-            // Opcionalmente refrescar la lista de citas del dashboard
+            window.location.reload(); 
           }}
         />
       </main>

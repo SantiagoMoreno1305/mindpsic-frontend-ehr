@@ -35,12 +35,14 @@ interface DelegatedAppointmentModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess?: () => void;
+  initialData?: any; // Datos de la cita existente para modo edición
 }
 
 export default function DelegatedAppointmentModal({
   isOpen,
   onClose,
   onSuccess,
+  initialData,
 }: DelegatedAppointmentModalProps) {
   // ── Data state ──────────────────────────────────────────────────────────
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
@@ -58,15 +60,42 @@ export default function DelegatedAppointmentModal({
 
   // ── Form state ──────────────────────────────────────────────────────────
   const [form, setForm] = useState({
-    userId: '',        // ID del especialista seleccionado
-    patientId: '',     // ID del paciente seleccionado
-    dateTime: '',
-    timeSlot: '',
-    appointmentType: 'clinico',
-    modality: 'Virtual' as 'Virtual' | 'Presencial',
-    location: '',
-    notes: '',
+    userId: initialData?.psychologist?.id || '',
+    patientId: initialData?.patient?.id || '',
+    dateTime: initialData?.date ? new Date(initialData.date).toISOString().slice(0, 16) : '',
+    timeSlot: initialData?.timeSlot || '',
+    appointmentType: initialData?.appointmentType || 'clinico',
+    modality: initialData?.modality || ('Virtual' as 'Virtual' | 'Presencial'),
+    location: initialData?.location || '',
+    notes: initialData?.notes || '',
   });
+
+  // Si initialData cambia, actualizar el form
+  useEffect(() => {
+    if (initialData) {
+      setForm({
+        userId: initialData.psychologist?.id || initialData.userId || '',
+        patientId: initialData.patient?.id || initialData.patientId || '',
+        dateTime: initialData.date ? new Date(initialData.date).toISOString().slice(0, 16) : '',
+        timeSlot: initialData.timeSlot || '',
+        appointmentType: initialData.appointmentType || 'clinico',
+        modality: initialData.modality || ('Virtual' as 'Virtual' | 'Presencial'),
+        location: initialData.location || '',
+        notes: initialData.notes || '',
+      });
+    } else {
+      setForm({
+        userId: '',
+        patientId: '',
+        dateTime: '',
+        timeSlot: '',
+        appointmentType: 'clinico',
+        modality: 'Virtual',
+        location: '',
+        notes: '',
+      });
+    }
+  }, [initialData, isOpen]);
 
   // ── Fetch datos al abrir ──────────────────────────────────────────────
   useEffect(() => {
@@ -119,13 +148,10 @@ export default function DelegatedAppointmentModal({
     try {
       const token  = localStorage.getItem('mind_token');
       const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
-      const res = await fetch(`${apiUrl}/api/appointments`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const method = initialData?.id ? 'PUT' : 'POST';
+      const endpoint = initialData?.id ? `/api/appointments/${initialData.id}` : '/api/appointments';
+
+      const payload = {
           patientId:       form.patientId,
           userId:          form.userId,   // ID del psicólogo seleccionado (guardado en Prisma → PsychologistPortal lo carga)
           date:            form.dateTime,
@@ -136,7 +162,15 @@ export default function DelegatedAppointmentModal({
           roomUrl:         form.modality === 'Virtual' ? '' : null,
           notes:           form.notes || null,
           status:          'Confirmada',
-        }),
+      };
+
+      const res = await fetch(`${apiUrl}${endpoint}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
       });
 
       if (!res.ok) {
@@ -144,7 +178,7 @@ export default function DelegatedAppointmentModal({
         throw new Error(errData.error || `HTTP ${res.status}`);
       }
 
-      alert('✅ Cita delegada creada exitosamente.');
+      alert(`✅ Cita ${initialData ? 'actualizada' : 'creada'} exitosamente.`);
       onSuccess?.();
       resetAndClose();
     } catch (err: any) {
@@ -236,7 +270,7 @@ export default function DelegatedAppointmentModal({
         <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
           <div>
             <h3 className="text-base font-bold text-slate-800">
-              Agendamiento Delegado
+              {initialData ? 'Editar Cita Delegada' : 'Agendamiento Delegado'}
             </h3>
             <p className="text-[11px] text-slate-400 mt-0.5">
               Asignar cita a un especialista desde la torre de control
@@ -452,10 +486,15 @@ export default function DelegatedAppointmentModal({
               </button>
               <button
                 type="submit"
-                disabled={isSubmitting}
-                className="px-5 py-2 text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors disabled:opacity-50"
+                onClick={handleSubmit}
+                disabled={isSubmitting || isLoadingData}
+                className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+                  isSubmitting
+                    ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm'
+                }`}
               >
-                {isSubmitting ? 'Agendando…' : '📅 Confirmar Cita Delegada'}
+                {isSubmitting ? 'Procesando...' : (initialData ? 'Guardar Cambios' : 'Agendar Cita')}
               </button>
             </div>
           </form>

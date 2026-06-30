@@ -175,7 +175,9 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
                   </div>
 
                   {hasUnread && (
-                    <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full shrink-0"></div>
+                    <div className="flex items-center justify-center min-w-[20px] h-[20px] px-1.5 bg-emerald-500 text-white text-[10px] font-bold rounded-full shrink-0">
+                      {contact.unreadCount}
+                    </div>
                   )}
                 </button>
               )})

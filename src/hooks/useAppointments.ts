@@ -13,7 +13,8 @@ export function useAppointments(token: string | null) {
     }
     try {
       setLoading(true);
-      const res = await fetch('/api/appointments', {
+      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const res = await fetch(`${apiBase}/api/appointments`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) throw new Error('Error al obtener citas');
