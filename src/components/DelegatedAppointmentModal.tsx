@@ -57,6 +57,7 @@ export default function DelegatedAppointmentModal({
   const [newPatientEmail, setNewPatientEmail] = useState('');
   const [newPatientPhone, setNewPatientPhone] = useState('');
   const [newPatientDocument, setNewPatientDocument] = useState('');
+  const [newPatientCorporateClient, setNewPatientCorporateClient] = useState('');
 
   // ── Form state ──────────────────────────────────────────────────────────
   const [form, setForm] = useState({
@@ -68,6 +69,7 @@ export default function DelegatedAppointmentModal({
     modality: initialData?.modality || ('Virtual' as 'Virtual' | 'Presencial'),
     location: initialData?.location || '',
     notes: initialData?.notes || '',
+    corporateClient: initialData?.corporateClient || '',
   });
 
   // Si initialData cambia, actualizar el form
@@ -82,6 +84,7 @@ export default function DelegatedAppointmentModal({
         modality: initialData.modality || ('Virtual' as 'Virtual' | 'Presencial'),
         location: initialData.location || '',
         notes: initialData.notes || '',
+        corporateClient: initialData.corporateClient || '',
       });
     } else {
       setForm({
@@ -93,6 +96,7 @@ export default function DelegatedAppointmentModal({
         modality: 'Virtual',
         location: '',
         notes: '',
+        corporateClient: '',
       });
     }
   }, [initialData, isOpen]);
@@ -162,6 +166,7 @@ export default function DelegatedAppointmentModal({
           roomUrl:         form.modality === 'Virtual' ? '' : null,
           notes:           form.notes || null,
           status:          'Confirmada',
+          corporateClient: form.corporateClient,
       };
 
       const res = await fetch(`${apiUrl}${endpoint}`, {
@@ -209,7 +214,8 @@ export default function DelegatedAppointmentModal({
           email: newPatientEmail,
           phone: newPatientPhone,
           documentId: newPatientDocument,
-          role: 'USUARIO_B2C'
+          role: 'USUARIO_B2C',
+          corporateClient: newPatientCorporateClient
         }),
       });
 
@@ -237,6 +243,7 @@ export default function DelegatedAppointmentModal({
       setNewPatientEmail('');
       setNewPatientPhone('');
       setNewPatientDocument('');
+      setNewPatientCorporateClient('');
       
       alert('✅ Paciente creado y seleccionado exitosamente.');
     } catch (err: any) {
@@ -354,7 +361,23 @@ export default function DelegatedAppointmentModal({
                       <input type="text" value={newPatientPhone} onChange={e => setNewPatientPhone(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="+57 300..." />
                     </div>
                   </div>
-                  <div className="flex justify-end gap-2 pt-1">
+                  <div className="mt-2">
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">Convenio / Cliente Corporativo</label>
+                    <select
+                      required
+                      value={newPatientCorporateClient}
+                      onChange={e => setNewPatientCorporateClient(e.target.value)}
+                      className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
+                    >
+                      <option value="" disabled>Seleccione un convenio</option>
+                      <option value="Particular">Particular</option>
+                      <option value="Sura">Sura</option>
+                      <option value="Constructora Las Galias">Constructora Las Galias</option>
+                      <option value="Alianza Educativa">Alianza Educativa</option>
+                      <option value="Colaboradores">Colaboradores</option>
+                    </select>
+                  </div>
+                  <div className="flex justify-end gap-2 pt-1 mt-2">
                     <button type="button" onClick={() => setIsCreatingPatient(false)} className="px-3 py-1.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-200 rounded-md transition-colors">
                       Cancelar
                     </button>
@@ -382,6 +405,26 @@ export default function DelegatedAppointmentModal({
                   ))}
                 </select>
               )}
+            </div>
+
+            {/* ── Convenio / Cliente Corporativo ────────────────────────── */}
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
+                Convenio / Cliente Corporativo
+              </label>
+              <select
+                required
+                value={form.corporateClient}
+                onChange={(e) => setForm({ ...form, corporateClient: e.target.value })}
+                className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+              >
+                <option value="" disabled>— Seleccione un convenio —</option>
+                <option value="Particular">Particular</option>
+                <option value="Sura">Sura</option>
+                <option value="Constructora Las Galias">Constructora Las Galias</option>
+                <option value="Alianza Educativa">Alianza Educativa</option>
+                <option value="Colaboradores">Colaboradores</option>
+              </select>
             </div>
 
             {/* ── Fecha y Hora ──────────────────────────────────────────── */}

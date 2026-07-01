@@ -150,13 +150,20 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
                       <h4 className={`text-xs truncate pr-1 ${hasUnread ? 'font-bold text-slate-900' : 'font-bold'}`}>
                         {contact.name}
                       </h4>
-                      {contact.lastMessageTime && (
-                        <span className={`text-[9px] font-mono leading-none font-semibold ${
-                          activeContact?.id === contact.id ? 'text-toast-300' : hasUnread ? 'text-emerald-600' : 'text-toast-400'
-                        }`}>
-                          {contact.lastMessageTime}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2 shrink-0">
+                        {contact.lastMessageTime && (
+                          <span className={`text-[9px] font-mono leading-none font-semibold ${
+                            activeContact?.id === contact.id ? 'text-toast-300' : hasUnread ? 'text-emerald-600' : 'text-toast-400'
+                          }`}>
+                            {contact.lastMessageTime}
+                          </span>
+                        )}
+                        {hasUnread && (
+                          <div className="bg-emerald-500 rounded-full h-5 w-5 flex items-center justify-center text-white text-[10px] font-bold">
+                            {contact.unreadCount}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     {contact.specialty && (
                       <p className={`text-[9px] truncate tracking-wide uppercase font-mono mt-0.5 ${
@@ -167,18 +174,12 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
                     )}
                     {contact.lastMessage && (
                       <p className={`text-[10px] truncate mt-1 ${
-                        activeContact?.id === contact.id ? 'text-toast-100/70' : hasUnread ? 'font-semibold text-slate-800' : 'text-charcoal-400'
+                        activeContact?.id === contact.id ? 'text-toast-100/70' : hasUnread ? 'font-bold text-slate-900' : 'text-charcoal-400'
                       }`}>
                         {contact.lastMessage}
                       </p>
                     )}
                   </div>
-
-                  {hasUnread && (
-                    <div className="flex items-center justify-center min-w-[20px] h-[20px] px-1.5 bg-emerald-500 text-white text-[10px] font-bold rounded-full shrink-0">
-                      {contact.unreadCount}
-                    </div>
-                  )}
                 </button>
               )})
             )}

@@ -671,9 +671,9 @@ export default function PsychologistPortal({
                         </span>
                       </div>
                       
-                      {(cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL') && cita.roomUrl && (
+                      {(cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL') && (
                         <a 
-                          href={cita.roomUrl} 
+                          href="https://mindhealthips.com/" 
                           target="_blank" 
                           rel="noopener noreferrer"
                           className="text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1"
