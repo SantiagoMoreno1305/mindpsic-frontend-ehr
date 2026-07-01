@@ -179,13 +179,40 @@ export function useChatModel(currentUser: User | null) {
           // Actualizar lastMessage del contacto en la lista lateral
           const lastMsg = fresh.at(-1);
           if (lastMsg) {
-            setContacts((cs) =>
-              cs.map((c) =>
-                c.id === contact.id
-                  ? { ...c, lastMessage: lastMsg.content, lastMessageTime: lastMsg.timestamp }
-                  : c
-              )
-            );
+            setContacts((cs) => {
+              // Create a map to track updates per sender
+              const updatesBySender = new Map();
+              
+              fresh.forEach(msg => {
+                const isFromActive = msg.senderId === contact.id;
+                const targetContactId = isFromActive ? msg.senderId : (msg.senderId === currentUser.id ? msg.receiverId : msg.senderId);
+                
+                updatesBySender.set(targetContactId, {
+                  lastMessage: msg.content,
+                  lastMessageTime: msg.timestamp,
+                  // Si no es el chat activo y el mensaje no es mío, incrementamos
+                  incrementUnread: (targetContactId !== contact.id && msg.senderId !== currentUser.id)
+                });
+              });
+
+              let updatedContacts = [...cs];
+              
+              // Apply updates and reorder
+              updatesBySender.forEach((update, targetId) => {
+                const index = updatedContacts.findIndex(c => c.id === targetId);
+                if (index > -1) {
+                  const [movedContact] = updatedContacts.splice(index, 1);
+                  updatedContacts.unshift({
+                    ...movedContact,
+                    lastMessage: update.lastMessage,
+                    lastMessageTime: update.lastMessageTime,
+                    unreadCount: movedContact.unreadCount + (update.incrementUnread ? 1 : 0)
+                  });
+                }
+              });
+
+              return updatedContacts;
+            });
           }
 
           return [...prev, ...fresh];
