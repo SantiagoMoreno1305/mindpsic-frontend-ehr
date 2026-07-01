@@ -692,6 +692,35 @@ export default function PsychologistPortal({
                         <FileText className="w-3 h-3" />
                         <span>Ver Historia</span>
                       </button>
+
+                      <button
+                        onClick={async () => {
+                          try {
+                            const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+                            const token = localStorage.getItem('mind_token');
+                            const res = await fetch(`${apiBase}/api/appointments/${cita.id}`, {
+                              method: 'PUT',
+                              headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${token}`
+                              },
+                              body: JSON.stringify({ status: 'ATTENDED' })
+                            });
+                            if (res.ok) {
+                              toast.success('Cita marcada como Atendida');
+                              refetchAppointments();
+                            } else {
+                              toast.error('Error al marcar cita');
+                            }
+                          } catch (err) {
+                            console.error('Error marking appointment:', err);
+                          }
+                        }}
+                        className="text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 ml-2"
+                      >
+                        <CheckCircle className="w-3 h-3" />
+                        <span>Marcar Atendido</span>
+                      </button>
                     </div>
                   </div>
                 ))}
