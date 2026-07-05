@@ -9,10 +9,12 @@
  * Endpoints consumidos:
  *   GET  /api/users/specialists      → Lista de psicólogos del tenant
  *   GET  /api/appointments/patients   → Lista de pacientes del tenant
+ *   GET  /api/companies               → Lista de Socios Corporativos reales
  *   POST /api/appointments            → Creación de la cita delegada
  */
 
 import { useState, useEffect, FormEvent } from 'react';
+import { apiFetch } from '../lib/apiClient';
 
 // ── Tipos locales (alineados con Prisma pero desacoplados) ────────────────
 interface Specialist {
@@ -31,6 +33,12 @@ interface PatientOption {
   email?: string | null;
 }
 
+interface CompanyOption {
+  id: string;
+  name: string;
+  domain?: string | null;
+}
+
 interface DelegatedAppointmentModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -47,6 +55,7 @@ export default function DelegatedAppointmentModal({
   // ── Data state ──────────────────────────────────────────────────────────
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
   const [patients, setPatients] = useState<PatientOption[]>([]);
+  const [companies, setCompanies] = useState<CompanyOption[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -109,17 +118,12 @@ export default function DelegatedAppointmentModal({
 
   const fetchSelectorsData = async () => {
     setIsLoadingData(true);
-    const token  = localStorage.getItem('mind_token');
-    const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, ''); // sin slash final
-    const headers: HeadersInit = {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    };
 
     try {
-      const [specRes, patRes] = await Promise.all([
-        fetch(`${apiUrl}/api/users/specialists`, { headers }),
-        fetch(`${apiUrl}/api/appointments/patients`, { headers }),
+      const [specRes, patRes, compRes] = await Promise.all([
+        apiFetch('/api/users/specialists'),
+        apiFetch('/api/appointments/patients'),
+        apiFetch('/api/companies'),
       ]);
 
       if (specRes.ok) {
@@ -136,6 +140,14 @@ export default function DelegatedAppointmentModal({
         setPatients(Array.isArray(patData) ? patData : []);
       } else {
         console.error(`[DelegatedModal] /patients respondió HTTP ${patRes.status}`);
+      }
+
+      if (compRes.ok) {
+        const compData = await compRes.json();
+        setCompanies(Array.isArray(compData) ? compData : []);
+        console.log(`[DelegatedModal] Empresas/Convenios recibidos: ${(Array.isArray(compData) ? compData : []).length}`);
+      } else {
+        console.error(`[DelegatedModal] /companies respondió HTTP ${compRes.status}`);
       }
     } catch (err) {
       console.error('[DelegatedModal] Error cargando datos de selectores:', err);
@@ -155,6 +167,9 @@ export default function DelegatedAppointmentModal({
       const method = initialData?.id ? 'PUT' : 'POST';
       const endpoint = initialData?.id ? `/api/appointments/${initialData.id}` : '/api/appointments';
 
+      // Resolver el companyId a partir del nombre seleccionado en corporateClient
+      const selectedCompany = companies.find(c => c.name === form.corporateClient);
+
       const payload = {
           patientId:       form.patientId,
           userId:          form.userId,   // ID del psicólogo seleccionado (guardado en Prisma → PsychologistPortal lo carga)
@@ -167,6 +182,7 @@ export default function DelegatedAppointmentModal({
           notes:           form.notes || null,
           status:          'Confirmada',
           corporateClient: form.corporateClient,
+          companyId:       selectedCompany?.id || null,
       };
 
       const res = await fetch(`${apiUrl}${endpoint}`, {
@@ -263,6 +279,7 @@ export default function DelegatedAppointmentModal({
       modality: 'Virtual',
       location: '',
       notes: '',
+      corporateClient: '',
     });
     onClose();
   };
@@ -371,10 +388,9 @@ export default function DelegatedAppointmentModal({
                     >
                       <option value="" disabled>Seleccione un convenio</option>
                       <option value="Particular">Particular</option>
-                      <option value="Sura">Sura</option>
-                      <option value="Constructora Las Galias">Constructora Las Galias</option>
-                      <option value="Alianza Educativa">Alianza Educativa</option>
-                      <option value="Colaboradores">Colaboradores</option>
+                      {companies.map((c) => (
+                        <option key={c.id} value={c.name}>{c.name}</option>
+                      ))}
                     </select>
                   </div>
                   <div className="flex justify-end gap-2 pt-1 mt-2">
@@ -420,10 +436,9 @@ export default function DelegatedAppointmentModal({
               >
                 <option value="" disabled>— Seleccione un convenio —</option>
                 <option value="Particular">Particular</option>
-                <option value="Sura">Sura</option>
-                <option value="Constructora Las Galias">Constructora Las Galias</option>
-                <option value="Alianza Educativa">Alianza Educativa</option>
-                <option value="Colaboradores">Colaboradores</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.name}>{c.name}</option>
+                ))}
               </select>
             </div>
 
