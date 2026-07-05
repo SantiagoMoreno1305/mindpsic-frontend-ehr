@@ -61,6 +61,7 @@ export default function DelegatedAppointmentModal({
 
   // ── Patient Provisioning State ──────────────────────────────────────────
   const [isCreatingPatient, setIsCreatingPatient] = useState(false);
+  const [isEditingPatient, setIsEditingPatient] = useState(false);
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [newPatientName, setNewPatientName] = useState('');
   const [newPatientEmail, setNewPatientEmail] = useState('');
@@ -219,19 +220,20 @@ export default function DelegatedAppointmentModal({
     try {
       const token  = localStorage.getItem('mind_token');
       const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
-      const res = await fetch(`${apiUrl}/api/users/provision`, {
+      const res = await fetch(`${apiUrl}/api/patients`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          name: newPatientName,
+          firstName: newPatientName.split(' ')[0],
+          lastName: newPatientName.split(' ').slice(1).join(' ') || '.',
           email: newPatientEmail,
           phone: newPatientPhone,
           documentId: newPatientDocument,
-          role: 'USUARIO_B2C',
-          corporateClient: newPatientCorporateClient
+          corporateClient: newPatientCorporateClient,
+          psychologistId: form.userId || undefined
         }),
       });
 
@@ -243,11 +245,11 @@ export default function DelegatedAppointmentModal({
       const newPatient = await res.json();
       
       const newOption: PatientOption = {
-        id: newPatient.id || newPatient.userId, // Asegurarnos de mapear el ID correcto
-        firstName: newPatientName.split(' ')[0],
-        lastName: newPatientName.split(' ').slice(1).join(' ') || '',
-        documentId: newPatientDocument,
-        email: newPatientEmail,
+        id: newPatient.id,
+        firstName: newPatient.firstName,
+        lastName: newPatient.lastName,
+        documentId: newPatient.documentId,
+        email: newPatient.email,
       };
 
       setPatients(prev => [...prev, newOption]);
@@ -281,7 +283,72 @@ export default function DelegatedAppointmentModal({
       notes: '',
       corporateClient: '',
     });
+    setIsEditingPatient(false);
+    setIsCreatingPatient(false);
     onClose();
+  };
+
+  const selectedPatient = patients.find(p => p.id === form.patientId);
+
+  const startEditPatient = () => {
+    if (!selectedPatient) return;
+    setNewPatientName(`${selectedPatient.firstName} ${selectedPatient.lastName}`.trim());
+    setNewPatientDocument(selectedPatient.documentId);
+    setNewPatientEmail(selectedPatient.email || '');
+    // Fetch remaining fields or leave blank if not present
+    setNewPatientPhone(''); 
+    setNewPatientCorporateClient('');
+    setIsEditingPatient(true);
+  };
+
+  const updatePatient = async () => {
+    if (!newPatientName || !newPatientDocument) {
+      alert('Por favor, ingresa al menos el nombre y el documento del paciente.');
+      return;
+    }
+    
+    setIsProvisioning(true);
+    try {
+      const token  = localStorage.getItem('mind_token');
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/patients/${form.patientId}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          firstName: newPatientName.split(' ')[0],
+          lastName: newPatientName.split(' ').slice(1).join(' ') || '.',
+          email: newPatientEmail,
+          phone: newPatientPhone,
+          documentId: newPatientDocument,
+          corporateClient: newPatientCorporateClient
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+
+      const updatedPatient = await res.json();
+      
+      setPatients(prev => prev.map(p => p.id === updatedPatient.id ? {
+        ...p,
+        firstName: updatedPatient.firstName,
+        lastName: updatedPatient.lastName,
+        documentId: updatedPatient.documentId,
+        email: updatedPatient.email
+      } : p));
+      
+      setIsEditingPatient(false);
+      alert('✅ Paciente actualizado exitosamente.');
+    } catch (err: any) {
+      alert(`❌ Error al actualizar paciente: ${err.message}`);
+    } finally {
+      setIsProvisioning(false);
+    }
   };
 
   // ── Render ──────────────────────────────────────────────────────────────
@@ -402,24 +469,76 @@ export default function DelegatedAppointmentModal({
                     </button>
                   </div>
                 </div>
+              ) : isEditingPatient ? (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-500 mb-1">Nombre Completo *</label>
+                      <input type="text" value={newPatientName} onChange={e => setNewPatientName(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="Ej. Juan Pérez" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-500 mb-1">Documento *</label>
+                      <input type="text" value={newPatientDocument} onChange={e => setNewPatientDocument(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="Ej. 12345678" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-500 mb-1">Correo Electrónico</label>
+                      <input type="email" value={newPatientEmail} onChange={e => setNewPatientEmail(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="juan@correo.com" />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-semibold text-slate-500 mb-1">Teléfono</label>
+                      <input type="text" value={newPatientPhone} onChange={e => setNewPatientPhone(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="+57 300..." />
+                    </div>
+                  </div>
+                  <div className="mt-2">
+                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">Convenio / Cliente Corporativo</label>
+                    <select
+                      value={newPatientCorporateClient}
+                      onChange={e => setNewPatientCorporateClient(e.target.value)}
+                      className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
+                    >
+                      <option value="" disabled>Seleccione un convenio</option>
+                      <option value="Particular">Particular</option>
+                      {companies.map((c) => (
+                        <option key={c.id} value={c.name}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex justify-end gap-2 pt-1 mt-2">
+                    <button type="button" onClick={() => setIsEditingPatient(false)} className="px-3 py-1.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-200 rounded-md transition-colors">
+                      Cancelar
+                    </button>
+                    <button type="button" onClick={updatePatient} disabled={isProvisioning} className="px-3 py-1.5 text-[11px] font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-md transition-colors disabled:opacity-50">
+                      {isProvisioning ? 'Guardando...' : 'Guardar Cambios'}
+                    </button>
+                  </div>
+                </div>
               ) : (
-                <select
-                  required
-                  value={form.patientId}
-                  onChange={(e) =>
-                    setForm({ ...form, patientId: e.target.value })
-                  }
-                  className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                >
-                  <option value="" disabled>
-                    — Seleccione un paciente —
-                  </option>
-                  {patients.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.firstName} {p.lastName} — Doc: {p.documentId}
+                <>
+                  <select
+                    required
+                    value={form.patientId}
+                    onChange={(e) =>
+                      setForm({ ...form, patientId: e.target.value })
+                    }
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  >
+                    <option value="" disabled>
+                      — Seleccione un paciente —
                     </option>
-                  ))}
-                </select>
+                    {patients.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.firstName} {p.lastName} — Doc: {p.documentId}
+                      </option>
+                    ))}
+                  </select>
+                  {form.patientId && !isCreatingPatient && !isEditingPatient && (
+                    <button type="button" onClick={startEditPatient} className="text-[11px] font-semibold text-indigo-600 hover:underline mt-1.5 block">
+                      ✏️ Corregir datos de este paciente
+                    </button>
+                  )}
+                </>
               )}
             </div>
 
