@@ -225,6 +225,32 @@ export default function PsychologistPortal({
   // ---------------------------------------------------------------
   const [currentView, setCurrentView] = useState<'dashboard' | 'history'>('dashboard');
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  const [selectedSessionForModal, setSelectedSessionForModal] = useState<any>(null);
+
+  const handleMarkAttendance = async (status: string) => {
+    if (!selectedSessionForModal) return;
+    try {
+      const token = localStorage.getItem('mind_token');
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/appointments/${selectedSessionForModal.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ status })
+      });
+      if (res.ok) {
+        toast.success(`Cita marcada como ${status}`);
+        refetchAppointments();
+        setSelectedSessionForModal(null);
+      } else {
+        toast.error('Error al actualizar la cita');
+      }
+    } catch (e) {
+      toast.error('Error al actualizar la cita');
+    }
+  };
   
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [patients, setPatients] = useState<Patient[]>(initialPatients);
@@ -813,8 +839,7 @@ export default function PsychologistPortal({
                                       style={{ top: `${top}px`, height: `${height}px` }}
                                     >
                                       <div onClick={() => {
-                                        setSelectedPatientId(app.patientId);
-                                        setCurrentView('history');
+                                        setSelectedSessionForModal(app);
                                       }}>
                                         <div className="text-[11px] font-bold text-blue-900 leading-tight truncate">{app.patientName}</div>
                                         <div className="text-[9px] text-blue-600 font-mono mt-0.5">{app.timeSlot}</div>
@@ -826,14 +851,16 @@ export default function PsychologistPortal({
                                         </span>
                                         <div className="flex items-center gap-1">
                                           {(app.modalidad === 'Virtual' || (app as any).modality === 'VIRTUAL') && (
-                                            <a 
-                                              href={app.roomUrl} 
-                                              target="_blank" 
-                                              rel="noopener noreferrer"
-                                              className="text-[9px] bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded shadow-xs"
+                                            <button 
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                const url = app.roomUrl?.startsWith('http') ? app.roomUrl : `https://mindhealthips.com${app.roomUrl?.startsWith('/') ? app.roomUrl : '/' + (app.roomUrl || '')}`;
+                                                window.open(url, '_blank');
+                                              }}
+                                              className="text-[9px] bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded shadow-xs cursor-pointer"
                                             >
                                               Unirse
-                                            </a>
+                                            </button>
                                           )}
                                         </div>
                                       </div>
@@ -941,6 +968,64 @@ export default function PsychologistPortal({
           </div>
         )}
       </main>
+
+      {/* MODAL DE DETALLES DE SESIÓN */}
+      {selectedSessionForModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden text-left">
+            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+              <div>
+                <h3 className="text-base font-bold text-slate-800">Detalles de la Cita</h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">Gestión de sesión clínica</p>
+              </div>
+              <button
+                onClick={() => setSelectedSessionForModal(null)}
+                className="text-slate-400 hover:text-slate-600 text-lg leading-none cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Paciente</label>
+                <div className="text-sm font-bold text-slate-800">{selectedSessionForModal.patientName}</div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Día</label>
+                  <div className="text-sm text-slate-700">{selectedSessionForModal.dayIndex !== undefined ? ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][selectedSessionForModal.dayIndex] : 'Fecha no definida'}</div>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Hora</label>
+                  <div className="text-sm text-slate-700 font-mono">{selectedSessionForModal.timeSlot}</div>
+                </div>
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Notas / Observaciones</label>
+                <div className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  {selectedSessionForModal.notes || selectedSessionForModal.reason || 'Sin observaciones previas.'}
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+              <button
+                onClick={() => handleMarkAttendance('No Atendido')}
+                className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-xs rounded-lg transition-colors cursor-pointer"
+              >
+                No Asistió
+              </button>
+              <button
+                onClick={() => handleMarkAttendance('Atendida')}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer"
+              >
+                Marcar Atendido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

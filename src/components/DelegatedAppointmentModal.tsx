@@ -479,21 +479,6 @@ export default function DelegatedAppointmentModal({
                       <input type="text" value={newPatientPhone} onChange={e => setNewPatientPhone(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="+57 300..." />
                     </div>
                   </div>
-                  <div className="mt-2">
-                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">Convenio / Cliente Corporativo</label>
-                    <select
-                      required
-                      value={newPatientCorporateClient}
-                      onChange={e => setNewPatientCorporateClient(e.target.value)}
-                      className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
-                    >
-                      <option value="" disabled>Seleccione un convenio</option>
-                      <option value="Particular">Particular</option>
-                      {companies.map((c) => (
-                        <option key={c.id} value={c.name}>{c.name}</option>
-                      ))}
-                    </select>
-                  </div>
                   <div className="flex justify-end gap-2 pt-1 mt-2">
                     <button type="button" onClick={() => setIsCreatingPatient(false)} className="px-3 py-1.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-200 rounded-md transition-colors">
                       Cancelar
@@ -524,20 +509,6 @@ export default function DelegatedAppointmentModal({
                       <label className="block text-[10px] font-semibold text-slate-500 mb-1">Teléfono</label>
                       <input type="text" value={newPatientPhone} onChange={e => setNewPatientPhone(e.target.value)} className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white" placeholder="+57 300..." />
                     </div>
-                  </div>
-                  <div className="mt-2">
-                    <label className="block text-[10px] font-semibold text-slate-500 mb-1">Convenio / Cliente Corporativo</label>
-                    <select
-                      value={newPatientCorporateClient}
-                      onChange={e => setNewPatientCorporateClient(e.target.value)}
-                      className="w-full border border-slate-200 rounded-md p-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500 bg-white"
-                    >
-                      <option value="" disabled>Seleccione un convenio</option>
-                      <option value="Particular">Particular</option>
-                      {companies.map((c) => (
-                        <option key={c.id} value={c.name}>{c.name}</option>
-                      ))}
-                    </select>
                   </div>
                   <div className="flex justify-end gap-2 pt-1 mt-2">
                     <button type="button" onClick={() => setIsEditingPatient(false)} className="px-3 py-1.5 text-[11px] font-semibold text-slate-600 hover:bg-slate-200 rounded-md transition-colors">

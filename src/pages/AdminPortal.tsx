@@ -111,6 +111,7 @@ export default function AdminPortal() {
       });
       if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
       const data = await res.json();
+      console.log('RAW METRICS RESPONSE:', data);
       const metrics = data.data || data || {};
       
       setDashboardMetrics({
