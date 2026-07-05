@@ -180,7 +180,7 @@ export default function DelegatedAppointmentModal({
           // WebRTC Control Hub: roomUrl vacío para asignación dinámica
           roomUrl:         form.modality === 'Virtual' ? '' : null,
           notes:           form.notes || null,
-          status:          'Confirmada',
+          status:          initialData?.id ? 'Reprogramada' : 'Confirmada',
           corporateClient: form.corporateClient,
           companyId:       selectedCompany?.id || null,
       };

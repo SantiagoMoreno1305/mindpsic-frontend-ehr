@@ -726,7 +726,7 @@ export default function AdminPortal() {
                                 }}
                                 className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold underline cursor-pointer"
                               >
-                                Editar
+                                Reprogramar / Editar
                               </button>
                               <span className="text-[9px] font-mono font-bold uppercase tracking-wider bg-charcoal-900 text-white px-1.5 py-0.5 rounded">
                                 Atendido
@@ -793,7 +793,7 @@ export default function AdminPortal() {
                                 }}
                                 className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold underline cursor-pointer"
                               >
-                                Editar
+                                Reprogramar / Editar
                               </button>
                               <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
                                 app.status === 'Reprogramado' ? 'bg-toast-200 text-toast-500' : 'bg-slate-200 text-slate-800'
