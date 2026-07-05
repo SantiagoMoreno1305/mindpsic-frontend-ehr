@@ -13,13 +13,15 @@ export function usePatients(token: string | null) {
     }
     try {
       setLoading(true);
-      const res = await fetch('/api/patients', {
+      const apiUrl = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/patients`, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (!res.ok) throw new Error('Error al obtener pacientes');
+      if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
       const data = await res.json();
       setPatients(Array.isArray(data) ? data : []);
     } catch (err: any) {
+      console.error('Error fetching patients:', err);
       setError(err.message);
     } finally {
       setLoading(false);

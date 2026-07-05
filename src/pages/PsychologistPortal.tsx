@@ -247,8 +247,8 @@ export default function PsychologistPortal({
   });
   const [isSigningNote, setIsSigningNote] = useState(false);
   const [noteAlert, setNoteAlert] = useState<string | null>(null);
-  const [calendarViewMode, setCalendarViewMode] = useState<'semana' | 'dia'>('semana');
-  const [selectedCalendarDay, setSelectedCalendarDay] = useState<number>(0);
+  const [view, setView] = useState<'month' | 'week' | 'day'>('day');
+  const [currentDate, setCurrentDate] = useState(new Date());
   const weeklyAppointments = (realAppointments || []).map((appt) => {
     const dateObj = new Date(appt?.dateTime || Date.now());
     return {
@@ -648,117 +648,206 @@ export default function PsychologistPortal({
             {/* Aquí iría el resto del dashboard (calendario, pacientes recientes, notas clínicas, etc.) 
                 Por razones de espacio no se replica todo, pero la estructura es idéntica a la original,
                 usando currentUser en lugar de valores estáticos. */}
-            <div className="bg-white rounded-xl border border-slate-100 p-5 shadow-xs text-left">
-              <h2 className="text-lg font-bold mb-4 text-slate-800">Calendario de Citas (Vista Diaria)</h2>
-              <div className="relative border border-slate-200 rounded-lg overflow-y-auto h-[500px] bg-slate-50">
-                {/* Time Grid Background */}
-                <div className="absolute top-0 left-0 w-full min-w-[600px]">
-                  {Array.from({ length: 11 }, (_, i) => i + 8).map(hour => (
-                    <div key={hour} className="flex border-b border-slate-200 h-24 box-border">
-                      <div className="w-20 shrink-0 border-r border-slate-200 bg-white flex items-start justify-center pt-2">
-                        <span className="text-xs font-semibold text-slate-500">
-                          {hour.toString().padStart(2, '0')}:00
-                        </span>
-                      </div>
-                      <div className="flex-1 bg-white relative">
-                        {/* Half-hour divider line */}
-                        <div className="absolute top-12 left-0 w-full border-b border-dashed border-slate-100"></div>
-                      </div>
-                    </div>
-                  ))}
-
-                  {/* Appointments overlays */}
-                  <div className="absolute top-0 left-20 right-0 bottom-0 pointer-events-none">
-                    {weeklyAppointments.map((cita) => {
-                      // Solo mostrar citas que estén entre 08:00 y 18:00
-                      if (cita.startHour < 8 || cita.startHour > 18) return null;
-                      
-                      const topPx = (cita.startHour - 8) * 96 + (cita.startMinute / 60) * 96;
-                      const heightPx = 96; // 1 hour fixed duration for simplicity
-
-                      return (
-                        <div 
-                          key={cita.id} 
-                          className={`absolute left-2 right-4 rounded-md border-l-4 shadow-sm p-3 flex justify-between items-start pointer-events-auto transition-transform hover:-translate-y-0.5 hover:shadow-md z-10 ${
-                            cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL'
-                              ? 'border-l-indigo-500 bg-indigo-50/95 border border-indigo-100' 
-                              : 'border-l-emerald-500 bg-emerald-50/95 border border-emerald-100'
-                          }`}
-                          style={{ top: `${topPx}px`, height: `${heightPx - 4}px` }}
-                        >
-                          <div className="flex flex-col h-full justify-between overflow-hidden pr-2">
-                            <div>
-                              <p className="font-bold text-sm text-slate-800 truncate">
-                                {cita.patientName}
-                              </p>
-                              <p className="text-xs text-slate-500 font-mono mt-0.5">{cita.timeSlot}</p>
-                            </div>
-                            <span className={`w-fit inline-flex items-center mt-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
-                              cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL'
-                                ? 'bg-white text-indigo-700 border-indigo-200'
-                                : 'bg-white text-emerald-700 border-emerald-200'
-                            }`}>
-                              {cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL' ? '📹 Virtual' : '🏢 Presencial'}
-                            </span>
-                          </div>
-                          
-                          <div className="flex flex-col sm:flex-row gap-1.5 opacity-90 hover:opacity-100 shrink-0">
-                            {(cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL') && (
-                              <a 
-                                href={cita.roomUrl} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 justify-center"
-                              >
-                                <span>Unirse</span>
-                              </a>
-                            )}
-                            
-                            <button
-                              onClick={() => {
-                                setSelectedPatientId(cita.patientId);
-                                setCurrentView('history');
-                              }}
-                              className="text-[10px] bg-charcoal-800 hover:bg-charcoal-900 text-white px-2.5 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 justify-center"
-                            >
-                              <FileText className="w-3 h-3" />
-                              <span className="hidden sm:inline">Historia</span>
-                            </button>
-
-                            <button
-                              onClick={async () => {
-                                try {
-                                  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
-                                  const token = localStorage.getItem('mind_token');
-                                  const res = await fetch(`${apiBase}/api/appointments/${cita.id}`, {
-                                    method: 'PUT',
-                                    headers: {
-                                      'Content-Type': 'application/json',
-                                      'Authorization': `Bearer ${token}`
-                                    },
-                                    body: JSON.stringify({ status: 'Atendida' })
-                                  });
-                                  if (res.ok) {
-                                    toast.success('Cita marcada como Atendida');
-                                    refetchAppointments();
-                                  } else {
-                                    toast.error('Error al marcar cita');
-                                  }
-                                } catch (err) {
-                                  console.error('Error marking appointment:', err);
-                                }
-                              }}
-                              className="text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 justify-center"
-                            >
-                              <CheckCircle className="w-3 h-3" />
-                              <span className="hidden sm:inline">Atendido</span>
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
+            {/* PREMIUM CALENDAR */}
+            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm text-left flex flex-col h-[700px]">
+              {/* Header */}
+              <div className="flex justify-between items-center mb-6">
+                <div className="flex items-center gap-4">
+                  <h2 className="text-2xl font-bold text-slate-800 capitalize">
+                    {currentDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}
+                    {view === 'day' && `, ${currentDate.getDate()}`}
+                  </h2>
+                  <div className="flex bg-slate-100 p-1 rounded-lg">
+                    <button onClick={() => {
+                        const d = new Date(currentDate);
+                        if (view === 'month') d.setMonth(d.getMonth() - 1);
+                        else if (view === 'week') d.setDate(d.getDate() - 7);
+                        else d.setDate(d.getDate() - 1);
+                        setCurrentDate(d);
+                      }}
+                      className="px-3 py-1.5 hover:bg-white rounded-md shadow-sm text-slate-600 transition cursor-pointer"
+                    >
+                      &larr;
+                    </button>
+                    <button onClick={() => setCurrentDate(new Date())} className="px-4 py-1.5 hover:bg-white rounded-md shadow-sm text-sm font-medium text-slate-700 transition cursor-pointer">
+                      Hoy
+                    </button>
+                    <button onClick={() => {
+                        const d = new Date(currentDate);
+                        if (view === 'month') d.setMonth(d.getMonth() + 1);
+                        else if (view === 'week') d.setDate(d.getDate() + 7);
+                        else d.setDate(d.getDate() + 1);
+                        setCurrentDate(d);
+                      }}
+                      className="px-3 py-1.5 hover:bg-white rounded-md shadow-sm text-slate-600 transition cursor-pointer"
+                    >
+                      &rarr;
+                    </button>
                   </div>
                 </div>
+                <div className="flex bg-slate-100 p-1 rounded-lg">
+                  <button onClick={() => setView('day')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition cursor-pointer ${view === 'day' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:bg-slate-200'}`}>Día</button>
+                  <button onClick={() => setView('week')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition cursor-pointer ${view === 'week' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:bg-slate-200'}`}>Semana</button>
+                  <button onClick={() => setView('month')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition cursor-pointer ${view === 'month' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:bg-slate-200'}`}>Mes</button>
+                </div>
+              </div>
+
+              {/* View Content */}
+              <div className="flex-1 overflow-hidden border border-slate-200 rounded-xl bg-slate-50 relative flex flex-col">
+                {view === 'month' && (
+                  <div className="flex-1 grid grid-cols-7 grid-rows-[auto_1fr] h-full">
+                    {/* Days of week header */}
+                    {['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'].map(d => (
+                      <div key={d} className="p-3 text-center border-b border-r border-slate-200 bg-white font-semibold text-xs text-slate-500 uppercase tracking-wider">{d}</div>
+                    ))}
+                    {/* Month Grid */}
+                    {(() => {
+                      const year = currentDate.getFullYear();
+                      const month = currentDate.getMonth();
+                      const firstDay = new Date(year, month, 1).getDay();
+                      const daysInMonth = new Date(year, month + 1, 0).getDate();
+                      const cells = [];
+                      for (let i = 0; i < 35; i++) {
+                        const dayNum = i - firstDay + 1;
+                        const isCurrentMonth = dayNum > 0 && dayNum <= daysInMonth;
+                        const cellDate = new Date(year, month, dayNum);
+                        const isToday = cellDate.toDateString() === new Date().toDateString();
+                        const dayAppointments = weeklyAppointments.filter(app => {
+                          return app.dayIndex === cellDate.getDay() && isCurrentMonth;
+                        });
+                        
+                        cells.push(
+                          <div 
+                            key={i} 
+                            onClick={() => {
+                              if (isCurrentMonth) {
+                                setCurrentDate(cellDate);
+                                setView('day');
+                              }
+                            }}
+                            className={`p-2 border-b border-r border-slate-200 min-h-[100px] transition group ${isCurrentMonth ? 'bg-white hover:bg-indigo-50 cursor-pointer' : 'bg-slate-100/50 text-slate-400'}`}
+                          >
+                            {isCurrentMonth && (
+                              <>
+                                <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold mb-1 ${isToday ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-700 group-hover:text-indigo-600'}`}>
+                                  {dayNum}
+                                </span>
+                                <div className="space-y-1 overflow-y-auto max-h-[80px] scrollbar-hide">
+                                  {dayAppointments.slice(0, 3).map(app => (
+                                    <div key={app.id} className="bg-blue-50/80 hover:bg-blue-100 border border-blue-200/50 rounded p-1 text-[10px] leading-tight text-blue-900 shadow-xs truncate">
+                                      {app.timeSlot} - {app.patientName}
+                                    </div>
+                                  ))}
+                                  {dayAppointments.length > 3 && (
+                                    <div className="text-[10px] text-slate-500 font-medium px-1">+{dayAppointments.length - 3} más</div>
+                                  )}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        );
+                      }
+                      return cells;
+                    })()}
+                  </div>
+                )}
+
+                {(view === 'week' || view === 'day') && (
+                  <div className="flex-1 overflow-y-auto relative flex">
+                    {/* Time Column */}
+                    <div className="w-16 shrink-0 bg-white border-r border-slate-200 sticky left-0 z-20">
+                      <div className="h-12 border-b border-slate-200 bg-slate-50"></div>
+                      {Array.from({ length: 11 }, (_, i) => i + 8).map(hour => (
+                        <div key={hour} className="h-20 border-b border-slate-200 flex items-start justify-center pt-2">
+                          <span className="text-[10px] font-bold text-slate-400">{hour.toString().padStart(2, '0')}:00</span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Columns */}
+                    <div className="flex-1 flex min-w-[600px]">
+                      {(() => {
+                        const daysToShow = view === 'day' ? 1 : 7;
+                        const start = new Date(currentDate);
+                        if (view === 'week') {
+                          const day = start.getDay();
+                          start.setDate(start.getDate() - day); // Start at Sunday
+                        }
+                        
+                        return Array.from({ length: daysToShow }).map((_, i) => {
+                          const colDate = new Date(start);
+                          colDate.setDate(start.getDate() + i);
+                          const isToday = colDate.toDateString() === new Date().toDateString();
+                          const colDayName = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'][colDate.getDay()];
+                          
+                          const colAppointments = weeklyAppointments.filter(app => app.dayIndex === colDate.getDay());
+                          
+                          return (
+                            <div key={i} className="flex-1 border-r border-slate-200 relative min-w-[120px]">
+                              {/* Column Header */}
+                              <div className={`h-12 border-b border-slate-200 sticky top-0 z-30 flex flex-col items-center justify-center ${isToday ? 'bg-indigo-50/80 backdrop-blur border-b-indigo-200' : 'bg-white/95 backdrop-blur'}`}>
+                                <span className={`text-[10px] uppercase font-bold tracking-wider ${isToday ? 'text-indigo-600' : 'text-slate-500'}`}>{colDayName}</span>
+                                <span className={`text-lg font-black ${isToday ? 'text-indigo-700' : 'text-slate-800'}`}>{colDate.getDate()}</span>
+                              </div>
+                              
+                              {/* Grid lines */}
+                              <div className="absolute inset-0 top-12 pointer-events-none">
+                                {Array.from({ length: 11 }).map((_, h) => (
+                                  <div key={h} className="h-20 border-b border-dashed border-slate-200 opacity-50 relative">
+                                    <div className="absolute top-10 w-full border-b border-dotted border-slate-100"></div>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* Appointments */}
+                              <div className="absolute inset-0 top-12 p-1">
+                                {colAppointments.map(app => {
+                                  if (app.startHour < 8 || app.startHour > 18) return null;
+                                  const top = (app.startHour - 8) * 80 + (app.startMinute / 60) * 80;
+                                  const height = 76; // Approx 1 hour duration
+
+                                  return (
+                                    <div 
+                                      key={app.id}
+                                      className="absolute left-1 right-1 bg-blue-50 border-l-4 border-l-blue-500 border border-blue-100 rounded-md p-2 shadow-sm hover:shadow-md transition cursor-pointer hover:-translate-y-0.5 z-10 flex flex-col justify-between overflow-hidden group"
+                                      style={{ top: `${top}px`, height: `${height}px` }}
+                                    >
+                                      <div onClick={() => {
+                                        setSelectedPatientId(app.patientId);
+                                        setCurrentView('history');
+                                      }}>
+                                        <div className="text-[11px] font-bold text-blue-900 leading-tight truncate">{app.patientName}</div>
+                                        <div className="text-[9px] text-blue-600 font-mono mt-0.5">{app.timeSlot}</div>
+                                      </div>
+                                      
+                                      <div className="flex justify-between items-center mt-1 gap-1">
+                                        <span className="text-[8px] font-bold text-blue-800 bg-white/60 px-1 rounded truncate uppercase tracking-wider">
+                                          {app.modalidad === 'Virtual' || (app as any).modality === 'VIRTUAL' ? '📹 Virtual' : '🏢 Presencial'}
+                                        </span>
+                                        <div className="flex items-center gap-1">
+                                          {(app.modalidad === 'Virtual' || (app as any).modality === 'VIRTUAL') && (
+                                            <a 
+                                              href={app.roomUrl} 
+                                              target="_blank" 
+                                              rel="noopener noreferrer"
+                                              className="text-[9px] bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded shadow-xs"
+                                            >
+                                              Unirse
+                                            </a>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

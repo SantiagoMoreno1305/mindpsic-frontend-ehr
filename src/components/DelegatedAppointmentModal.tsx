@@ -609,7 +609,7 @@ export default function DelegatedAppointmentModal({
               <input
                 type="datetime-local"
                 required
-                value={form.dateTime}
+                value={form.dateTime || ''}
                 onChange={(e) =>
                   setForm({ ...form, dateTime: e.target.value })
                 }
