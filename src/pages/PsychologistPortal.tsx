@@ -75,7 +75,7 @@ interface PsychologistPortalProps {
   onContextChange: (context: WorkspaceContext) => void;
 }
 
-type ActiveTab = 'dashboard' | 'video' | 'evaluations' | 'drive' | 'chat' | 'research' | 'screening';
+type ActiveTab = 'dashboard' | 'video' | 'evaluations' | 'clinical_history' | 'chat' | 'research' | 'screening';
 
 export default function PsychologistPortal({
   onOpenDrMindWithPatient,
@@ -543,14 +543,14 @@ export default function PsychologistPortal({
           </button>
 
           <button
-            onClick={() => setActiveTab('drive')}
+            onClick={() => setActiveTab('clinical_history')}
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
-              activeTab === 'drive' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
+              activeTab === 'clinical_history' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
             }`}
           >
-            <FolderLock className="w-5 h-5 shrink-0" />
-            <span className="ml-3 text-xs hidden md:block">Pipeline de Documentos RAG</span>
-            {activeTab === 'drive' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+            <FileText className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Historias Clínicas</span>
+            {activeTab === 'clinical_history' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
           <button
@@ -629,7 +629,7 @@ export default function PsychologistPortal({
           </div>
         )}
 
-        {/* VIEW: DASHBOARD */}
+        {/* DASHBOARD HISTORY FALLBACK (Kept for backwards compatibility) */}
         {activeTab === 'dashboard' && currentView === 'history' && selectedPatientId && (
           <div className="max-w-7xl mx-auto">
             <ClinicalHistoryEditor 
@@ -950,29 +950,44 @@ export default function PsychologistPortal({
           </div>
         )}
 
-        {/* VIEW: DRIVE (subida de documentos con token real) */}
-        {activeTab === 'drive' && (
+        {/* VIEW: CLINICAL HISTORY */}
+        {activeTab === 'clinical_history' && (
           <div className="max-w-7xl mx-auto space-y-6">
-            <div className="bg-white rounded-xl border border-slate-100 p-5">
-              <h2 className="text-sm font-bold text-slate-900 mb-4">Pipeline de Documentos RAG</h2>
-              <input
-                type="file"
-                onChange={(e) => {
-                  if (e.target.files?.[0]) uploadDocument(e.target.files[0], 'clinico');
-                }}
-                className="mb-4"
-              />
-              <div className="space-y-2">
-                {myDocuments.map(doc => (
-                  <div key={doc.id} className="p-3 border rounded flex justify-between items-center">
-                    <span>{doc.name}</span>
-                    <button onClick={() => processDocument(doc.id)} className="text-toast-500 text-xs">
-                      Procesar con RAG
-                    </button>
+            {!selectedPatientId ? (
+              <div className="bg-white rounded-xl border border-slate-100 p-8 text-center max-w-2xl mx-auto mt-10 shadow-sm">
+                <FileText className="w-16 h-16 text-indigo-100 mx-auto mb-4" />
+                <h2 className="text-lg font-bold text-slate-800 mb-2">Gestor de Historias Clínicas</h2>
+                <p className="text-sm text-slate-500 mb-6">Seleccione un paciente para ver o redactar su evolución clínica, firmar digitalmente y subir anexos.</p>
+                <div className="relative max-w-md mx-auto text-left">
+                  <select
+                    className="w-full appearance-none bg-slate-50 border border-slate-200 text-slate-800 py-3 px-4 pr-8 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium cursor-pointer"
+                    onChange={(e) => setSelectedPatientId(e.target.value)}
+                    value=""
+                  >
+                    <option value="" disabled>-- Seleccionar Paciente --</option>
+                    {/* Extraemos pacientes únicos de las citas para el dropdown */}
+                    {Array.from(new Set(realAppointments.map(a => a.patientId))).map(patientId => {
+                      const app = realAppointments.find(a => a.patientId === patientId);
+                      return (
+                        <option key={patientId} value={patientId}>
+                          {app?.patientName}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-slate-500">
+                    <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                      <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
+                    </svg>
                   </div>
-                ))}
+                </div>
               </div>
-            </div>
+            ) : (
+              <ClinicalHistoryEditor 
+                patientId={selectedPatientId} 
+                onBack={() => setSelectedPatientId(null)} 
+              />
+            )}
           </div>
         )}
 
@@ -1038,10 +1053,20 @@ export default function PsychologistPortal({
               </div>
             </div>
 
-            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex flex-wrap justify-end gap-3">
+              <button
+                onClick={() => {
+                  setSelectedSessionForModal(null);
+                  setSelectedPatientId(selectedSessionForModal.patientId);
+                  setActiveTab('clinical_history');
+                }}
+                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs rounded-lg transition-colors cursor-pointer flex items-center mr-auto"
+              >
+                📝 Ver/Editar Historia Clínica
+              </button>
               <button
                 onClick={() => window.open('https://mindhealthips.com/', '_blank')}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer flex items-center gap-2 mr-auto"
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer flex items-center gap-2"
               >
                 📹 Unirse a la videollamada
               </button>
