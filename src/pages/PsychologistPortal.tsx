@@ -275,20 +275,26 @@ export default function PsychologistPortal({
   const [noteAlert, setNoteAlert] = useState<string | null>(null);
   const [view, setView] = useState<'month' | 'week' | 'day'>('day');
   const [currentDate, setCurrentDate] = useState(new Date());
+
+  useEffect(() => {
+    refetchAppointments();
+  }, [currentDate, view]);
+
   const weeklyAppointments = (realAppointments || []).map((appt) => {
-    const dateObj = new Date(appt?.dateTime || Date.now());
+    const appDate = new Date(appt?.date || appt?.dateTime || Date.now());
     return {
       id: appt?.id || 'unknown',
       patientName: `${appt?.patient?.firstName || ''} ${appt?.patient?.lastName || ''}`.trim() || 'Paciente Desconocido',
       patientId: appt?.patient?.id || 'unknown',
-      dayIndex: dateObj.getDay(),
-      timeSlot: `${dateObj.getHours().toString().padStart(2, '0')}:${dateObj.getMinutes().toString().padStart(2, '0')} - ${(dateObj.getHours() + 1).toString().padStart(2, '0')}:${dateObj.getMinutes().toString().padStart(2, '0')}`,
+      appDate,
+      dayIndex: appDate.getDay(),
+      timeSlot: appt.timeSlot || `${appDate.getHours().toString().padStart(2, '0')}:${appDate.getMinutes().toString().padStart(2, '0')} - ${(appDate.getHours() + 1).toString().padStart(2, '0')}:${appDate.getMinutes().toString().padStart(2, '0')}`,
       atencionType: appt.type || 'psicología clínica',
       estatus: appt.status || 'Confirmada',
       modalidad: appt.type === 'Virtual' || appt.type === 'Presencial' ? appt.type : 'Virtual',
       roomUrl: appt.roomUrl || 'https://meet.jit.si/mind_psic_default',
-      startHour: dateObj.getHours(),
-      startMinute: dateObj.getMinutes()
+      startHour: parseInt(appt.timeSlot ? appt.timeSlot.split(':')[0] : appDate.getHours().toString()),
+      startMinute: parseInt(appt.timeSlot ? appt.timeSlot.split(':')[1] : appDate.getMinutes().toString())
     };
   });
   const [reprogramaciones, setReprogramaciones] = useState([
@@ -739,7 +745,10 @@ export default function PsychologistPortal({
                         const cellDate = new Date(year, month, dayNum);
                         const isToday = cellDate.toDateString() === new Date().toDateString();
                         const dayAppointments = weeklyAppointments.filter(app => {
-                          return app.dayIndex === cellDate.getDay() && isCurrentMonth;
+                          return app.appDate.getFullYear() === cellDate.getFullYear() &&
+                                 app.appDate.getMonth() === cellDate.getMonth() &&
+                                 app.appDate.getDate() === cellDate.getDate() && 
+                                 isCurrentMonth;
                         });
                         
                         cells.push(
@@ -806,7 +815,11 @@ export default function PsychologistPortal({
                           const isToday = colDate.toDateString() === new Date().toDateString();
                           const colDayName = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'][colDate.getDay()];
                           
-                          const colAppointments = weeklyAppointments.filter(app => app.dayIndex === colDate.getDay());
+                          const colAppointments = weeklyAppointments.filter(app => {
+                            return app.appDate.getFullYear() === colDate.getFullYear() &&
+                                   app.appDate.getMonth() === colDate.getMonth() &&
+                                   app.appDate.getDate() === colDate.getDate();
+                          });
                           
                           return (
                             <div key={i} className="flex-1 border-r border-slate-200 relative min-w-[120px]">

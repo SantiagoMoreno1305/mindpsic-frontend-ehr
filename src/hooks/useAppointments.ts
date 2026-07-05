@@ -21,6 +21,7 @@ export function useAppointments(token: string | null) {
       const data = await res.json();
       let uniqueAppointments = [];
       if (Array.isArray(data)) {
+        console.log('🗓️ TODAS las citas recibidas en el calendario:', data);
         uniqueAppointments = Array.from(new Map(data.map((app: any) => [app.id, app])).values());
       }
       setAppointments(uniqueAppointments);
