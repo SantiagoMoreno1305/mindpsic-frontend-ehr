@@ -10,6 +10,7 @@ import {
 } from '../data/mockData';
 import { useAppointments } from '../hooks/useAppointments';
 import { usePatients } from '../hooks/usePatients';
+import { useGlobalChat } from '../hooks/useGlobalChat';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal from '../components/DelegatedAppointmentModal';
@@ -57,6 +58,7 @@ export default function AdminPortal() {
   const token = localStorage.getItem('mind_token');
   const { appointments: realAppointments, loading: apptsLoading } = useAppointments(token);
   const { patients: realPatients, loading: patientsLoading } = usePatients(token);
+  const { unreadCount: globalUnreadCount } = useGlobalChat();
   
   // Verificación de sesión + RBAC (sin navigate — App.tsx maneja la guardia por estado)
   useEffect(() => {
@@ -486,7 +488,13 @@ export default function AdminPortal() {
           >
             <div className="relative">
               <MessageSquare className="w-5 h-5 shrink-0" />
-              <span className="absolute -top-1.5 -right-1.5 w-2 h-2 rounded-full bg-toast-500 animate-pulse" />
+              {globalUnreadCount > 0 ? (
+                <span className="absolute -top-1.5 -right-2 bg-emerald-500 text-white text-[10px] font-bold h-5 min-w-[20px] px-1 flex items-center justify-center rounded-full shadow-md animate-bounce">
+                  {globalUnreadCount}
+                </span>
+              ) : (
+                <span className="absolute -top-1.5 -right-1.5 w-2 h-2 rounded-full bg-toast-500 animate-pulse" />
+              )}
             </div>
             <span className="ml-3 text-xs hidden md:block border-none outline-hidden">Mensajería Clínica</span>
             {activeTab === 'chat' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}

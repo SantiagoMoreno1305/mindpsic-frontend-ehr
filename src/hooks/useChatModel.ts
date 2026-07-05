@@ -343,11 +343,25 @@ export function useChatModel(currentUser: User | null) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeContact, currentUser, isSending, apiUrl]);
 
-  // ── 5. Filtrar contactos por búsqueda ────────────────────────────────────
-  const filteredContacts = contacts.filter((c) =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (c.specialty && c.specialty.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
+  // ── 5. Filtrar y ordenar contactos ─────────────────────────────────────
+  //    Prioridad: 1) chats con unread > 0 al tope, 2) por fecha de último mensaje desc
+  const filteredContacts = contacts
+    .filter((c) =>
+      c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (c.specialty && c.specialty.toLowerCase().includes(searchQuery.toLowerCase()))
+    )
+    .sort((a, b) => {
+      // 1. Unread primero
+      if (a.unreadCount > 0 && b.unreadCount === 0) return -1;
+      if (a.unreadCount === 0 && b.unreadCount > 0) return 1;
+      // 2. Por último mensaje (más reciente primero)
+      const timeA = a.lastMessageTime || '';
+      const timeB = b.lastMessageTime || '';
+      return timeB.localeCompare(timeA);
+    });
+
+  // ── 6. Conteo global de no leídos (para badge en sidebar) ──────────────
+  const totalUnreadCount = contacts.reduce((sum, c) => sum + c.unreadCount, 0);
 
   return {
     contacts:      filteredContacts,
@@ -359,5 +373,6 @@ export function useChatModel(currentUser: User | null) {
     setSearchQuery,
     selectContact: handleSelectContact,
     sendMessage,
+    totalUnreadCount,
   };
 }
