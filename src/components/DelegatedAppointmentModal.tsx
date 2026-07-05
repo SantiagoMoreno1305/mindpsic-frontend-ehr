@@ -180,6 +180,7 @@ export default function DelegatedAppointmentModal({
             date:            form.dateTime,
             timeSlot:        form.timeSlot || form.dateTime?.split('T')[1]?.slice(0, 5) || '08:00',
             specialistId:    form.userId,
+            userId:          form.userId,
             status:          'Reprogramada'
           }
         : {

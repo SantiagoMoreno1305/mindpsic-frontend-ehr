@@ -827,45 +827,63 @@ export default function PsychologistPortal({
 
                               {/* Appointments */}
                               <div className="absolute inset-0 top-12 p-1">
-                                {colAppointments.map(app => {
-                                  if (app.startHour < 8 || app.startHour > 18) return null;
-                                  const top = (app.startHour - 8) * 80 + (app.startMinute / 60) * 80;
-                                  const height = 76; // Approx 1 hour duration
+                                {(() => {
+                                  // Agrupar citas por hora
+                                  const grouped = colAppointments.reduce((acc, app) => {
+                                    if (app.startHour < 8 || app.startHour > 18) return acc;
+                                    const key = `${app.startHour}`;
+                                    if (!acc[key]) acc[key] = [];
+                                    acc[key].push(app);
+                                    return acc;
+                                  }, {} as Record<string, typeof colAppointments>);
 
-                                  return (
-                                    <div 
-                                      key={app.id}
-                                      className="absolute left-1 right-1 bg-blue-50 border-l-4 border-l-blue-500 border border-blue-100 rounded-md p-2 shadow-sm hover:shadow-md transition cursor-pointer hover:-translate-y-0.5 z-10 flex flex-col justify-between overflow-hidden group"
-                                      style={{ top: `${top}px`, height: `${height}px` }}
-                                    >
-                                      <div onClick={() => {
-                                        setSelectedSessionForModal(app);
-                                      }}>
-                                        <div className="text-[11px] font-bold text-blue-900 leading-tight truncate">{app.patientName}</div>
-                                        <div className="text-[9px] text-blue-600 font-mono mt-0.5">{app.timeSlot}</div>
+                                  return Object.values(grouped).map(group => {
+                                    const firstApp = group[0];
+                                    const top = (firstApp.startHour - 8) * 80;
+                                    const height = 76; // 1 hora aprox
+
+                                    return (
+                                      <div 
+                                        key={`group-${firstApp.startHour}`}
+                                        className="absolute left-1 right-1 flex flex-row gap-1 z-10"
+                                        style={{ top: `${top}px`, height: `${height}px` }}
+                                      >
+                                        {group.map(app => (
+                                          <div 
+                                            key={app.id}
+                                            className="flex-1 bg-blue-50 border-l-4 border-l-blue-500 border border-blue-100 rounded-md p-2 shadow-sm hover:shadow-md transition cursor-pointer hover:-translate-y-0.5 flex flex-col justify-between overflow-hidden group"
+                                          >
+                                            <div onClick={() => {
+                                              setSelectedSessionForModal(app);
+                                            }}>
+                                              <div className="text-[11px] font-bold text-blue-900 leading-tight truncate">{app.patientName}</div>
+                                              <div className="text-[9px] text-blue-600 font-mono mt-0.5">{app.timeSlot}</div>
+                                            </div>
+                                            
+                                            <div className="flex justify-between items-center mt-1 gap-1">
+                                              <span className="text-[8px] font-bold text-blue-800 bg-white/60 px-1 rounded truncate uppercase tracking-wider">
+                                                {app.modalidad === 'Virtual' || (app as any).modality === 'VIRTUAL' ? '📹 Virtual' : '🏢 Presencial'}
+                                              </span>
+                                              <div className="flex items-center gap-1">
+                                                {(app.modalidad === 'Virtual' || (app as any).modality === 'VIRTUAL') && (
+                                                  <button 
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      window.open('https://mindhealthips.com/', '_blank');
+                                                    }}
+                                                    className="text-[9px] bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded shadow-xs cursor-pointer"
+                                                  >
+                                                    Unirse
+                                                  </button>
+                                                )}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        ))}
                                       </div>
-                                      
-                                      <div className="flex justify-between items-center mt-1 gap-1">
-                                        <span className="text-[8px] font-bold text-blue-800 bg-white/60 px-1 rounded truncate uppercase tracking-wider">
-                                          {app.modalidad === 'Virtual' || (app as any).modality === 'VIRTUAL' ? '📹 Virtual' : '🏢 Presencial'}
-                                        </span>
-                                        <div className="flex items-center gap-1">
-                                          {(app.modalidad === 'Virtual' || (app as any).modality === 'VIRTUAL') && (
-                                            <button 
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                window.open('https://mindhealthips.com/', '_blank');
-                                              }}
-                                              className="text-[9px] bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded shadow-xs cursor-pointer"
-                                            >
-                                              Unirse
-                                            </button>
-                                          )}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
+                                    );
+                                  });
+                                })()}
                               </div>
                             </div>
                           );
