@@ -89,7 +89,11 @@ export default function DelegatedAppointmentModal({
       setForm({
         userId: initialData.psychologist?.id || initialData.userId || '',
         patientId: initialData.patient?.id || initialData.patientId || '',
-        dateTime: initialData.date ? new Date(initialData.date).toISOString().slice(0, 16) : '',
+        dateTime: initialData.date ? (() => {
+          const d = new Date(initialData.date);
+          const pad = (n: number) => n.toString().padStart(2, '0');
+          return !isNaN(d.getTime()) ? `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}` : '';
+        })() : '',
         timeSlot: initialData.timeSlot || '',
         appointmentType: initialData.appointmentType || 'clinico',
         modality: initialData.modality || ('Virtual' as 'Virtual' | 'Presencial'),

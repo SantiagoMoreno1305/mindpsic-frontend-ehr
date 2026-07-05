@@ -260,7 +260,9 @@ export default function PsychologistPortal({
       atencionType: appt.type || 'psicología clínica',
       estatus: appt.status || 'Confirmada',
       modalidad: appt.type === 'Virtual' || appt.type === 'Presencial' ? appt.type : 'Virtual',
-      roomUrl: appt.roomUrl || 'https://meet.jit.si/mind_psic_default'
+      roomUrl: appt.roomUrl || 'https://meet.jit.si/mind_psic_default',
+      startHour: dateObj.getHours(),
+      startMinute: dateObj.getMinutes()
     };
   });
   const [reprogramaciones, setReprogramaciones] = useState([
@@ -647,83 +649,116 @@ export default function PsychologistPortal({
                 Por razones de espacio no se replica todo, pero la estructura es idéntica a la original,
                 usando currentUser en lugar de valores estáticos. */}
             <div className="bg-white rounded-xl border border-slate-100 p-5 shadow-xs text-left">
-              <h2 className="text-lg font-bold mb-4 text-slate-800">Calendario de Citas</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {weeklyAppointments.map((cita) => (
-                  <div key={cita.id} className={`p-3 rounded-lg border-l-4 transition-all shadow-sm ${
-                      cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL'
-                        ? 'border-l-indigo-500 bg-indigo-50/50 hover:bg-indigo-50' 
-                        : 'border-l-emerald-500 bg-emerald-50/50 hover:bg-emerald-50'
-                    }`}>
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <p className="font-semibold text-sm text-slate-800">
-                          {cita.patientName}
-                        </p>
-                        <p className="text-xs text-slate-500 font-mono mt-0.5">{cita.timeSlot}</p>
-                        
-                        <span className={`inline-flex items-center mt-2 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
-                          cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL'
-                            ? 'bg-white text-indigo-700 border-indigo-200'
-                            : 'bg-white text-emerald-700 border-emerald-200'
-                        }`}>
-                          {cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL' ? '📹 Virtual' : '🏢 Presencial'}
+              <h2 className="text-lg font-bold mb-4 text-slate-800">Calendario de Citas (Vista Diaria)</h2>
+              <div className="relative border border-slate-200 rounded-lg overflow-y-auto h-[500px] bg-slate-50">
+                {/* Time Grid Background */}
+                <div className="absolute top-0 left-0 w-full min-w-[600px]">
+                  {Array.from({ length: 11 }, (_, i) => i + 8).map(hour => (
+                    <div key={hour} className="flex border-b border-slate-200 h-24 box-border">
+                      <div className="w-20 shrink-0 border-r border-slate-200 bg-white flex items-start justify-center pt-2">
+                        <span className="text-xs font-semibold text-slate-500">
+                          {hour.toString().padStart(2, '0')}:00
                         </span>
                       </div>
-                      
-                      {(cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL') && (
-                        <a 
-                          href="https://mindhealthips.com/" 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1"
-                        >
-                          <span>Unirse</span>
-                        </a>
-                      )}
-                      
-                      <button
-                        onClick={() => {
-                          setSelectedPatientId(cita.patientId);
-                          setCurrentView('history');
-                        }}
-                        className="text-[10px] bg-charcoal-800 hover:bg-charcoal-900 text-white px-3 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 ml-2"
-                      >
-                        <FileText className="w-3 h-3" />
-                        <span>Ver Historia</span>
-                      </button>
-
-                      <button
-                        onClick={async () => {
-                          try {
-                            const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
-                            const token = localStorage.getItem('mind_token');
-                            const res = await fetch(`${apiBase}/api/appointments/${cita.id}`, {
-                              method: 'PUT',
-                              headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': `Bearer ${token}`
-                              },
-                              body: JSON.stringify({ status: 'ATTENDED' })
-                            });
-                            if (res.ok) {
-                              toast.success('Cita marcada como Atendida');
-                              refetchAppointments();
-                            } else {
-                              toast.error('Error al marcar cita');
-                            }
-                          } catch (err) {
-                            console.error('Error marking appointment:', err);
-                          }
-                        }}
-                        className="text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 ml-2"
-                      >
-                        <CheckCircle className="w-3 h-3" />
-                        <span>Marcar Atendido</span>
-                      </button>
+                      <div className="flex-1 bg-white relative">
+                        {/* Half-hour divider line */}
+                        <div className="absolute top-12 left-0 w-full border-b border-dashed border-slate-100"></div>
+                      </div>
                     </div>
+                  ))}
+
+                  {/* Appointments overlays */}
+                  <div className="absolute top-0 left-20 right-0 bottom-0 pointer-events-none">
+                    {weeklyAppointments.map((cita) => {
+                      // Solo mostrar citas que estén entre 08:00 y 18:00
+                      if (cita.startHour < 8 || cita.startHour > 18) return null;
+                      
+                      const topPx = (cita.startHour - 8) * 96 + (cita.startMinute / 60) * 96;
+                      const heightPx = 96; // 1 hour fixed duration for simplicity
+
+                      return (
+                        <div 
+                          key={cita.id} 
+                          className={`absolute left-2 right-4 rounded-md border-l-4 shadow-sm p-3 flex justify-between items-start pointer-events-auto transition-transform hover:-translate-y-0.5 hover:shadow-md z-10 ${
+                            cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL'
+                              ? 'border-l-indigo-500 bg-indigo-50/95 border border-indigo-100' 
+                              : 'border-l-emerald-500 bg-emerald-50/95 border border-emerald-100'
+                          }`}
+                          style={{ top: `${topPx}px`, height: `${heightPx - 4}px` }}
+                        >
+                          <div className="flex flex-col h-full justify-between overflow-hidden pr-2">
+                            <div>
+                              <p className="font-bold text-sm text-slate-800 truncate">
+                                {cita.patientName}
+                              </p>
+                              <p className="text-xs text-slate-500 font-mono mt-0.5">{cita.timeSlot}</p>
+                            </div>
+                            <span className={`w-fit inline-flex items-center mt-1 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
+                              cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL'
+                                ? 'bg-white text-indigo-700 border-indigo-200'
+                                : 'bg-white text-emerald-700 border-emerald-200'
+                            }`}>
+                              {cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL' ? '📹 Virtual' : '🏢 Presencial'}
+                            </span>
+                          </div>
+                          
+                          <div className="flex flex-col sm:flex-row gap-1.5 opacity-90 hover:opacity-100 shrink-0">
+                            {(cita.modalidad === 'Virtual' || (cita as any).modality === 'VIRTUAL') && (
+                              <a 
+                                href={cita.roomUrl} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-[10px] bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 justify-center"
+                              >
+                                <span>Unirse</span>
+                              </a>
+                            )}
+                            
+                            <button
+                              onClick={() => {
+                                setSelectedPatientId(cita.patientId);
+                                setCurrentView('history');
+                              }}
+                              className="text-[10px] bg-charcoal-800 hover:bg-charcoal-900 text-white px-2.5 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 justify-center"
+                            >
+                              <FileText className="w-3 h-3" />
+                              <span className="hidden sm:inline">Historia</span>
+                            </button>
+
+                            <button
+                              onClick={async () => {
+                                try {
+                                  const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+                                  const token = localStorage.getItem('mind_token');
+                                  const res = await fetch(`${apiBase}/api/appointments/${cita.id}`, {
+                                    method: 'PUT',
+                                    headers: {
+                                      'Content-Type': 'application/json',
+                                      'Authorization': `Bearer ${token}`
+                                    },
+                                    body: JSON.stringify({ status: 'Atendida' })
+                                  });
+                                  if (res.ok) {
+                                    toast.success('Cita marcada como Atendida');
+                                    refetchAppointments();
+                                  } else {
+                                    toast.error('Error al marcar cita');
+                                  }
+                                } catch (err) {
+                                  console.error('Error marking appointment:', err);
+                                }
+                              }}
+                              className="text-[10px] bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-md shadow-sm transition-colors flex items-center gap-1 justify-center"
+                            >
+                              <CheckCircle className="w-3 h-3" />
+                              <span className="hidden sm:inline">Atendido</span>
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
+                </div>
               </div>
             </div>
           </div>
