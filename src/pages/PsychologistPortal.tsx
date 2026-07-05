@@ -732,25 +732,21 @@ export default function PsychologistPortal({
         {/* VIEW: VIDEO-CALL (usa activeVideoCall) */}
         {activeTab === 'video' && (
           <div className="max-w-7xl mx-auto space-y-6 text-left">
-            {activeVideoCall ? (
-              <div className="relative">
+            <div className="relative">
+              {activeVideoCall && (
                 <button
                   onClick={() => setActiveVideoCall(null)}
                   className="absolute top-2 right-2 z-10 bg-stone-900 text-white text-xs px-3 py-1 rounded-lg hover:bg-stone-700 transition cursor-pointer"
                 >
                   Cerrar sala
                 </button>
-                <VideollamadaVercel
-                  pacienteId={activeVideoCall.patientId}
-                  salaId={activeVideoCall.id}
-                  tokenSesion={localStorage.getItem('mind_token') || ''}
-                />
-              </div>
-            ) : (
-              <div className="bg-white rounded-2xl border border-slate-100 p-6 text-center">
-                <p className="text-slate-500">Selecciona una cita desde el calendario para iniciar la videollamada.</p>
-              </div>
-            )}
+              )}
+              <VideollamadaVercel
+                pacienteId={activeVideoCall?.patientId}
+                salaId={activeVideoCall?.id}
+                tokenSesion={localStorage.getItem('mind_token') || ''}
+              />
+            </div>
           </div>
         )}
 
