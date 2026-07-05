@@ -13,6 +13,7 @@ import { usePatients } from '../hooks/usePatients';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal from '../components/DelegatedAppointmentModal';
+import { apiFetch } from '../lib/apiClient';
 import { 
   Patient, 
   PsychologistPerformance,
@@ -87,6 +88,44 @@ export default function AdminPortal() {
 
 
   const [activeTab, setActiveTab] = useState<AdminTab>('metrics');
+  
+  const [dashboardMetrics, setDashboardMetrics] = useState({
+    pacientesAtendidosCount: 0,
+    psicologosActivosCount: 0,
+    evolucionesHistoricasCount: 0,
+    satisfaccionPromedio: 0
+  });
+
+  useEffect(() => {
+    const fetchMetrics = async () => {
+      try {
+        const storedToken = localStorage.getItem('mind_token');
+        const userStr = localStorage.getItem('mind_user');
+        const tenantId = userStr ? JSON.parse(userStr).tenantId : '';
+        
+        const res = await apiFetch('/api/metrics/dashboard', {
+          headers: {
+            'Authorization': storedToken ? `Bearer ${storedToken}` : '',
+            'x-tenant-id': tenantId
+          }
+        });
+        const data = await res.json();
+        const metrics = data.data || data || {};
+        
+        setDashboardMetrics({
+          pacientesAtendidosCount: metrics.pacientesAtendidosCount || 0,
+          psicologosActivosCount: metrics.psicologosActivosCount || 0,
+          evolucionesHistoricasCount: metrics.evolucionesHistoricasCount || 0,
+          satisfaccionPromedio: metrics.satisfaccionPromedio || 0
+        });
+      } catch (err) {
+        console.error('Error fetching dashboard metrics', err);
+      }
+    };
+    if (currentUser) {
+      fetchMetrics();
+    }
+  }, [currentUser]);
   
   // React dynamic administrative states
   const [performances, setPerformances] = useState<PsychologistPerformance[]>([]);
@@ -216,10 +255,10 @@ export default function AdminPortal() {
     : patients.filter(p => p.agreement.toLowerCase().includes(selectedAgreement.toLowerCase()));
 
   // Dynamic computation of clinical stats
-  const totalPatientsCount = filteredPatients.length;
-  const activePsychologistsCount = performances.length;
-  const totalCompletedSessionsCount = performances.reduce((acc, p) => acc + p.completedSessions, 0);
-  const avgSatisfactionRate = performances.length > 0 ? Math.round(performances.reduce((acc, p) => acc + p.satisfactionRate, 0) / performances.length) : 0;
+  const totalPatientsCount = dashboardMetrics.pacientesAtendidosCount;
+  const activePsychologistsCount = dashboardMetrics.psicologosActivosCount;
+  const totalCompletedSessionsCount = dashboardMetrics.evolucionesHistoricasCount;
+  const avgSatisfactionRate = dashboardMetrics.satisfaccionPromedio;
 
   // Dynamic cross-filtering for interactive clinical auditor dashboard
   const filteredAppointments = appointmentsLog.filter(app => {

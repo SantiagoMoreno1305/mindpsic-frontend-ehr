@@ -58,6 +58,7 @@ export default function DelegatedAppointmentModal({
   const [companies, setCompanies] = useState<CompanyOption[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isEditingAppointment = !!initialData?.id;
 
   // ── Patient Provisioning State ──────────────────────────────────────────
   const [isCreatingPatient, setIsCreatingPatient] = useState(false);
@@ -165,26 +166,31 @@ export default function DelegatedAppointmentModal({
     try {
       const token  = localStorage.getItem('mind_token');
       const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
-      const method = initialData?.id ? 'PUT' : 'POST';
-      const endpoint = initialData?.id ? `/api/appointments/${initialData.id}` : '/api/appointments';
+      const method = isEditingAppointment ? 'PUT' : 'POST';
+      const endpoint = isEditingAppointment ? `/api/appointments/${initialData.id}` : '/api/appointments';
 
-      // Resolver el companyId a partir del nombre seleccionado en corporateClient
       const selectedCompany = companies.find(c => c.name === form.corporateClient);
 
-      const payload = {
-          patientId:       form.patientId,
-          userId:          form.userId,   // ID del psicólogo seleccionado (guardado en Prisma → PsychologistPortal lo carga)
-          date:            form.dateTime,
-          timeSlot:        form.timeSlot || form.dateTime?.split('T')[1]?.slice(0, 5) || '08:00',
-          appointmentType: form.appointmentType,
-          modality:        form.modality,
-          // WebRTC Control Hub: roomUrl vacío para asignación dinámica
-          roomUrl:         form.modality === 'Virtual' ? '' : null,
-          notes:           form.notes || null,
-          status:          initialData?.id ? 'Reprogramada' : 'Confirmada',
-          corporateClient: form.corporateClient,
-          companyId:       selectedCompany?.id || null,
-      };
+      const payload = isEditingAppointment
+        ? {
+            date:            form.dateTime,
+            timeSlot:        form.timeSlot || form.dateTime?.split('T')[1]?.slice(0, 5) || '08:00',
+            specialistId:    form.userId,
+            status:          'Reprogramada'
+          }
+        : {
+            patientId:       form.patientId,
+            userId:          form.userId,
+            date:            form.dateTime,
+            timeSlot:        form.timeSlot || form.dateTime?.split('T')[1]?.slice(0, 5) || '08:00',
+            appointmentType: form.appointmentType,
+            modality:        form.modality,
+            roomUrl:         form.modality === 'Virtual' ? '' : null,
+            notes:           form.notes || null,
+            status:          'Confirmada',
+            corporateClient: form.corporateClient,
+            companyId:       selectedCompany?.id || null,
+          };
 
       const res = await fetch(`${apiUrl}${endpoint}`, {
         method,
@@ -412,7 +418,7 @@ export default function DelegatedAppointmentModal({
                 <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
                   Paciente
                 </label>
-                {!isCreatingPatient && (
+                {!isCreatingPatient && !isEditingAppointment && (
                   <button
                     type="button"
                     onClick={() => setIsCreatingPatient(true)}
@@ -522,7 +528,8 @@ export default function DelegatedAppointmentModal({
                     onChange={(e) =>
                       setForm({ ...form, patientId: e.target.value })
                     }
-                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white disabled:opacity-50 disabled:bg-slate-100"
+                    disabled={isEditingAppointment}
                   >
                     <option value="" disabled>
                       — Seleccione un paciente —
@@ -663,7 +670,6 @@ export default function DelegatedAppointmentModal({
               </button>
               <button
                 type="submit"
-                onClick={handleSubmit}
                 disabled={isSubmitting || isLoadingData}
                 className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
                   isSubmitting
