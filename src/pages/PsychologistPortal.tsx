@@ -966,11 +966,12 @@ export default function PsychologistPortal({
                   >
                     <option value="" disabled>-- Seleccionar Paciente --</option>
                     {/* Extraemos pacientes únicos de las citas para el dropdown */}
-                    {Array.from(new Set(realAppointments.map(a => a.patientId))).map(patientId => {
-                      const app = realAppointments.find(a => a.patientId === patientId);
+                    {Array.from(new Set(realAppointments.map(a => a.patient?.id))).filter(Boolean).map(patientId => {
+                      const app = realAppointments.find(a => a.patient?.id === patientId);
+                      const p = app?.patient;
                       return (
                         <option key={patientId} value={patientId}>
-                          {app?.patientName}
+                          {p?.firstName || ''} {p?.lastName || ''}
                         </option>
                       );
                     })}
