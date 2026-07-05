@@ -197,6 +197,8 @@ export default function DelegatedAppointmentModal({
             companyId:       selectedCompany?.id || null,
           };
 
+      console.log('Payload enviado:', payload);
+
       const res = await fetch(`${apiUrl}${endpoint}`, {
         method,
         headers: {

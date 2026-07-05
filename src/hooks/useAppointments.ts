@@ -19,7 +19,11 @@ export function useAppointments(token: string | null) {
       });
       if (!res.ok) throw new Error('Error al obtener citas');
       const data = await res.json();
-      setAppointments(Array.isArray(data) ? data : []);
+      let uniqueAppointments = [];
+      if (Array.isArray(data)) {
+        uniqueAppointments = Array.from(new Map(data.map((app: any) => [app.id, app])).values());
+      }
+      setAppointments(uniqueAppointments);
     } catch (err: any) {
       setError(err.message);
     } finally {

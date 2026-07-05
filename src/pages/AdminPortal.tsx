@@ -274,7 +274,7 @@ export default function AdminPortal() {
   });
 
   const totalFilteredCount = filteredAppointments.length;
-  const attendedCount = filteredAppointments.filter(app => app.status === 'Atendido').length;
+  const attendedCount = filteredAppointments.filter(app => ['Atendida', 'Atendido', 'ATENDIDO'].includes(app.status)).length;
   const unattendedOrReprogrammedCount = filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramado').length;
 
 
@@ -753,7 +753,7 @@ export default function AdminPortal() {
                     </div>
                   ) : (
                     <>
-                      {filteredAppointments.filter(app => app.status === 'Atendido').map(app => (
+                      {filteredAppointments.filter(app => ['Atendida', 'Atendido', 'ATENDIDO'].includes(app.status)).map(app => (
                         <div key={app.id} className="p-3 bg-toast-50/50 border border-toast-200 rounded-xl text-xs space-y-1">
                           <div className="flex justify-between items-center">
                             <strong className="text-slate-900">{app.patientName}</strong>
@@ -768,10 +768,25 @@ export default function AdminPortal() {
                                 }}
                                 className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold underline cursor-pointer"
                               >
-                                Reprogramar / Editar
+                                ✏️ Reprogramar / Editar
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  if (confirm('¿Estás seguro de eliminar esta cita?')) {
+                                    try {
+                                      const t = localStorage.getItem('mind_token');
+                                      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+                                      await fetch(`${apiUrl}/api/appointments/${app.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
+                                      alert('Cita eliminada');
+                                    } catch(e: any) { alert(e.message); }
+                                  }
+                                }}
+                                className="text-red-500 hover:text-red-700 text-[10px] font-bold underline cursor-pointer"
+                              >
+                                🗑️ Eliminar
                               </button>
                               <span className="text-[9px] font-mono font-bold uppercase tracking-wider bg-charcoal-900 text-white px-1.5 py-0.5 rounded">
-                                Atendido
+                                {app.status}
                               </span>
                             </div>
                           </div>
@@ -787,7 +802,7 @@ export default function AdminPortal() {
                         </div>
                       ))}
 
-                      {filteredAppointments.filter(app => app.status === 'Atendido').length === 0 && (
+                      {filteredAppointments.filter(app => ['Atendida', 'Atendido', 'ATENDIDO'].includes(app.status)).length === 0 && (
                         <div className="text-center text-slate-400 text-xs py-10">
                           No hay consultas atendidas registradas con los filtros seleccionados.
                         </div>
@@ -835,7 +850,22 @@ export default function AdminPortal() {
                                 }}
                                 className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold underline cursor-pointer"
                               >
-                                Reprogramar / Editar
+                                ✏️ Reprogramar / Editar
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  if (confirm('¿Estás seguro de eliminar esta cita?')) {
+                                    try {
+                                      const t = localStorage.getItem('mind_token');
+                                      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+                                      await fetch(`${apiUrl}/api/appointments/${app.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
+                                      alert('Cita eliminada');
+                                    } catch(e: any) { alert(e.message); }
+                                  }
+                                }}
+                                className="text-red-500 hover:text-red-700 text-[10px] font-bold underline cursor-pointer"
+                              >
+                                🗑️ Eliminar
                               </button>
                               <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
                                 app.status === 'Reprogramado' ? 'bg-toast-200 text-toast-500' : 'bg-slate-200 text-slate-800'
