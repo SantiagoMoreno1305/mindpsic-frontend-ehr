@@ -96,32 +96,33 @@ export default function AdminPortal() {
     satisfaccionPromedio: 0
   });
 
+  const fetchMetrics = async () => {
+    try {
+      const storedToken = localStorage.getItem('mind_token');
+      const userStr = localStorage.getItem('mind_user');
+      const tenantId = userStr ? JSON.parse(userStr).tenantId : '';
+      
+      const res = await apiFetch('/api/metrics/dashboard', {
+        headers: {
+          'Authorization': storedToken ? `Bearer ${storedToken}` : '',
+          'x-tenant-id': tenantId
+        }
+      });
+      const data = await res.json();
+      const metrics = data.data || data || {};
+      
+      setDashboardMetrics({
+        pacientesAtendidosCount: metrics.pacientesAtendidosCount || 0,
+        psicologosActivosCount: metrics.psicologosActivosCount || 0,
+        evolucionesHistoricasCount: metrics.evolucionesHistoricasCount || 0,
+        satisfaccionPromedio: metrics.satisfaccionPromedio || 0
+      });
+    } catch (err) {
+      console.error('Error fetching dashboard metrics', err);
+    }
+  };
+
   useEffect(() => {
-    const fetchMetrics = async () => {
-      try {
-        const storedToken = localStorage.getItem('mind_token');
-        const userStr = localStorage.getItem('mind_user');
-        const tenantId = userStr ? JSON.parse(userStr).tenantId : '';
-        
-        const res = await apiFetch('/api/metrics/dashboard', {
-          headers: {
-            'Authorization': storedToken ? `Bearer ${storedToken}` : '',
-            'x-tenant-id': tenantId
-          }
-        });
-        const data = await res.json();
-        const metrics = data.data || data || {};
-        
-        setDashboardMetrics({
-          pacientesAtendidosCount: metrics.pacientesAtendidosCount || 0,
-          psicologosActivosCount: metrics.psicologosActivosCount || 0,
-          evolucionesHistoricasCount: metrics.evolucionesHistoricasCount || 0,
-          satisfaccionPromedio: metrics.satisfaccionPromedio || 0
-        });
-      } catch (err) {
-        console.error('Error fetching dashboard metrics', err);
-      }
-    };
     if (currentUser) {
       fetchMetrics();
     }
@@ -573,9 +574,15 @@ export default function AdminPortal() {
             <div className="bg-white rounded-2xl border border-slate-150 p-5 shadow-2xs space-y-4 text-left">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-2.5 gap-2">
                 <div>
-                  <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
+                  <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center gap-2">
                     <Filter className="w-4 h-4 mr-1.5 text-toast-500 font-bold" />
                     Consola de Alertas e Inteligencia del Filtro Cruzado
+                    <button
+                      onClick={fetchMetrics}
+                      className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-200 transition-all cursor-pointer ml-2"
+                    >
+                      🔄 Refrescar Métricas
+                    </button>
                   </h3>
                   <p className="text-[11px] text-slate-400 font-sans">Cruza analíticas de salud por psicólogo asignado, rama clínica, día de la semana y mes contable.</p>
                 </div>

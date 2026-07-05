@@ -357,6 +357,30 @@ export default function DelegatedAppointmentModal({
     }
   };
 
+  const deletePatient = async () => {
+    if (!window.confirm('¿Estás seguro de eliminar este paciente?')) return;
+    try {
+      const token  = localStorage.getItem('mind_token');
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/patients/${form.patientId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+      setPatients(prev => prev.filter(p => p.id !== form.patientId));
+      setForm(prev => ({ ...prev, patientId: '' }));
+      setIsEditingPatient(false);
+      alert('✅ Paciente eliminado exitosamente.');
+    } catch (err: any) {
+      alert(`❌ Error al eliminar paciente: ${err.message}`);
+    }
+  };
+
   // ── Render ──────────────────────────────────────────────────────────────
   if (!isOpen) return null;
 
@@ -541,9 +565,14 @@ export default function DelegatedAppointmentModal({
                     ))}
                   </select>
                   {form.patientId && !isCreatingPatient && !isEditingPatient && (
-                    <button type="button" onClick={startEditPatient} className="text-[11px] font-semibold text-indigo-600 hover:underline mt-1.5 block">
-                      ✏️ Corregir datos de este paciente
-                    </button>
+                    <div className="flex gap-4 mt-1.5">
+                      <button type="button" onClick={startEditPatient} className="text-[11px] font-semibold text-indigo-600 hover:underline">
+                        ✏️ Corregir datos de este paciente
+                      </button>
+                      <button type="button" onClick={deletePatient} className="text-[11px] font-semibold text-red-600 hover:underline">
+                        🗑️ Eliminar
+                      </button>
+                    </div>
                   )}
                 </>
               )}
