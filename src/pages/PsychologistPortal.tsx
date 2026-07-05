@@ -854,8 +854,7 @@ export default function PsychologistPortal({
                                             <button 
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                const url = app.roomUrl?.startsWith('http') ? app.roomUrl : `https://mindhealthips.com${app.roomUrl?.startsWith('/') ? app.roomUrl : '/' + (app.roomUrl || '')}`;
-                                                window.open(url, '_blank');
+                                                window.open('https://mindhealthips.com/', '_blank');
                                               }}
                                               className="text-[9px] bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded shadow-xs cursor-pointer"
                                             >
@@ -1010,6 +1009,12 @@ export default function PsychologistPortal({
             </div>
 
             <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+              <button
+                onClick={() => window.open('https://mindhealthips.com/', '_blank')}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer flex items-center gap-2 mr-auto"
+              >
+                📹 Unirse a la videollamada
+              </button>
               <button
                 onClick={() => handleMarkAttendance('No Atendido')}
                 className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-xs rounded-lg transition-colors cursor-pointer"

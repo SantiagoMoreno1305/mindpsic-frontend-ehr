@@ -525,7 +525,7 @@ export default function DelegatedAppointmentModal({
                     required
                     value={form.patientId}
                     onChange={(e) =>
-                      setForm({ ...form, patientId: e.target.value })
+                      setForm(prev => ({ ...prev, patientId: e.target.value }))
                     }
                     className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white disabled:opacity-50 disabled:bg-slate-100"
                     disabled={isEditingAppointment}
@@ -582,7 +582,7 @@ export default function DelegatedAppointmentModal({
                 required
                 value={form.dateTime || ''}
                 onChange={(e) =>
-                  setForm({ ...form, dateTime: e.target.value })
+                  setForm(prev => ({ ...prev, dateTime: e.target.value }))
                 }
                 className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
               />

@@ -101,14 +101,7 @@ export default function AdminPortal() {
       const storedToken = localStorage.getItem('mind_token');
       const userStr = localStorage.getItem('mind_user');
       const tenantId = userStr ? JSON.parse(userStr).tenantId : '';
-      const apiUrl = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
-      
-      const res = await fetch(`${apiUrl}/api/metrics/dashboard`, {
-        headers: {
-          'Authorization': storedToken ? `Bearer ${storedToken}` : '',
-          'x-tenant-id': tenantId
-        }
-      });
+      const res = await apiFetch('/api/metrics/dashboard');
       if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
       const data = await res.json();
       console.log('RAW METRICS RESPONSE:', data);
