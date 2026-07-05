@@ -783,7 +783,7 @@ export default function PsychologistPortal({
                     {/* Time Column */}
                     <div className="w-16 shrink-0 bg-white border-r border-slate-200 sticky left-0 z-20">
                       <div className="h-12 border-b border-slate-200 bg-slate-50"></div>
-                      {Array.from({ length: 11 }, (_, i) => i + 8).map(hour => (
+                      {Array.from({ length: 24 }, (_, i) => i).map(hour => (
                         <div key={hour} className="h-20 border-b border-slate-200 flex items-start justify-center pt-2">
                           <span className="text-[10px] font-bold text-slate-400">{hour.toString().padStart(2, '0')}:00</span>
                         </div>
@@ -818,7 +818,7 @@ export default function PsychologistPortal({
                               
                               {/* Grid lines */}
                               <div className="absolute inset-0 top-12 pointer-events-none">
-                                {Array.from({ length: 11 }).map((_, h) => (
+                                {Array.from({ length: 24 }).map((_, h) => (
                                   <div key={h} className="h-20 border-b border-dashed border-slate-200 opacity-50 relative">
                                     <div className="absolute top-10 w-full border-b border-dotted border-slate-100"></div>
                                   </div>
@@ -830,7 +830,6 @@ export default function PsychologistPortal({
                                 {(() => {
                                   // Agrupar citas por hora
                                   const grouped = colAppointments.reduce((acc, app) => {
-                                    if (app.startHour < 8 || app.startHour > 18) return acc;
                                     const key = `${app.startHour}`;
                                     if (!acc[key]) acc[key] = [];
                                     acc[key].push(app);
@@ -839,7 +838,7 @@ export default function PsychologistPortal({
 
                                   return Object.values(grouped).map(group => {
                                     const firstApp = group[0];
-                                    const top = (firstApp.startHour - 8) * 80;
+                                    const top = firstApp.startHour * 80;
                                     const height = 76; // 1 hora aprox
 
                                     return (
