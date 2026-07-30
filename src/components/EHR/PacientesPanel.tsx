@@ -7,11 +7,11 @@
  * cualquier rol autenticado del tenant, así que la disponibilidad real la
  * da simplemente montar este componente en el tab de cada portal.
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Search, UserPlus, CalendarPlus, Users, Building2, CalendarClock } from 'lucide-react';
 import { usePatients } from '../../hooks/usePatients';
 import CreatePatientModal from './CreatePatientModal';
-import DelegatedAppointmentModal from '../DelegatedAppointmentModal';
+import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../DelegatedAppointmentModal';
 import type { BackendPatient } from '../../types';
 
 interface PacientesPanelProps {
@@ -26,6 +26,12 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleForPatientId, setScheduleForPatientId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+
+  // RENDIMIENTO: desde este panel se agenda constantemente, así que se precargan
+  // los catálogos al montar para que el modal abra sin espera perceptible.
+  useEffect(() => {
+    prefetchSelectoresAgendamiento();
+  }, []);
 
   function showToast(msg: string) {
     setToast(msg);

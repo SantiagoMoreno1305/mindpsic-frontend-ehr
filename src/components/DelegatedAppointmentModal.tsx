@@ -102,6 +102,92 @@ function formatDateTime(dateStr: string) {
   return { dateLabel, timeLabel };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Caché de los catálogos que alimentan los selectores del modal.
+//
+// Vive a nivel de módulo (no en estado de React) a propósito: así sobrevive al
+// desmontaje del modal y la segunda apertura es instantánea. Son datos que
+// cambian con poca frecuencia — especialistas, pacientes, convenios y
+// especialidades del tenant — y se revalidan en segundo plano en cada apertura,
+// de modo que nunca quedan obsoletos más de lo que dura una sesión de trabajo.
+// ─────────────────────────────────────────────────────────────────────────────
+const SELECTORES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
+interface SelectoresData {
+  specialists: Specialist[];
+  patients: PatientOption[];
+  companies: CompanyOption[];
+  specialties: SpecialtyOption[];
+}
+
+let selectoresCache: (SelectoresData & { ts: number }) | null = null;
+
+/** Petición en vuelo — evita disparar dos cargas simultáneas (p. ej. si el
+ *  prefetch aún no terminó y el usuario ya abrió el modal). */
+let cargaEnVuelo: Promise<SelectoresData> | null = null;
+
+const cacheEsValida = (): boolean =>
+  !!selectoresCache && Date.now() - selectoresCache.ts < SELECTORES_CACHE_TTL_MS;
+
+/** Descarga los 4 catálogos en paralelo y actualiza la caché del módulo. */
+async function cargarSelectores(): Promise<SelectoresData> {
+  if (cargaEnVuelo) return cargaEnVuelo;
+
+  cargaEnVuelo = (async () => {
+    const [specRes, patRes, compRes, specialtyRes] = await Promise.all([
+      apiFetch('/api/users/specialists'),
+      apiFetch('/api/appointments/patients'),
+      apiFetch('/api/companies'),
+      apiFetch('/api/specialties/options'),
+    ]);
+
+    const leer = async <T,>(res: Response): Promise<T[]> => {
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data) ? data : [];
+    };
+
+    const frescos: SelectoresData = {
+      specialists:  await leer<Specialist>(specRes),
+      patients:     await leer<PatientOption>(patRes),
+      companies:    await leer<CompanyOption>(compRes),
+      specialties:  await leer<SpecialtyOption>(specialtyRes),
+    };
+
+    selectoresCache = { ...frescos, ts: Date.now() };
+    return frescos;
+  })();
+
+  try {
+    return await cargaEnVuelo;
+  } finally {
+    cargaEnVuelo = null;
+  }
+}
+
+/**
+ * RENDIMIENTO — Precarga de los catálogos del agendamiento.
+ *
+ * El agendamiento es el flujo central del producto y se usa a diario, así que
+ * no debe percibirse ninguna espera al abrir el modal. Las páginas que montan
+ * este modal (AdminPortal, PsychologistPortal, PacientesPanel) llaman a esta
+ * función al montarse: para cuando el usuario pulsa "Agendar cita", los datos
+ * ya están en caché y el modal abre de inmediato.
+ *
+ * Esto ataca la causa real del retraso observado: el backend corre en Lambda y
+ * un arranque en frío anade segundos a la primera petición. Adelantarla al
+ * montaje de la página mueve esa espera a un momento en que el usuario no la
+ * percibe, en vez de cobrarla justo cuando quiere agendar.
+ *
+ * Es silenciosa a propósito: si falla, el modal reintentará al abrirse.
+ */
+export function prefetchSelectoresAgendamiento(): void {
+  if (cacheEsValida() || cargaEnVuelo) return;
+  cargarSelectores().catch(() => {
+    /* silencioso: el modal reintenta al abrirse */
+  });
+}
+
 interface DelegatedAppointmentModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -196,33 +282,40 @@ export default function DelegatedAppointmentModal({
     fetchSelectorsData();
   }, [isOpen]);
 
+  /**
+   * Carga de los selectores con caché y revalidación en segundo plano
+   * (stale-while-revalidate).
+   *
+   * Antes, cada apertura disparaba las 4 peticiones y bloqueaba TODO el cuerpo
+   * con "Cargando especialistas y pacientes del tenant…" hasta que terminaba la
+   * MÁS LENTA (Promise.all espera a todas). Sin caché, abrir/cerrar/abrir
+   * repetía la espera completa. Y como el backend corre en Lambda, un arranque
+   * en frío anade segundos justo en el momento de agendar.
+   *
+   * Ahora, en orden de preferencia:
+   *   1. Las páginas precargan con prefetchSelectoresAgendamiento() al montar,
+   *      así que al abrir el modal la caché ya suele estar lista.
+   *   2. Si hay datos en caché, se pintan al instante y se revalida por detrás.
+   *   3. Solo se muestra el estado de carga cuando no hay nada que mostrar.
+   */
+  const aplicarDatos = (d: SelectoresData) => {
+    setSpecialists(d.specialists);
+    setPatients(d.patients);
+    setCompanies(d.companies);
+    setSpecialties(d.specialties);
+  };
+
   const fetchSelectorsData = async () => {
-    setIsLoadingData(true);
+    if (cacheEsValida()) {
+      // Apertura inmediata con lo cacheado; se revalida más abajo sin bloquear
+      aplicarDatos(selectoresCache!);
+      setIsLoadingData(false);
+    } else {
+      setIsLoadingData(true);
+    }
 
     try {
-      const [specRes, patRes, compRes, specialtyRes] = await Promise.all([
-        apiFetch('/api/users/specialists'),
-        apiFetch('/api/appointments/patients'),
-        apiFetch('/api/companies'),
-        apiFetch('/api/specialties/options'),
-      ]);
-
-      if (specRes.ok) {
-        const specData = await specRes.json();
-        setSpecialists(Array.isArray(specData) ? specData : []);
-      }
-      if (patRes.ok) {
-        const patData = await patRes.json();
-        setPatients(Array.isArray(patData) ? patData : []);
-      }
-      if (compRes.ok) {
-        const compData = await compRes.json();
-        setCompanies(Array.isArray(compData) ? compData : []);
-      }
-      if (specialtyRes.ok) {
-        const specialtyData = await specialtyRes.json();
-        setSpecialties(Array.isArray(specialtyData) ? specialtyData : []);
-      }
+      aplicarDatos(await cargarSelectores());
     } catch (err) {
       console.error('[DelegatedModal] Error cargando datos de selectores:', err);
     } finally {
@@ -388,6 +481,7 @@ export default function DelegatedAppointmentModal({
       };
 
       setPatients(prev => [...prev, newOption]);
+      selectoresCache = null; // El listado cambió: invalidar caché de selectores
       setForm(prev => ({ ...prev, patientId: newOption.id }));
       setIsCreatingPatient(false);
 
@@ -477,6 +571,7 @@ export default function DelegatedAppointmentModal({
         documentId: updatedPatient.documentId,
         email: updatedPatient.email
       } : p));
+      selectoresCache = null; // El listado cambió: invalidar caché de selectores
 
       setIsEditingPatient(false);
       toast.success('Paciente actualizado exitosamente.');
@@ -503,6 +598,7 @@ export default function DelegatedAppointmentModal({
         throw new Error(errData.error || `HTTP ${res.status}`);
       }
       setPatients(prev => prev.filter(p => p.id !== form.patientId));
+      selectoresCache = null; // El listado cambió: invalidar caché de selectores
       setForm(prev => ({ ...prev, patientId: '' }));
       setIsEditingPatient(false);
       toast.success('Paciente eliminado exitosamente.');

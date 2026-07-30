@@ -16,7 +16,7 @@ import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
-import DelegatedAppointmentModal from '../components/DelegatedAppointmentModal';
+import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
 import { apiFetch } from '../lib/apiClient';
 import { 
@@ -404,6 +404,14 @@ export default function AdminPortal() {
       toast.error('Error de red: ' + err.message);
     }
   };
+
+  // RENDIMIENTO: precargar los catálogos del agendamiento en cuanto monta la
+  // página. El agendamiento es el flujo central y se usa a diario; adelantar la
+  // carga aquí hace que el modal abra de inmediato en vez de cobrarle al
+  // usuario el arranque en frío de Lambda justo cuando pulsa "Agendar cita".
+  useEffect(() => {
+    prefetchSelectoresAgendamiento();
+  }, []);
 
   // Verificación de sesión + RBAC (sin navigate — App.tsx maneja la guardia por estado)
   useEffect(() => {
