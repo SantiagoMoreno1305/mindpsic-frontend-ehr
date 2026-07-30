@@ -53,7 +53,7 @@ export default function ContextSwitcher({ currentContext, onContextChange }: Con
       <button
         onClick={() => setIsOpen(!isOpen)}
         className={`
-          flex items-center gap-2 px-3 py-2 rounded-lg
+          flex items-center gap-2 px-3 py-2 rounded-lg shrink-0
           border transition-all duration-150 cursor-pointer
           text-sm font-medium
           ${isOpen
@@ -64,8 +64,8 @@ export default function ContextSwitcher({ currentContext, onContextChange }: Con
         title={`Contexto actual: ${currentContextData?.label}`}
       >
         {currentContextData?.icon}
-        <span className="hidden sm:inline">{currentContextData?.label}</span>
-        <ChevronDown className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        <span className="hidden sm:inline whitespace-nowrap">{currentContextData?.label}</span>
+        <ChevronDown className={`w-4 h-4 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
       {/* Dropdown Menu */}

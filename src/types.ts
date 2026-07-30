@@ -281,6 +281,14 @@ export interface BackendPatient {
   documentId: string;
   email?: string;
   phone?: string;
+  corporateClient?: string;
+  tenantId?: string;
+  recordNumber?: string;
+  status?: string;
+  riskLevel?: string;
+  psychologist?: { id: string; name: string } | null;
+  lastAppointmentStatus?: string | null;
+  lastAppointmentDate?: string | null;
 }
 
 export interface BackendAppointment {
@@ -288,6 +296,8 @@ export interface BackendAppointment {
   patient: { id: string; firstName: string; lastName: string };
   psychologist: { id: string; name: string };
   dateTime: string;
+  date?: string;
+  timeSlot?: string;
   type: string;
   status: string;
   notes?: string;

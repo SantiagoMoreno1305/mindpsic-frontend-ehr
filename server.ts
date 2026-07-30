@@ -15,9 +15,56 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTENTICACIÓN (Diagnóstico A-07)
+//
+// Todos los endpoints de este servidor estaban ABIERTOS: cualquiera en internet
+// podía invocarlos. `/api/chat` además reenviaba datos clínicos identificables
+// (nombre, edad, género del paciente) a Google Gemini sin control alguno.
+//
+// Este servidor NO tiene JWT_SECRET a propósito: en vez de duplicar el secreto
+// en un tercer servicio, delega la verificación al backend de Mind — la única
+// autoridad de identidad — invocando su GET /auth/sync con el mismo Bearer
+// token. Si el backend responde 200, el token es válido y devuelve la identidad
+// real (role y tenantId resueltos desde Prisma).
+// ─────────────────────────────────────────────────────────────────────────────
+const MIND_API_URL =
+  process.env.MIND_API_URL || process.env.VITE_API_URL || "http://localhost:3001";
+
+async function requireAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+) {
+  const authHeader = req.headers["authorization"];
+  const token = typeof authHeader === "string" ? authHeader.split(" ")[1] : null;
+
+  if (!token) {
+    return res.status(401).json({ error: "Token requerido." });
+  }
+
+  try {
+    const verification = await fetch(`${MIND_API_URL}/auth/sync`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (!verification.ok) {
+      console.warn("[Auth] Token rechazado por el backend de Mind:", verification.status);
+      return res.status(401).json({ error: "Token inválido o expirado." });
+    }
+
+    (req as any).user = await verification.json();
+    return next();
+  } catch (err: any) {
+    console.error("[Auth] No se pudo contactar al backend de Mind:", err.message);
+    return res.status(503).json({ error: "Error temporal de autenticación." });
+  }
+}
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
 
@@ -40,10 +87,30 @@ async function startServer() {
     return ai;
   };
 
-  // 1. Dr.Mind AI REST API
-  app.post("/api/chat", async (req, res) => {
+  // 1. Dr.Mind AI REST API — requiere sesión clínica válida (A-07)
+  app.post("/api/chat", requireAuth, async (req, res) => {
     try {
       const { messages, patientContext } = req.body;
+
+      // ── Minimización de datos antes de salir hacia Gemini (A-07) ──────────
+      // Defensa en profundidad: aunque el cliente ya no envía identificadores,
+      // aquí se filtra explícitamente lo que puede cruzar hacia un tercero.
+      // Google no tiene BAA/DPA firmado para este tratamiento, y son datos de
+      // salud mental (categoría especial, Ley 1581 art. 5-6): nunca deben salir
+      // nombre, documento, correo, teléfono ni fecha exacta de nacimiento.
+      const IDENTIFYING_FIELDS = [
+        "name", "nombre", "firstName", "lastName", "apellidos",
+        "documentId", "numeroDocumento", "email", "correo",
+        "phone", "telefono", "birthDate", "fechaNacimiento", "recordNumber",
+      ];
+      const safePatientContext =
+        patientContext && typeof patientContext === "object"
+          ? Object.fromEntries(
+              Object.entries(patientContext).filter(
+                ([key]) => !IDENTIFYING_FIELDS.includes(key)
+              )
+            )
+          : null;
       
       if (!messages || !Array.isArray(messages)) {
         return res.status(400).json({ error: "Mensajes inválidos o ausentes en el cuerpo." });
@@ -61,8 +128,8 @@ Su tono laboral debe ser altamente profesional, empático, reservado, riguroso y
 Conserva límites hipocráticos rígidos sobre la privacidad del paciente y la confidencialidad absoluta (Ley 1581 / HIPAA).
 Puedes ayudar a redactar o depurar notas de evolución clínica, analizar reportes diagnósticos alternos, aconsejar planes psicoterapéuticas basados en evidencia científica (TCC, terapia psicodinámica, etc.), estructurar resúmenes ejecutivos para auditorías y recomendar baterías psicométricas.
 
-Contexto actual del paciente consultado:
-${patientContext ? JSON.stringify(patientContext) : 'Ninguno en particular actualmente seleccionado.'}
+Contexto actual del paciente consultado (anonimizado — sin identificadores):
+${safePatientContext ? JSON.stringify(safePatientContext) : 'Ninguno en particular actualmente seleccionado.'}
 
 Reglas específicas:
 1. Nunca uses lenguaje publicitario o condescendiente.
@@ -145,8 +212,8 @@ Como asistente del ecosistema **MindPsic & MindHealth**, puedo indicarte que el 
     }
   });
 
-  // 2. Mass Upload Clinical Storage RAG trigger endpoint stub
-  app.post("/api/clinical/upload-masivo", (req, res) => {
+  // 2. Mass Upload Clinical Storage RAG trigger endpoint stub — requiere sesión (A-07)
+  app.post("/api/clinical/upload-masivo", requireAuth, (req, res) => {
     // ESTADO DE SIMULACIÓN DE DETECCIÓN Y PARSEO CLÍNICO
     // TODO: Conectar a LLM / RAG para procesamiento de datos clínicos
     console.log("Carga masiva detectada. Iniciando flujo RAG clínico.");
@@ -163,30 +230,13 @@ Como asistente del ecosistema **MindPsic & MindHealth**, puedo indicarte que el 
     return res.json(parsedDataSimulated);
   });
 
-  // 3. Videocalls room allocator endpoint stub
-  app.post("/api/clinical/video-session", (req, res) => {
-    // TODO: Conectar con APIs de videollamadas especializadas (Twilio, WebRTC, Zoom SDK)
-    const { sessionId, therapistId } = req.body;
-    return res.json({
-      status: "room_allocated",
-      sessionId,
-      therapistId,
-      allocatedBy: "MindPsic Signal Bridge",
-      pingMs: 45
-    });
-  });
-
-  // 4. Tenancy Management validation endpoint stub
-  app.post("/api/admin/tenant-validate", (req, res) => {
-    // TODO: Conectar a base de datos externa de administración de inquilinos / dominios
-    const { domain } = req.body;
-    return res.json({
-      active: true,
-      domain,
-      verificationHash: "sha256:49fe6aef88e1bc",
-      metricsConnection: "STABLE"
-    });
-  });
+  // ── ELIMINADOS (A-07) ──────────────────────────────────────────────────────
+  // POST /api/clinical/video-session y POST /api/admin/tenant-validate se
+  // borraron: eran stubs sin autenticación que ningún componente del frontend
+  // llamaba (verificado con búsqueda en src/). Devolvían datos inventados
+  // ("verificationHash", "active: true") que, de haberse conectado, habrían
+  // hecho pasar por válido cualquier dominio o sala. Cuando se implementen de
+  // verdad deben vivir en el backend de Mind, con requireAuth y RBAC.
 
   // Integración de Vite en Express como middleware para desarrollo
   if (process.env.NODE_ENV !== "production") {

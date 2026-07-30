@@ -78,15 +78,25 @@ export default function DrMindChat({ isOpen, onClose, selectedPatient }: DrMindC
     // Aquí se conecta con el endpoint del backend /api/chat que llama a Gemini o tu propio LLM / RAG local.
     // También puedes modificar la ruta o implementar WebSockets si necesitas transmisión (streaming) en vivo.
     try {
+      // SEGURIDAD (A-07): el endpoint exige sesión clínica válida — se adjunta
+      // el Bearer token. Es una ruta same-origin (servidor del EHR), así que no
+      // se puede usar apiFetch(), que prefija la URL del backend de Mind.
+      const token = localStorage.getItem('mind_token');
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
         },
         body: JSON.stringify({
           messages: [...messages, newUserMsg].map(m => ({ role: m.role, content: m.content })),
+          // SEGURIDAD (A-07): NO se envía el nombre del paciente. Este contexto
+          // cruza hacia Google Gemini, un tercero sin BAA/DPA para datos de
+          // salud mental (categoría especial, Ley 1581 art. 5-6). Solo va
+          // contexto clínico no identificable; el servidor filtra de nuevo por
+          // si acaso (defensa en profundidad).
           patientContext: selectedPatient ? {
-            name: selectedPatient.name,
             age: selectedPatient.age,
             gender: selectedPatient.gender,
             agreement: selectedPatient.agreement,

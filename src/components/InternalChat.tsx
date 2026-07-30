@@ -82,7 +82,7 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-toast-300 shadow-xl overflow-hidden flex flex-col h-[calc(110vh-210px)] relative font-sans">
+    <div className="bg-white rounded-2xl border border-toast-300 shadow-xl overflow-hidden flex flex-col h-[calc(100vh-210px)] relative font-sans">
       
       {/* SECURE HEADER BLOCK */}
       <div className="bg-gradient-to-r from-charcoal-900 to-charcoal-950 text-white p-4.5 border-b border-toast-400 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-left">
