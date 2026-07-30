@@ -82,7 +82,7 @@ import {
 } from 'lucide-react';
 import CalendarPanel, { normalizeStatus, type CalendarAppointment } from '../components/EHR/CalendarPanel';
 import { legalDisclosureSpanish } from '../data/mockData';
-import DelegatedAppointmentModal from '../components/DelegatedAppointmentModal';
+import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
 
 const CALENDAR_KPI_TONES: Record<string, string> = {
@@ -151,6 +151,16 @@ export default function PsychologistPortal({
     if (real) return `${real.firstName} ${real.lastName}`.trim();
     return patients.find(p => p.id === id)?.name || '';
   };
+
+  // ---------------------------------------------------------------
+  // RENDIMIENTO: precarga de los catálogos del agendamiento
+  // El agendamiento es el flujo central y se usa a diario. Adelantar la carga
+  // al montaje evita que el usuario pague el arranque en frío de Lambda justo
+  // cuando pulsa "Agendar cita".
+  // ---------------------------------------------------------------
+  useEffect(() => {
+    prefetchSelectoresAgendamiento();
+  }, []);
 
   // ---------------------------------------------------------------
   // Notificaciones de Citas Delegadas
