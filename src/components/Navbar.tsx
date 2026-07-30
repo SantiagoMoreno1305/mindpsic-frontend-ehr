@@ -10,17 +10,16 @@
 
 import { User } from '../types';
 import ContextSwitcher, { WorkspaceContext } from './ContextSwitcher';
-import { ShieldCheck, LogOut, Sparkles, User as UserIcon } from 'lucide-react';
+import { ShieldCheck, LogOut, User as UserIcon } from 'lucide-react';
 
 interface NavbarProps {
   user: User | null;
   onLogout: () => void;
-  onOpenDrMind: () => void;
   currentContext: WorkspaceContext;
   onContextChange: (context: WorkspaceContext) => void;
 }
 
-export default function Navbar({ user, onLogout, onOpenDrMind, currentContext, onContextChange }: NavbarProps) {
+export default function Navbar({ user, onLogout, currentContext, onContextChange }: NavbarProps) {
   return (
     <nav className="bg-white border-b border-stone-100 sticky top-0 z-40 shadow-[0_1px_0_0_rgba(0,0,0,0.06)]">
       <div className="max-w-7xl mx-auto px-8 py-0 flex items-stretch justify-between min-h-[72px]">
@@ -101,29 +100,6 @@ export default function Navbar({ user, onLogout, onOpenDrMind, currentContext, o
         <div className="flex items-center gap-3 py-4">
           {user && (
             <>
-              {/* Dr.Mind AI CTA */}
-              <button
-                onClick={onOpenDrMind}
-                id="btn-navbar-drmind"
-                className="
-                  hidden sm:inline-flex items-center gap-2
-                  px-4 py-2 rounded-xl
-                  bg-stone-950 hover:bg-stone-800
-                  text-white text-[11px] font-bold tracking-wide
-                  transition-all duration-200 cursor-pointer
-                  border border-stone-900
-                  shadow-[0_1px_3px_rgba(0,0,0,0.25)]
-                  hover:shadow-[0_2px_8px_rgba(0,0,0,0.20)]
-                  active:scale-[0.98]
-                "
-              >
-                <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse shrink-0" />
-                <span>Dr.Mind AI</span>
-              </button>
-
-              {/* Divisor */}
-              <div className="h-6 w-px bg-stone-200 hidden sm:block" aria-hidden="true" />
-
               {/* User identity card */}
               <div className="flex items-center gap-3">
                 {/* Avatar */}

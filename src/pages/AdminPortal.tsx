@@ -4,6 +4,9 @@
  */
 
 import { useState, FormEvent, useEffect } from 'react';
+import { toast } from 'react-hot-toast';
+import * as XLSX from 'xlsx-js-style';
+import { confirmToast } from '../lib/confirmToast';
 import { 
   mockPsychologistsPerformance, 
   initialClinicalFiles
@@ -14,6 +17,7 @@ import { useGlobalChat } from '../hooks/useGlobalChat';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal from '../components/DelegatedAppointmentModal';
+import PacientesPanel from '../components/EHR/PacientesPanel';
 import { apiFetch } from '../lib/apiClient';
 import { 
   Patient, 
@@ -41,10 +45,15 @@ import {
   UserPlus,
   PlusCircle,
   CalendarPlus,
-  ShieldAlert
+  ShieldAlert,
+  Trash2,
+  Building2,
+  Pencil,
+  X,
+  Download
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'equipo' | 'billing_rips' | 'chat';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
 
 export default function AdminPortal() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -52,6 +61,7 @@ export default function AdminPortal() {
   const [accessDenied, setAccessDenied] = useState(false);
   const [showDelegatedModal, setShowDelegatedModal] = useState(false);
   const [editingAppointment, setEditingAppointment] = useState<any>(null);
+  const [isGeneratingRips, setIsGeneratingRips] = useState(false);
 
   // Extracción del token de localStorage y consumo de hooks reales
   // IMPORTANT: Hooks MUST be called unconditionally at the top level — Rules of Hooks
@@ -59,7 +69,342 @@ export default function AdminPortal() {
   const { appointments: realAppointments, loading: apptsLoading } = useAppointments(token);
   const { patients: realPatients, loading: patientsLoading } = usePatients(token);
   const { unreadCount: globalUnreadCount } = useGlobalChat();
-  
+
+  // ── Equipo y Accesos: autoservicio de aprovisionamiento (POST /users/provision) ──
+  // NOTA: no se usa apiFetch/apiPost aquí a propósito — ese wrapper trata CUALQUIER
+  // 403 como "tenant suspendido" y dispara logout global. /users/provision responde
+  // 403 también para límite de licencias alcanzado o rol insuficiente, que son
+  // errores de negocio normales, no una suspensión — se maneja con fetch directo.
+  const [newStaffName, setNewStaffName] = useState('');
+  const [newStaffEmail, setNewStaffEmail] = useState('');
+  const [newStaffRole, setNewStaffRole] = useState<'ESPECIALISTA_B2B' | 'OPERATIVO'>('ESPECIALISTA_B2B');
+  const [isCreatingStaff, setIsCreatingStaff] = useState(false);
+  const [staffError, setStaffError] = useState<string | null>(null);
+  const [staffSuccess, setStaffSuccess] = useState<{ name: string; email: string; tempPassword: string } | null>(null);
+
+  const handleCreateStaff = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!newStaffName.trim() || !newStaffEmail.trim()) return;
+
+    setIsCreatingStaff(true);
+    setStaffError(null);
+    setStaffSuccess(null);
+
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/users/provision`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        // tenantId NUNCA se envía — el backend lo resuelve desde el usuario
+        // real (DIRECTIVO queda bloqueado a su propio tenant automáticamente).
+        body: JSON.stringify({
+          name: newStaffName.trim(),
+          email: newStaffEmail.trim().toLowerCase(),
+          role: newStaffRole,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setStaffError(data.error || data.detail || `Error HTTP ${res.status}`);
+        return;
+      }
+
+      setStaffSuccess({
+        name: newStaffName.trim(),
+        email: newStaffEmail.trim().toLowerCase(),
+        tempPassword: data.tempPassword,
+      });
+      setNewStaffName('');
+      setNewStaffEmail('');
+      setNewStaffRole('ESPECIALISTA_B2B');
+      await fetchTeamUsers(); // refresca la lista de abajo con el nuevo colaborador
+    } catch (err: any) {
+      setStaffError('Error de red o comunicación con el servidor: ' + err.message);
+    } finally {
+      setIsCreatingStaff(false);
+    }
+  };
+
+  // ── Panel: Usuarios de mi organización (mismo tenant del DIRECTIVO/CEO logueado) ──
+  // GET /api/users sin query param → el backend resuelve el tenant automáticamente
+  // desde el usuario real (Prisma), nunca hay que pasarlo a mano.
+  interface TeamUser {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+  }
+
+  const [teamUsers, setTeamUsers] = useState<TeamUser[]>([]);
+  const [teamUsersLoading, setTeamUsersLoading] = useState(false);
+  const [teamUsersError, setTeamUsersError] = useState<string | null>(null);
+  const [deletingStaffId, setDeletingStaffId] = useState<string | null>(null);
+
+  const fetchTeamUsers = async () => {
+    setTeamUsersLoading(true);
+    setTeamUsersError(null);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/users`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      const list = Array.isArray(data) ? data : (Array.isArray(data?.users) ? data.users : []);
+      setTeamUsers(list);
+    } catch (err: any) {
+      setTeamUsersError(err.message || 'Error al cargar tu equipo.');
+    } finally {
+      setTeamUsersLoading(false);
+    }
+  };
+
+  const handleDeleteTeamUser = async (member: TeamUser) => {
+    if (!(await confirmToast(`¿Eliminar a "${member.name}" (${member.email})? Esta acción borra su cuenta por completo y no se puede deshacer.`))) {
+      return;
+    }
+    setDeletingStaffId(member.id);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/users/${member.id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error('Error del servidor: ' + (data.error || `HTTP ${res.status}`));
+        return;
+      }
+      await fetchTeamUsers();
+    } catch (err: any) {
+      toast.error('Error de red o comunicación con el servidor: ' + err.message);
+    } finally {
+      setDeletingStaffId(null);
+    }
+  };
+
+  // ── Convenios / Clientes Corporativos: catálogo propio del tenant ──
+  // Igual que Equipo y Accesos: fetch directo (no apiFetch) para no disparar
+  // el logout global ante un 403 de negocio (ej. nombre duplicado en el tenant).
+  interface ServiceLocationRecord {
+    id: string;
+    name: string;
+    address?: string | null;
+  }
+
+  interface CompanyRecord {
+    id: string;
+    name: string;
+    domain?: string | null;
+    taxId?: string | null;
+    clientType: 'EMPRESA' | 'PARTICULAR';
+    agreementType?: string | null;
+    coveredSessions?: number | null;
+    validFrom?: string | null;
+    validUntil?: string | null;
+    contactName?: string | null;
+    contactPhone?: string | null;
+    contactEmail?: string | null;
+    status: string;
+    notes?: string | null;
+    isDefault: boolean;
+    locations: ServiceLocationRecord[];
+  }
+
+  const emptyCompanyForm = {
+    name: '', domain: '', taxId: '', clientType: 'EMPRESA' as 'EMPRESA' | 'PARTICULAR',
+    agreementType: '', coveredSessions: '', validFrom: '', validUntil: '',
+    contactName: '', contactPhone: '', contactEmail: '', notes: '',
+  };
+
+  const [companies, setCompanies] = useState<CompanyRecord[]>([]);
+  const [companiesLoading, setCompaniesLoading] = useState(false);
+  const [companiesError, setCompaniesError] = useState<string | null>(null);
+  const [showCompanyModal, setShowCompanyModal] = useState(false);
+  const [editingCompanyId, setEditingCompanyId] = useState<string | null>(null);
+  const [companyForm, setCompanyForm] = useState(emptyCompanyForm);
+  const [savingCompany, setSavingCompany] = useState(false);
+  const [companyFormError, setCompanyFormError] = useState<string | null>(null);
+
+  const [editingLocations, setEditingLocations] = useState<ServiceLocationRecord[]>([]);
+  const [newLocationName, setNewLocationName] = useState('');
+  const [newLocationAddress, setNewLocationAddress] = useState('');
+  const [savingLocation, setSavingLocation] = useState(false);
+
+  const fetchCompanies = async () => {
+    setCompaniesLoading(true);
+    setCompaniesError(null);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/companies`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ([]));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setCompanies(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setCompaniesError(err.message || 'Error al cargar los convenios.');
+    } finally {
+      setCompaniesLoading(false);
+    }
+  };
+
+  const openCreateCompanyModal = () => {
+    setEditingCompanyId(null);
+    setCompanyForm(emptyCompanyForm);
+    setCompanyFormError(null);
+    setEditingLocations([]);
+    setNewLocationName('');
+    setNewLocationAddress('');
+    setShowCompanyModal(true);
+  };
+
+  const openEditCompanyModal = (c: CompanyRecord) => {
+    setEditingCompanyId(c.id);
+    setCompanyForm({
+      name: c.name,
+      domain: c.domain || '',
+      taxId: c.taxId || '',
+      clientType: c.clientType,
+      agreementType: c.agreementType || '',
+      coveredSessions: c.coveredSessions?.toString() || '',
+      validFrom: c.validFrom ? c.validFrom.slice(0, 10) : '',
+      validUntil: c.validUntil ? c.validUntil.slice(0, 10) : '',
+      contactName: c.contactName || '',
+      contactPhone: c.contactPhone || '',
+      contactEmail: c.contactEmail || '',
+      notes: c.notes || '',
+    });
+    setCompanyFormError(null);
+    setEditingLocations(c.locations || []);
+    setNewLocationName('');
+    setNewLocationAddress('');
+    setShowCompanyModal(true);
+  };
+
+  const handleAddLocation = async () => {
+    if (!editingCompanyId || !newLocationName.trim()) return;
+    setSavingLocation(true);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/companies/${editingCompanyId}/locations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ name: newLocationName.trim(), address: newLocationAddress.trim() || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Error al agregar la ubicación de atención.');
+        return;
+      }
+      setEditingLocations((prev) => [...prev, data]);
+      setNewLocationName('');
+      setNewLocationAddress('');
+      await fetchCompanies();
+    } catch (err: any) {
+      toast.error('Error de red: ' + err.message);
+    } finally {
+      setSavingLocation(false);
+    }
+  };
+
+  const handleRemoveLocation = async (locationId: string) => {
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/companies/locations/${locationId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error();
+      setEditingLocations((prev) => prev.filter((l) => l.id !== locationId));
+      await fetchCompanies();
+    } catch {
+      toast.error('Error al eliminar la ubicación de atención.');
+    }
+  };
+
+  const handleSaveCompany = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!companyForm.name.trim()) return;
+    setSavingCompany(true);
+    setCompanyFormError(null);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const isEditing = !!editingCompanyId;
+      const res = await fetch(`${apiUrl}/api/companies${isEditing ? `/${editingCompanyId}` : ''}`, {
+        method: isEditing ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          name: companyForm.name.trim(),
+          domain: companyForm.domain.trim() || null,
+          taxId: companyForm.taxId.trim() || null,
+          clientType: companyForm.clientType,
+          agreementType: companyForm.agreementType.trim() || null,
+          coveredSessions: companyForm.coveredSessions ? Number(companyForm.coveredSessions) : null,
+          validFrom: companyForm.validFrom || null,
+          validUntil: companyForm.validUntil || null,
+          contactName: companyForm.contactName.trim() || null,
+          contactPhone: companyForm.contactPhone.trim() || null,
+          contactEmail: companyForm.contactEmail.trim() || null,
+          notes: companyForm.notes.trim() || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCompanyFormError(data.error || `Error HTTP ${res.status}`);
+        return;
+      }
+      setShowCompanyModal(false);
+      await fetchCompanies();
+    } catch (err: any) {
+      setCompanyFormError('Error de red: ' + err.message);
+    } finally {
+      setSavingCompany(false);
+    }
+  };
+
+  const handleToggleCompanyStatus = async (c: CompanyRecord) => {
+    const nextStatus = c.status === 'activo' ? 'inactivo' : 'activo';
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/companies/${c.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      if (!res.ok) throw new Error();
+      await fetchCompanies();
+    } catch {
+      toast.error('Error al cambiar el estado del convenio.');
+    }
+  };
+
+  const handleDeleteCompany = async (c: CompanyRecord) => {
+    if (!(await confirmToast(`¿Eliminar el convenio/cliente "${c.name}"? Esta acción no se puede deshacer.`))) return;
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/companies/${c.id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Error al eliminar el convenio.');
+        return;
+      }
+      await fetchCompanies();
+    } catch (err: any) {
+      toast.error('Error de red: ' + err.message);
+    }
+  };
+
   // Verificación de sesión + RBAC (sin navigate — App.tsx maneja la guardia por estado)
   useEffect(() => {
     const storedToken = localStorage.getItem('mind_token');
@@ -90,7 +435,22 @@ export default function AdminPortal() {
 
 
   const [activeTab, setActiveTab] = useState<AdminTab>('metrics');
-  
+
+  // Carga el equipo de mi organización al entrar al tab "Equipo y Accesos"
+  useEffect(() => {
+    if (activeTab !== 'equipo') return;
+    fetchTeamUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  // Carga los convenios/clientes al entrar al tab "Convenios" o "Facturación y RIPS"
+  // (este último los necesita para el selector de Contrato del generador RIPS)
+  useEffect(() => {
+    if (activeTab !== 'convenios' && activeTab !== 'billing_rips') return;
+    fetchCompanies();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
   const [dashboardMetrics, setDashboardMetrics] = useState({
     pacientesAtendidosCount: 0,
     psicologosActivosCount: 0,
@@ -184,7 +544,7 @@ export default function AdminPortal() {
       status: appt.status || 'Atendido',
       modality: appt.type === 'Virtual' || appt.type === 'Presencial' ? appt.type : 'Virtual',
       agreement: agreement,
-      reason: appt.notes || 'Excelente progreso regulación ansiedad y rumiación.'
+      reason: appt.notes || null
     };
   });
 
@@ -204,9 +564,154 @@ export default function AdminPortal() {
 
   const [ripsYear, setRipsYear] = useState('2026');
   const [ripsMonth, setRipsMonth] = useState('05');
-  const [ripsAgreement, setRipsAgreement] = useState('Sura Medicina Prepagada');
-  const [ripsOutput, setRipsOutput] = useState<string | null>(null);
+  const [ripsCompanyId, setRipsCompanyId] = useState('all');
+  const [ripsFiles, setRipsFiles] = useState<{ US: string; AT: string; AC: string; CT: string } | null>(null);
+  const [ripsWarnings, setRipsWarnings] = useState<string[]>([]);
+  const [ripsPreviewTab, setRipsPreviewTab] = useState<'US' | 'AT' | 'AC' | 'CT'>('US');
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
+
+  // ── Filtros de exportación del Directorio Clínico (Facturación y RIPS) ──
+  const [reportDateFrom, setReportDateFrom] = useState('');
+  const [reportDateTo, setReportDateTo] = useState('');
+  const [reportCompanyId, setReportCompanyId] = useState('all');
+  const [reportStatus, setReportStatus] = useState('all');
+  const [reportPsychologistId, setReportPsychologistId] = useState('all');
+  const [isExportingReport, setIsExportingReport] = useState(false);
+
+  const APPOINTMENT_STATUS_OPTIONS = ['Pendiente', 'Atendida', 'No Atendido', 'Reprogramada'];
+
+  const handleExportPatientsExcel = async () => {
+    setIsExportingReport(true);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const params = new URLSearchParams();
+      if (reportDateFrom) params.set('dateFrom', reportDateFrom);
+      if (reportDateTo) params.set('dateTo', reportDateTo);
+      if (reportCompanyId !== 'all') params.set('companyId', reportCompanyId);
+      if (reportStatus !== 'all') params.set('status', reportStatus);
+      if (reportPsychologistId !== 'all') params.set('psychologistId', reportPsychologistId);
+
+      const res = await fetch(`${apiUrl}/api/patients/export-report?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error('Error al generar el reporte: ' + (data.error || `HTTP ${res.status}`));
+        return;
+      }
+
+      const rows: Array<{
+        documentId: string; firstName: string; lastName: string; phone: string; email: string;
+        convenio: string; psicologoAsignado: string; totalCitas: number; fechas: string; estados: string;
+        psicologosEnCitas: string; totalReprogramaciones: number; quienReprogramo: string;
+      }> = data.rows || [];
+
+      if (rows.length === 0) {
+        toast.error('No hay pacientes que coincidan con los filtros seleccionados.');
+        return;
+      }
+
+      const columns = [
+        { header: 'Identificación', key: 'documentId', width: 16 },
+        { header: 'Nombres', key: 'firstName', width: 16 },
+        { header: 'Apellidos', key: 'lastName', width: 18 },
+        { header: 'Teléfono', key: 'phone', width: 15 },
+        { header: 'Correo', key: 'email', width: 26 },
+        { header: 'Convenio', key: 'convenio', width: 20 },
+        { header: 'Psicólogo Asignado', key: 'psicologoAsignado', width: 22 },
+        { header: 'Total de Citas', key: 'totalCitas', width: 13 },
+        { header: 'Fechas de Citas', key: 'fechas', width: 28 },
+        { header: 'Estados de Citas', key: 'estados', width: 24 },
+        { header: 'Psicólogo(s) en Citas', key: 'psicologosEnCitas', width: 22 },
+        { header: 'Total Reprogramaciones', key: 'totalReprogramaciones', width: 14 },
+        { header: 'Quién Reprogramó', key: 'quienReprogramo', width: 20 },
+      ] as const;
+
+      const filterLabels: string[] = [];
+      if (reportDateFrom) filterLabels.push(`Desde ${reportDateFrom}`);
+      if (reportDateTo) filterLabels.push(`Hasta ${reportDateTo}`);
+      if (reportCompanyId !== 'all') filterLabels.push(`Convenio: ${companies.find((c) => c.id === reportCompanyId)?.name || reportCompanyId}`);
+      if (reportStatus !== 'all') filterLabels.push(`Estado: ${reportStatus}`);
+      if (reportPsychologistId !== 'all') filterLabels.push(`Psicólogo: ${teamUsers.find((u) => u.id === reportPsychologistId)?.name || reportPsychologistId}`);
+
+      const TITLE_ROW = 0;
+      const SUBTITLE_ROW = 1;
+      const HEADER_ROW = 3;
+      const FIRST_DATA_ROW = 4;
+      const lastCol = columns.length - 1;
+
+      const aoa: any[][] = [
+        ['Directorio Clínico Global de Pacientes y Contactos'],
+        [`Generado el ${new Date().toLocaleString('es-CO')}${filterLabels.length ? ' — Filtros: ' + filterLabels.join(' | ') : ' — Sin filtros aplicados'}`],
+        [],
+        columns.map((c) => c.header),
+        ...rows.map((r) => columns.map((c) => (r as any)[c.key])),
+      ];
+
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = columns.map((c) => ({ wch: c.width }));
+      ws['!merges'] = [
+        { s: { r: TITLE_ROW, c: 0 }, e: { r: TITLE_ROW, c: lastCol } },
+        { s: { r: SUBTITLE_ROW, c: 0 }, e: { r: SUBTITLE_ROW, c: lastCol } },
+      ];
+      ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: HEADER_ROW, c: 0 }, e: { r: HEADER_ROW, c: lastCol } }) };
+
+      const BRAND_DARK = '111827';
+      const BRAND_ACCENT = 'F5A623';
+      const BORDER_COLOR = 'D1D5DB';
+      const thinBorder = { style: 'thin', color: { rgb: BORDER_COLOR } };
+      const allBorders = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+
+      const titleCell = ws[XLSX.utils.encode_cell({ r: TITLE_ROW, c: 0 })];
+      if (titleCell) titleCell.s = {
+        font: { bold: true, sz: 14, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: BRAND_DARK } },
+        alignment: { horizontal: 'left', vertical: 'center' },
+      };
+      const subtitleCell = ws[XLSX.utils.encode_cell({ r: SUBTITLE_ROW, c: 0 })];
+      if (subtitleCell) subtitleCell.s = {
+        font: { italic: true, sz: 9, color: { rgb: BRAND_ACCENT } },
+        fill: { fgColor: { rgb: BRAND_DARK } },
+        alignment: { horizontal: 'left', vertical: 'center' },
+      };
+
+      columns.forEach((_, colIdx) => {
+        const headerCell = ws[XLSX.utils.encode_cell({ r: HEADER_ROW, c: colIdx })];
+        if (headerCell) headerCell.s = {
+          font: { bold: true, sz: 10, color: { rgb: 'FFFFFF' } },
+          fill: { fgColor: { rgb: BRAND_DARK } },
+          alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+          border: allBorders,
+        };
+      });
+
+      rows.forEach((r, rowIdx) => {
+        const isEven = rowIdx % 2 === 0;
+        columns.forEach((c, colIdx) => {
+          const cellRef = XLSX.utils.encode_cell({ r: FIRST_DATA_ROW + rowIdx, c: colIdx });
+          const cell = ws[cellRef];
+          if (!cell) return;
+          const isNumericCol = c.key === 'totalCitas' || c.key === 'totalReprogramaciones';
+          const highlightReprog = c.key === 'totalReprogramaciones' && r.totalReprogramaciones > 0;
+          cell.s = {
+            font: { sz: 10, bold: highlightReprog, color: { rgb: highlightReprog ? 'B45309' : '111827' } },
+            fill: { fgColor: { rgb: highlightReprog ? 'FEF3C7' : (isEven ? 'F9FAFB' : 'FFFFFF') } },
+            alignment: { horizontal: isNumericCol ? 'center' : 'left', vertical: 'center', wrapText: c.key === 'fechas' || c.key === 'estados' },
+            border: allBorders,
+          };
+        });
+      });
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Directorio Pacientes');
+      XLSX.writeFile(wb, `directorio_pacientes_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      toast.success(`Excel generado con ${rows.length} paciente(s).`);
+    } catch (err: any) {
+      toast.error('Error de red al generar el reporte: ' + err.message);
+    } finally {
+      setIsExportingReport(false);
+    }
+  };
 
 
   // Estado de carga / guardia defensiva
@@ -277,7 +782,7 @@ export default function AdminPortal() {
 
   const totalFilteredCount = filteredAppointments.length;
   const attendedCount = filteredAppointments.filter(app => ['Atendida', 'Atendido', 'ATENDIDO'].includes(app.status)).length;
-  const unattendedOrReprogrammedCount = filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramado').length;
+  const unattendedOrReprogrammedCount = filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramada' || app.status === 'Pendiente').length;
 
 
   // Create billing user handler
@@ -299,56 +804,57 @@ export default function AdminPortal() {
       role: 'Facturador Clínico',
       agreement: 'Sura Medicina Prepagada'
     });
-    alert(`Usuario de Facturación "${newObj.name}" registrado e integrado con éxito.`);
+    toast.success(`Usuario de Facturación "${newObj.name}" registrado e integrado con éxito.`);
   };
 
-  // Generate dynamic xml/json RIPS code
-  const handleGenerateRips = () => {
-    const randomTxId1 = Math.floor(100000 + Math.random() * 900000);
-    const randomTxId2 = Math.floor(100000 + Math.random() * 900000);
-    
-    const outputXml = `<?xml version="1.0" encoding="UTF-8"?>
-<RIPS_Concepto_Salud version="4.0">
-  <CabeceraControl>
-    <CodigoPrestador>110010948501</CodigoPrestador>
-    <RazonSocial>Consorcio Terapéutico MindPsic MindHealth</RazonSocial>
-    <PeriodoFacturacion Anio="${ripsYear}" Mes="${ripsMonth}" />
-    <FechaGeneracion>${new Date().toISOString().split('T')[0]}</FechaGeneracion>
-  </CabeceraControl>
-  <TransaccionesConvenio aseguradora="${ripsAgreement}">
-    <Factura ID="FACT-${randomTxId1}" TotalCopagos="150000" ValorNeto="1450000">
-      <PacientesRegistrados>
-        <Paciente Documento="10182410" TipoDoc="CC" PrimerNombre="Andres" PrimerApellido="Correa">
-          <Consulta CodigoCups="890108" DiagnosticoPrincipal="F411" Modalidad="Teleconsulta">
-            <FechaServicio>${ripsYear}-${ripsMonth}-12T10:00:00Z</FechaServicio>
-            <ValorConsulta>120000</ValorConsulta>
-            <Copago>10000</Copago>
-          </Consulta>
-        </Paciente>
-        <Paciente Documento="52984120" TipoDoc="CC" PrimerNombre="Valeria" PrimerApellido="Sotomayor">
-          <Consulta CodigoCups="890108" DiagnosticoPrincipal="F320" Modalidad="Teleconsulta">
-            <FechaServicio>${ripsYear}-${ripsMonth}-18T16:00:00Z</FechaServicio>
-            <ValorConsulta>120000</ValorConsulta>
-            <Copago>10000</Copago>
-          </Consulta>
-        </Paciente>
-      </PacientesRegistrados>
-    </Factura>
-    <Factura ID="FACT-${randomTxId2}" TotalCopagos="50000" ValorNeto="600000">
-      <PacientesRegistrados>
-        <Paciente Documento="11048293" TipoDoc="CC" PrimerNombre="Sebastian" PrimerApellido="Martinez">
-          <Consulta CodigoCups="890108" DiagnosticoPrincipal="F510" Modalidad="Teleconsulta">
-            <FechaServicio>${ripsYear}-${ripsMonth}-04T08:30:00Z</FechaServicio>
-            <ValorConsulta>120000</ValorConsulta>
-            <Copago>10000</Copago>
-          </Consulta>
-        </Paciente>
-      </PacientesRegistrados>
-    </Factura>
-  </TransaccionesConvenio>
-</RIPS_Concepto_Salud>`;
+  // Genera los 4 archivos planos oficiales del RIPS (US/AT/AC/CT.txt) con
+  // datos reales: pacientes/consultas/diagnósticos vienen de Appointment +
+  // RipsDiagnosis del periodo seleccionado — solo entran pacientes que YA
+  // tienen diagnóstico RIPS asignado ese mes (ver "Sin diagnóstico RIPS" en
+  // Historias Clínicas para resolver los que falten). Se agrupa por Contrato
+  // (Convenio real) — una factura consecutiva y persistente por convenio; si
+  // se elige "Todos", trae una factura por cada convenio con pacientes ese
+  // mes. El backend arma el contenido de los 4 archivos directamente (misma
+  // lógica regulatoria en un solo lugar, no duplicada aquí).
+  const handleGenerateRips = async () => {
+    setIsGeneratingRips(true);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/rips-diagnosis/export?year=${ripsYear}&month=${ripsMonth}&companyId=${ripsCompanyId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error('Error al generar el RIPS: ' + (data.error || `HTTP ${res.status}`));
+        return;
+      }
 
-    setRipsOutput(outputXml);
+      const convenios: unknown[] = data.convenios || [];
+      if (convenios.length === 0) {
+        toast.error('No hay pacientes con diagnóstico RIPS asignado para este contrato/periodo. Asigna los diagnósticos pendientes desde Historias Clínicas antes de generar el archivo.');
+        return;
+      }
+
+      setRipsFiles(data.files || { US: '', AT: '', AC: '', CT: '' });
+      setRipsWarnings(data.warnings || []);
+    } catch (err: any) {
+      toast.error('Error de red al generar el RIPS: ' + err.message);
+    } finally {
+      setIsGeneratingRips(false);
+    }
+  };
+
+  const downloadRipsFile = (name: 'US' | 'AT' | 'AC' | 'CT') => {
+    if (!ripsFiles) return;
+    const blob = new Blob([ripsFiles[name]], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${name}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // Simulated dropzone RAG loader trigger
@@ -360,9 +866,16 @@ export default function AdminPortal() {
     setRagStatusMessage("Analizando estructura de archivos clónicos con RAG LLM...");
 
     try {
+      // SEGURIDAD (A-07): el endpoint ahora exige sesión clínica válida. Ruta
+      // same-origin (servidor del EHR), así que no aplica apiFetch().
+      const token = localStorage.getItem('mind_token');
+
       const response = await fetch('/api/clinical/upload-masivo', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
         body: JSON.stringify({ triggerRAG: true })
       });
       const data = await response.json();
@@ -392,10 +905,10 @@ export default function AdminPortal() {
   };
 
   return (
-    <div className="flex h-[calc(110vh-70px)] bg-slate-50 overflow-hidden font-sans">
-      
+    <div className="flex h-full bg-slate-50 overflow-hidden font-sans">
+
       {/* ADMIN PORTAL SIDEBAR */}
-      <aside className="w-16 md:w-64 bg-slate-900 text-slate-300 flex flex-col justify-between shrink-0 border-r border-slate-800">
+      <aside className="w-16 md:w-64 bg-slate-900 text-slate-300 flex flex-col justify-between shrink-0 border-r border-slate-800 overflow-y-auto">
         <div className="py-6 flex flex-col space-y-2">
           
           {/* Metrics Panel Switch */}
@@ -445,6 +958,20 @@ export default function AdminPortal() {
             {activeTab === 'advanced_docs' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
+          {/* Pacientes */}
+          <button
+            onClick={() => setActiveTab('patients')}
+            id="tab-adm-pacientes"
+            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+              activeTab === 'patients'
+                ? 'bg-charcoal-900 text-white font-semibold'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <Users className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Pacientes</span>
+            {activeTab === 'patients' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+          </button>
 
           {/* Equipo / Aprovisionamiento RBAC */}
           <button
@@ -459,6 +986,21 @@ export default function AdminPortal() {
             <UserPlus className="w-5 h-5 shrink-0" />
             <span className="ml-3 text-xs hidden md:block">Equipo y Accesos</span>
             {activeTab === 'equipo' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+          </button>
+
+          {/* Convenios / Clientes Corporativos */}
+          <button
+            onClick={() => setActiveTab('convenios')}
+            id="tab-adm-convenios"
+            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+              activeTab === 'convenios'
+                ? 'bg-charcoal-900 text-white font-semibold'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <Building2 className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Convenios</span>
+            {activeTab === 'convenios' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
           {/* Billing & RIPS configurations */}
@@ -780,13 +1322,13 @@ export default function AdminPortal() {
                               </button>
                               <button
                                 onClick={async () => {
-                                  if (confirm('¿Estás seguro de eliminar esta cita?')) {
+                                  if (await confirmToast('¿Estás seguro de eliminar esta cita?')) {
                                     try {
                                       const t = localStorage.getItem('mind_token');
                                       const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
                                       await fetch(`${apiUrl}/api/appointments/${app.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
-                                      alert('Cita eliminada');
-                                    } catch(e: any) { alert(e.message); }
+                                      toast.success('Cita eliminada');
+                                    } catch(e: any) { toast.error(e.message); }
                                   }
                                 }}
                                 className="text-red-500 hover:text-red-700 text-[10px] font-bold underline cursor-pointer"
@@ -804,9 +1346,11 @@ export default function AdminPortal() {
                           <p className="text-[10px] text-slate-400 font-mono">
                             {app.day} • {app.month} • {app.modality} • {app.agreement}
                           </p>
-                          <p className="text-[11px] text-charcoal-800 leading-relaxed bg-white/70 p-2 rounded-lg border border-toast-200/35 mt-1 italic font-sans text-left">
-                            &ldquo;{app.reason}&rdquo;
-                          </p>
+                          {app.reason && (
+                            <p className="text-[11px] text-charcoal-800 leading-relaxed bg-white/70 p-2 rounded-lg border border-toast-200/35 mt-1 italic font-sans text-left">
+                              &ldquo;{app.reason}&rdquo;
+                            </p>
+                          )}
                         </div>
                       ))}
 
@@ -826,7 +1370,7 @@ export default function AdminPortal() {
                   <div className="flex items-center space-x-2">
                     <span className="w-3 h-3 rounded-full bg-toast-500 animate-pulse" />
                     <h3 className="font-extrabold text-xs text-slate-800 uppercase tracking-wider">
-                      Consultas Clínicas: No Atendidos / Reprogramados ({unattendedOrReprogrammedCount})
+                      Consultas Clínicas: No Atendidos / Reprogramados / Pendientes ({unattendedOrReprogrammedCount})
                     </h3>
                   </div>
                   <span className="text-xs font-mono font-extrabold text-toast-500 bg-toast-100 p-1 px-2 rounded-lg border border-toast-300">
@@ -841,9 +1385,9 @@ export default function AdminPortal() {
                     </div>
                   ) : (
                     <>
-                      {filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramado').map(app => (
+                      {filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramada' || app.status === 'Pendiente').map(app => (
                         <div key={app.id} className={`p-3 border rounded-xl text-xs space-y-1 ${
-                          app.status === 'Reprogramado' ? 'bg-toast-50/40 border-toast-200' : 'bg-slate-50 border-slate-200'
+                          app.status === 'Reprogramada' ? 'bg-toast-50/40 border-toast-200' : app.status === 'Pendiente' ? 'bg-indigo-50/40 border-indigo-200' : 'bg-slate-50 border-slate-200'
                         }`}>
                           <div className="flex justify-between items-center">
                             <strong className="text-slate-900">{app.patientName}</strong>
@@ -862,13 +1406,13 @@ export default function AdminPortal() {
                               </button>
                               <button
                                 onClick={async () => {
-                                  if (confirm('¿Estás seguro de eliminar esta cita?')) {
+                                  if (await confirmToast('¿Estás seguro de eliminar esta cita?')) {
                                     try {
                                       const t = localStorage.getItem('mind_token');
                                       const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
                                       await fetch(`${apiUrl}/api/appointments/${app.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
-                                      alert('Cita eliminada');
-                                    } catch(e: any) { alert(e.message); }
+                                      toast.success('Cita eliminada');
+                                    } catch(e: any) { toast.error(e.message); }
                                   }
                                 }}
                                 className="text-red-500 hover:text-red-700 text-[10px] font-bold underline cursor-pointer"
@@ -876,9 +1420,9 @@ export default function AdminPortal() {
                                 🗑️ Eliminar
                               </button>
                               <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                                app.status === 'Reprogramado' ? 'bg-toast-200 text-toast-500' : 'bg-slate-200 text-slate-800'
+                                app.status === 'Reprogramada' ? 'bg-toast-200 text-toast-500' : app.status === 'Pendiente' ? 'bg-indigo-200 text-indigo-700' : 'bg-slate-200 text-slate-800'
                               }`}>
-                                {app.status === 'Reprogramado' ? 'Reprogramada' : 'No asistió'}
+                                {app.status === 'Reprogramada' ? 'Reprogramada' : app.status === 'Pendiente' ? 'Pendiente' : 'No asistió'}
                               </span>
                             </div>
                           </div>
@@ -888,17 +1432,19 @@ export default function AdminPortal() {
                           <p className="text-[10px] text-slate-400 font-mono">
                             {app.day} • {app.month} • {app.modality} • {app.agreement}
                           </p>
-                          <p className={`text-[11px] leading-relaxed bg-white/70 p-2 rounded-lg mt-1 border italic font-sans text-left ${
-                            app.status === 'Reprogramado' ? 'text-charcoal-800 border-toast-200' : 'text-slate-600 border-slate-150'
-                          }`}>
-                            &ldquo;{app.reason}&rdquo;
-                          </p>
+                          {app.reason && (
+                            <p className={`text-[11px] leading-relaxed bg-white/70 p-2 rounded-lg mt-1 border italic font-sans text-left ${
+                              app.status === 'Reprogramada' ? 'text-charcoal-800 border-toast-200' : 'text-slate-600 border-slate-150'
+                            }`}>
+                              &ldquo;{app.reason}&rdquo;
+                            </p>
+                          )}
                         </div>
                       ))}
 
-                      {filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramado').length === 0 && (
+                      {filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramada' || app.status === 'Pendiente').length === 0 && (
                         <div className="text-center text-slate-400 text-xs py-10">
-                          No hay reprogramaciones o inasistencias registradas con los filtros seleccionados.
+                          No hay reprogramaciones, inasistencias o citas pendientes registradas con los filtros seleccionados.
                         </div>
                       )}
                     </>
@@ -1132,6 +1678,11 @@ export default function AdminPortal() {
         )}
 
 
+        {/* VIEW: PACIENTES */}
+        {activeTab === 'patients' && (
+          <PacientesPanel token={token} />
+        )}
+
         {/* VIEW: EQUIPO Y ACCESOS — Aprovisionamiento RBAC de Usuarios (Migrado) */}
         {activeTab === 'equipo' && (
           <div className="max-w-3xl mx-auto space-y-6 text-left">
@@ -1142,26 +1693,456 @@ export default function AdminPortal() {
               <h1 className="text-2xl font-black text-slate-900 tracking-tight mt-1">
                 Equipo y Aprovisionamiento de Usuarios
               </h1>
+              <p className="text-xs text-slate-400 mt-1">
+                Crea psicólogos y personal de soporte para tu organización — quedan asociados automáticamente a tu propio tenant, dentro de las licencias contratadas.
+              </p>
             </div>
 
-            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-6 flex flex-col items-center justify-center text-center space-y-4 py-12">
-              <div className="w-16 h-16 bg-charcoal-50 rounded-full flex items-center justify-center mb-2 border border-charcoal-100">
-                <svg className="w-8 h-8 text-charcoal-900" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                </svg>
+            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-6 space-y-5">
+              <form onSubmit={handleCreateStaff} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Nombre completo</label>
+                  <input
+                    type="text"
+                    value={newStaffName}
+                    onChange={e => setNewStaffName(e.target.value)}
+                    placeholder="Ej. María Camila Torres"
+                    required
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Correo electrónico</label>
+                  <input
+                    type="email"
+                    value={newStaffEmail}
+                    onChange={e => setNewStaffEmail(e.target.value)}
+                    placeholder="correo@empresa.com"
+                    required
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Rol</label>
+                  <select
+                    value={newStaffRole}
+                    onChange={e => setNewStaffRole(e.target.value as 'ESPECIALISTA_B2B' | 'OPERATIVO')}
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  >
+                    <option value="ESPECIALISTA_B2B">Psicólogo / Especialista Clínico</option>
+                    <option value="OPERATIVO">Soporte Operativo / Auxiliar</option>
+                  </select>
+                </div>
+
+                {staffError && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700">
+                    ⚠️ {staffError}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isCreatingStaff}
+                  className="w-full bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-sm py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isCreatingStaff ? 'Creando...' : 'Crear Colaborador'}
+                </button>
+              </form>
+            </div>
+
+            {staffSuccess && (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 space-y-2">
+                <p className="text-sm font-bold text-emerald-800">✅ {staffSuccess.name} fue creado exitosamente.</p>
+                <p className="text-xs text-emerald-700">Comunícale estas credenciales temporales de forma segura (deberá cambiarla en su primer ingreso):</p>
+                <div className="bg-white border border-emerald-200 rounded-lg p-3 font-mono text-xs space-y-1">
+                  <p>Correo: <strong>{staffSuccess.email}</strong></p>
+                  <p>Contraseña temporal: <strong>{staffSuccess.tempPassword}</strong></p>
+                </div>
               </div>
-              <h3 className="font-bold text-lg text-slate-900">Aprovisionamiento Centralizado</h3>
-              <p className="text-sm text-slate-500 max-w-md mx-auto leading-relaxed">
-                Por políticas de seguridad y arquitectura RBAC, la creación de nuevos usuarios (pacientes y especialistas) ha sido migrada a la 
-                <strong className="text-slate-800"> Torre de Control Única</strong>.
-              </p>
-              <div className="bg-charcoal-900 text-white text-xs font-bold font-mono px-4 py-2 rounded-lg mt-4 shadow-sm border border-charcoal-950">
-                Por favor dirígete al Admin Center para aprovisionar.
+            )}
+
+            {/* Panel: Usuarios de mi organización */}
+            <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden">
+              <div className="p-5 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="font-bold text-sm text-slate-900">Usuarios de mi Organización</h3>
+                <button
+                  onClick={() => fetchTeamUsers()}
+                  className="text-xs text-slate-400 hover:text-slate-700 font-semibold"
+                >
+                  Recargar
+                </button>
               </div>
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 font-bold uppercase text-[10px]">
+                    <th className="p-4">Nombre</th>
+                    <th className="p-4">Correo</th>
+                    <th className="p-4 w-32">Rol</th>
+                    <th className="p-4 text-right w-24">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {teamUsersLoading ? (
+                    <tr><td colSpan={4} className="p-8 text-center text-slate-400">Cargando equipo...</td></tr>
+                  ) : teamUsersError ? (
+                    <tr><td colSpan={4} className="p-8 text-center text-red-600">⚠️ {teamUsersError}</td></tr>
+                  ) : teamUsers.length === 0 ? (
+                    <tr><td colSpan={4} className="p-8 text-center text-slate-400">Todavía no has creado colaboradores.</td></tr>
+                  ) : (
+                    teamUsers.map((member) => (
+                      <tr key={member.id} className="hover:bg-slate-50">
+                        <td className="p-4 font-bold text-slate-900">{member.name}</td>
+                        <td className="p-4 font-mono text-[11px] text-slate-500">{member.email}</td>
+                        <td className="p-4">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded font-mono font-bold text-[9px] bg-slate-100 border border-slate-200 text-slate-600 uppercase">
+                            {member.role}
+                          </span>
+                        </td>
+                        <td className="p-4 text-right">
+                          <button
+                            onClick={() => handleDeleteTeamUser(member)}
+                            disabled={deletingStaffId === member.id}
+                            className="p-2 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={`Eliminar a ${member.name}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
 
+
+        {/* VIEW: CONVENIOS / CLIENTES CORPORATIVOS */}
+        {activeTab === 'convenios' && (
+          <div className="max-w-5xl mx-auto space-y-6 text-left">
+            <div className="border-b border-slate-200 pb-4 flex items-center justify-between gap-4">
+              <div>
+                <span className="bg-toast-100 text-charcoal-900 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-toast-300 font-mono">
+                  Catálogo de mi organización
+                </span>
+                <h1 className="text-2xl font-black text-slate-900 tracking-tight mt-1">
+                  Convenios / Clientes Corporativos
+                </h1>
+                <p className="text-xs text-slate-400 mt-1">
+                  Empresas o personas particulares con convenio de bienestar/paquete de sesiones. Se usan al agendar citas para saber quién factura la sesión.
+                </p>
+              </div>
+              <button
+                onClick={openCreateCompanyModal}
+                className="shrink-0 inline-flex items-center gap-2 bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-xs px-4 py-2.5 rounded-lg transition-colors"
+              >
+                <PlusCircle className="w-4 h-4" />
+                Nuevo convenio/cliente
+              </button>
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 font-bold uppercase text-[10px]">
+                    <th className="p-4">Nombre</th>
+                    <th className="p-4">Tipo</th>
+                    <th className="p-4">Convenio</th>
+                    <th className="p-4">Vigencia</th>
+                    <th className="p-4">Estado</th>
+                    <th className="p-4 text-right w-28">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {companiesLoading ? (
+                    <tr><td colSpan={6} className="p-8 text-center text-slate-400">Cargando convenios...</td></tr>
+                  ) : companiesError ? (
+                    <tr><td colSpan={6} className="p-8 text-center text-red-600">⚠️ {companiesError}</td></tr>
+                  ) : companies.length === 0 ? (
+                    <tr><td colSpan={6} className="p-8 text-center text-slate-400">Todavía no has registrado convenios o clientes.</td></tr>
+                  ) : (
+                    companies.map((c) => (
+                      <tr key={c.id} className="hover:bg-slate-50 align-top">
+                        <td className="p-4">
+                          <div className="flex items-center gap-1.5">
+                            <p className="font-bold text-slate-900">{c.name}</p>
+                            {c.isDefault && (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded font-bold text-[8px] bg-toast-100 border border-toast-300 text-charcoal-900 uppercase">
+                                Por defecto
+                              </span>
+                            )}
+                          </div>
+                          {c.taxId && <p className="text-[10px] text-slate-400 font-mono">{c.taxId}</p>}
+                          {c.contactEmail && <p className="text-[10px] text-slate-400">{c.contactEmail}</p>}
+                          {c.locations?.length > 0 && (
+                            <p className="text-[10px] text-slate-400 mt-0.5">📍 {c.locations.map((l) => l.name).join(', ')}</p>
+                          )}
+                        </td>
+                        <td className="p-4">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded font-mono font-bold text-[9px] bg-slate-100 border border-slate-200 text-slate-600 uppercase">
+                            {c.clientType === 'EMPRESA' ? 'Empresa' : 'Particular'}
+                          </span>
+                        </td>
+                        <td className="p-4 text-slate-600">
+                          {c.agreementType || '—'}
+                          {c.coveredSessions ? <span className="block text-[10px] text-slate-400">{c.coveredSessions} sesiones cubiertas</span> : null}
+                        </td>
+                        <td className="p-4 text-slate-600">
+                          {c.validFrom || c.validUntil
+                            ? `${c.validFrom ? new Date(c.validFrom).toLocaleDateString('es-CO') : '—'} → ${c.validUntil ? new Date(c.validUntil).toLocaleDateString('es-CO') : '—'}`
+                            : '—'}
+                        </td>
+                        <td className="p-4">
+                          <button
+                            onClick={() => !c.isDefault && handleToggleCompanyStatus(c)}
+                            disabled={c.isDefault}
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full font-bold text-[9px] uppercase border ${
+                              c.status === 'activo'
+                                ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                                : 'bg-slate-100 border-slate-200 text-slate-500'
+                            } ${c.isDefault ? 'cursor-default opacity-70' : 'cursor-pointer'}`}
+                            title={c.isDefault ? 'El convenio por defecto siempre está activo' : 'Click para cambiar el estado'}
+                          >
+                            {c.status === 'activo' ? 'Activo' : 'Inactivo'}
+                          </button>
+                        </td>
+                        <td className="p-4 text-right whitespace-nowrap">
+                          <button
+                            onClick={() => openEditCompanyModal(c)}
+                            className="p-2 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                            title={`Editar ${c.name}`}
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => !c.isDefault && handleDeleteCompany(c)}
+                            disabled={c.isDefault}
+                            className="p-2 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-slate-400"
+                            title={c.isDefault ? 'El convenio por defecto no puede eliminarse' : `Eliminar ${c.name}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL: Nuevo/Editar Convenio */}
+        {showCompanyModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden bg-white rounded-2xl shadow-xl p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-black text-slate-900">
+                  {editingCompanyId ? 'Editar convenio/cliente' : 'Nuevo convenio/cliente'}
+                </h3>
+                <button onClick={() => setShowCompanyModal(false)} className="text-slate-400 hover:text-slate-700">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <form onSubmit={handleSaveCompany} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Tipo de cliente</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCompanyForm({ ...companyForm, clientType: 'EMPRESA' })}
+                      className={`rounded-lg border p-2.5 text-xs font-bold ${companyForm.clientType === 'EMPRESA' ? 'border-charcoal-900 bg-charcoal-900 text-white' : 'border-slate-200 text-slate-600'}`}
+                    >
+                      Empresa
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCompanyForm({ ...companyForm, clientType: 'PARTICULAR' })}
+                      className={`rounded-lg border p-2.5 text-xs font-bold ${companyForm.clientType === 'PARTICULAR' ? 'border-charcoal-900 bg-charcoal-900 text-white' : 'border-slate-200 text-slate-600'}`}
+                    >
+                      Persona particular
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                    {companyForm.clientType === 'EMPRESA' ? 'Nombre de la empresa' : 'Nombre de la persona'} *
+                  </label>
+                  <input
+                    type="text" required value={companyForm.name}
+                    onChange={e => setCompanyForm({ ...companyForm, name: e.target.value })}
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">
+                      {companyForm.clientType === 'EMPRESA' ? 'NIT' : 'Documento de identidad'}
+                    </label>
+                    <input
+                      type="text" value={companyForm.taxId}
+                      onChange={e => setCompanyForm({ ...companyForm, taxId: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                  {companyForm.clientType === 'EMPRESA' && (
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Dominio de correo</label>
+                      <input
+                        type="text" placeholder="@empresa.com" value={companyForm.domain}
+                        onChange={e => setCompanyForm({ ...companyForm, domain: e.target.value })}
+                        className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Tipo de convenio</label>
+                    <input
+                      type="text" placeholder="Ej. Bienestar corporativo, Póliza..." value={companyForm.agreementType}
+                      onChange={e => setCompanyForm({ ...companyForm, agreementType: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Sesiones cubiertas</label>
+                    <input
+                      type="number" min={0} value={companyForm.coveredSessions}
+                      onChange={e => setCompanyForm({ ...companyForm, coveredSessions: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Vigencia desde</label>
+                    <input
+                      type="date" value={companyForm.validFrom}
+                      onChange={e => setCompanyForm({ ...companyForm, validFrom: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Vigencia hasta</label>
+                    <input
+                      type="date" value={companyForm.validUntil}
+                      onChange={e => setCompanyForm({ ...companyForm, validUntil: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-100 pt-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Contacto (opcional)</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <input
+                      type="text" placeholder="Persona de contacto" value={companyForm.contactName}
+                      onChange={e => setCompanyForm({ ...companyForm, contactName: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                    <input
+                      type="text" placeholder="Teléfono" value={companyForm.contactPhone}
+                      onChange={e => setCompanyForm({ ...companyForm, contactPhone: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                    <input
+                      type="email" placeholder="Correo de contacto" value={companyForm.contactEmail}
+                      onChange={e => setCompanyForm({ ...companyForm, contactEmail: e.target.value })}
+                      className="col-span-2 w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-100 pt-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Ubicaciones de atención</p>
+                  {!editingCompanyId ? (
+                    <p className="text-xs text-slate-400">Guarda el convenio primero para poder agregar ubicaciones de atención.</p>
+                  ) : (
+                    <>
+                      {editingLocations.length > 0 && (
+                        <ul className="flex flex-col gap-1.5 mb-3">
+                          {editingLocations.map((loc) => (
+                            <li key={loc.id} className="flex items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs">
+                              <span className="text-slate-700">
+                                <span className="font-bold">{loc.name}</span>
+                                {loc.address && <span className="text-slate-400"> — {loc.address}</span>}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveLocation(loc.id)}
+                                className="text-slate-400 hover:text-red-600"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className="grid grid-cols-2 gap-3 mb-2">
+                        <input
+                          type="text" placeholder="Ej. Salón B1" value={newLocationName}
+                          onChange={e => setNewLocationName(e.target.value)}
+                          className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                        />
+                        <input
+                          type="text" placeholder="Dirección (opcional)" value={newLocationAddress}
+                          onChange={e => setNewLocationAddress(e.target.value)}
+                          className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAddLocation}
+                        disabled={savingLocation || !newLocationName.trim()}
+                        className="w-full inline-flex items-center justify-center gap-1.5 bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-xs py-2.5 rounded-lg disabled:opacity-50"
+                      >
+                        <PlusCircle className="w-3.5 h-3.5" />
+                        Añadir ubicación
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Notas</label>
+                  <textarea
+                    rows={2} value={companyForm.notes}
+                    onChange={e => setCompanyForm({ ...companyForm, notes: e.target.value })}
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  />
+                </div>
+
+                {companyFormError && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700">
+                    ⚠️ {companyFormError}
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <button
+                    type="button" onClick={() => setShowCompanyModal(false)}
+                    className="flex-1 border border-slate-200 text-slate-600 font-bold text-sm py-2.5 rounded-lg hover:bg-slate-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit" disabled={savingCompany}
+                    className="flex-1 bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-sm py-2.5 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {savingCompany ? 'Guardando...' : editingCompanyId ? 'Guardar cambios' : 'Crear convenio/cliente'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
 
         {/* VIEW: BILLING & INSURANCE AGREEMENTS, RIPS GENERATOR & PATIENT DATABASE CONTACTS */}
         {activeTab === 'billing_rips' && (
@@ -1347,57 +2328,82 @@ export default function AdminPortal() {
                 </div>
 
                 <div className="flex-1 space-y-1 text-xs">
-                  <label className="block text-[10px] uppercase font-bold text-slate-600">Aseguradora bound</label>
+                  <label className="block text-[10px] uppercase font-bold text-slate-600">Contrato</label>
                   <select
-                    value={ripsAgreement}
-                    onChange={(e) => setRipsAgreement(e.target.value)}
+                    value={ripsCompanyId}
+                    onChange={(e) => setRipsCompanyId(e.target.value)}
                     className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
                   >
-                    <option value="Sura Medicina Prepagada">Sura Medicina Prepagada</option>
-                    <option value="Colmédica Prepagada">Colmédica Prepagada</option>
-                    <option value="Coomeva Medicina Prepagada">Coomeva Medicina Prepagada</option>
-                    <option value="MindHealth Global">Particular / Corporativo Global</option>
+                    <option value="all">Todos los convenios</option>
+                    {companies.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
                   </select>
                 </div>
 
                 <button
                   onClick={handleGenerateRips}
-                  className="bg-charcoal-900 hover:bg-slate-950 text-white font-bold text-xs p-2.5 px-5 rounded-lg transition-all cursor-pointer shadow-xs self-stretch sm:self-auto flex items-center justify-center gap-1 border border-charcoal-950"
+                  disabled={isGeneratingRips}
+                  className="bg-charcoal-900 hover:bg-slate-950 text-white font-bold text-xs p-2.5 px-5 rounded-lg transition-all cursor-pointer shadow-xs self-stretch sm:self-auto flex items-center justify-center gap-1 border border-charcoal-950 disabled:opacity-50"
                 >
                   <Zap className="w-4 h-4 text-toast-300" />
-                  <span>Generar RIPS (XML)</span>
+                  <span>{isGeneratingRips ? 'Generando...' : 'Generar RIPS (XML)'}</span>
                 </button>
               </div>
 
-              {ripsOutput && (
+              {ripsFiles && (
                 <div className="space-y-3">
+                  {ripsWarnings.length > 0 && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 space-y-1">
+                      <p className="font-bold uppercase tracking-wider text-[10px]">⚠️ Revisar antes de enviar</p>
+                      <ul className="list-disc pl-4 space-y-0.5">
+                        {ripsWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                      </ul>
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between text-xs font-mono bg-slate-900 text-slate-300 p-2.5 px-4 rounded-t-xl border-b border-slate-800">
-                    <span className="text-toast-400 font-bold uppercase tracking-wider text-[10px]">RIPS_GENERATED_PAYLOAD.xml</span>
-                    
+                    <div className="flex items-center gap-1">
+                      {(['US', 'AT', 'AC', 'CT'] as const).map((name) => (
+                        <button
+                          key={name}
+                          onClick={() => setRipsPreviewTab(name)}
+                          className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase cursor-pointer ${ripsPreviewTab === name ? 'bg-toast-500 text-charcoal-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                        >
+                          {name}.txt
+                        </button>
+                      ))}
+                    </div>
+
                     <div className="flex items-center space-x-2">
                       <button
                         onClick={() => {
-                          navigator.clipboard.writeText(ripsOutput);
-                          alert('Código RIPS copiado al portapapeles.');
+                          navigator.clipboard.writeText(ripsFiles[ripsPreviewTab]);
+                          toast.success(`Contenido de ${ripsPreviewTab}.txt copiado al portapapeles.`);
                         }}
                         className="p-1 px-2.5 bg-slate-800 hover:bg-slate-700 rounded text-slate-200 text-[10px] font-bold cursor-pointer"
                       >
-                        Copiar XML
+                        Copiar
                       </button>
-                      
+
                       <button
-                        onClick={() => {
-                          alert('Descargando archivo localmente:\nRIPS_GENERATED_PAYLOAD.xml registrado para el validador ministerial.');
-                        }}
+                        onClick={() => downloadRipsFile(ripsPreviewTab)}
                         className="p-1 px-2.5 bg-charcoal-900 hover:bg-charcoal-950 rounded text-white text-[10px] font-bold cursor-pointer border border-charcoal-950"
                       >
-                        Descargar XML
+                        Descargar {ripsPreviewTab}.txt
+                      </button>
+
+                      <button
+                        onClick={() => { (['US', 'AT', 'AC', 'CT'] as const).forEach(downloadRipsFile); }}
+                        className="p-1 px-2.5 bg-toast-500 hover:bg-toast-600 rounded text-charcoal-950 text-[10px] font-bold cursor-pointer"
+                      >
+                        Descargar los 4
                       </button>
                     </div>
                   </div>
 
                   <pre className="bg-slate-950 text-toast-400 p-4 rounded-b-xl overflow-x-auto text-[11px] font-mono leading-relaxed max-h-[300px] border border-slate-900 text-left">
-                    <code>{ripsOutput}</code>
+                    <code>{ripsFiles[ripsPreviewTab] || '(sin registros)'}</code>
                   </pre>
                 </div>
               )}
@@ -1424,6 +2430,64 @@ export default function AdminPortal() {
                     placeholder="Filtrar por nombre o identificación..."
                     className="block w-full text-xs pl-9 pr-3 py-2 bg-slate-50 border border-slate-250 rounded-lg focus:ring-2 focus:ring-toast-500 focus:bg-white"
                   />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-100 bg-slate-50/60 p-4 sm:grid-cols-3 lg:grid-cols-6">
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Desde</label>
+                  <input
+                    type="date" value={reportDateFrom} onChange={(e) => setReportDateFrom(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Hasta</label>
+                  <input
+                    type="date" value={reportDateTo} onChange={(e) => setReportDateTo(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Convenio</label>
+                  <select
+                    value={reportCompanyId} onChange={(e) => setReportCompanyId(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
+                  >
+                    <option value="all">Todos</option>
+                    {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Estado de cita</label>
+                  <select
+                    value={reportStatus} onChange={(e) => setReportStatus(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
+                  >
+                    <option value="all">Todos</option>
+                    {APPOINTMENT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Psicólogo</label>
+                  <select
+                    value={reportPsychologistId} onChange={(e) => setReportPsychologistId(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
+                  >
+                    <option value="all">Todos</option>
+                    {teamUsers.filter((u) => u.role === 'ESPECIALISTA_B2B').map((u) => (
+                      <option key={u.id} value={u.id}>{u.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={handleExportPatientsExcel}
+                    disabled={isExportingReport}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    <Download className="h-3.5 w-3.5" /> {isExportingReport ? 'Generando...' : 'Descargar Excel'}
+                  </button>
                 </div>
               </div>
 
@@ -1477,7 +2541,7 @@ export default function AdminPortal() {
                               <td className="p-3 text-right pr-4">
                                 <button
                                   onClick={() => {
-                                    alert(`Enviando notificación electrónica de cobro y recordatorio a: ${p.email}`);
+                                    toast.success(`Enviando notificación electrónica de cobro y recordatorio a: ${p.email}`);
                                   }}
                                   className="p-1 px-2 bg-toast-100 hover:bg-toast-200 text-charcoal-900 text-[10.5px] border border-toast-300 rounded-md cursor-pointer font-bold"
                                 >

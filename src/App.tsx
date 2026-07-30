@@ -11,7 +11,6 @@ import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
 import ForcePasswordChange from './pages/ForcePasswordChange';
 import Navbar from './components/Navbar';
-import Footer from './components/Footer';
 import DrMindChat from './components/DrMindChat';
 import { Bot, ShieldAlert, AlertTriangle } from 'lucide-react';
 import { FORBIDDEN_ACCESS_EVENT } from './lib/apiClient';
@@ -130,11 +129,6 @@ export default function App() {
 
     console.log('[App] ✅ handleLoginSuccess — rol raw:', rawUser.role, '→ canónico:', canonicalRole);
     setCurrentUser(user);
-
-    // Auto-open Dr.Mind for clinicians on first login
-    if (canonicalRole === 'ESPECIALISTA_B2B') {
-      setIsDrMindOpen(true);
-    }
   };
 
   const handleLogout = () => {
@@ -308,20 +302,19 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800 antialiased selection:bg-toast-200 selection:text-charcoal-900">
+    <div className="h-screen overflow-hidden bg-slate-50 flex flex-col text-slate-800 antialiased selection:bg-toast-200 selection:text-charcoal-900">
       <Toaster />
 
       {/* 1. SECURE NAVBAR HEADER */}
       <Navbar
         user={currentUser}
         onLogout={handleLogout}
-        onOpenDrMind={() => setIsDrMindOpen(true)}
         currentContext={workspaceContext}
         onContextChange={setWorkspaceContext}
       />
 
       {/* 2. RBAC ROLE GUARD ROUTER */}
-      <div className="flex-1 relative">
+      <div className="flex-1 min-h-0 relative">
         {renderPortal()}
       </div>
 
@@ -347,9 +340,6 @@ export default function App() {
         onClose={() => setIsDrMindOpen(false)}
         selectedPatient={drMindContextPatient}
       />
-
-      {/* 5. FOOTER */}
-      <Footer />
 
     </div>
   );

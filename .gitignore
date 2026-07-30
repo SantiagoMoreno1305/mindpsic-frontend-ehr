@@ -31,3 +31,10 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+
+# Configuración local de Claude Code (preferencias por máquina, no del proyecto)
+.claude/
+
+# Documentación de contexto interna (no se publica en el repo)
+# Misma convención que el .gitignore de MindPsic-AdminCenter.
+Contexto_md/

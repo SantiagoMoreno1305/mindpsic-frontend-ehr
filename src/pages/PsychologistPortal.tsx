@@ -9,10 +9,12 @@
  */
 
 import VideollamadaVercel from '../components/VideollamadaVercel';
-import ClinicalHistoryEditor from '../components/EHR/ClinicalHistoryEditor';
+import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
+import ClinicalRecordsList from '../components/EHR/ClinicalRecordsList';
 import { useState, FormEvent, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppointments } from '../hooks/useAppointments';
+import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
 import { toast } from 'react-hot-toast';
 import {
@@ -67,7 +69,53 @@ import {
   MessageSquare,
   Beaker,
   TrendingUp,
+  CalendarDays,
+  CircleDot,
+  CheckCircle2,
+  XCircle,
+  RotateCcw,
+  Shield,
+  ChevronDown,
+  Scale,
+  X,
+  Users,
 } from 'lucide-react';
+import CalendarPanel, { normalizeStatus, type CalendarAppointment } from '../components/EHR/CalendarPanel';
+import { legalDisclosureSpanish } from '../data/mockData';
+import DelegatedAppointmentModal from '../components/DelegatedAppointmentModal';
+import PacientesPanel from '../components/EHR/PacientesPanel';
+
+const CALENDAR_KPI_TONES: Record<string, string> = {
+  charcoal: 'bg-charcoal-100 text-charcoal-900',
+  toast: 'bg-toast-100 text-toast-500',
+  emerald: 'bg-emerald-100 text-emerald-700',
+  indigo: 'bg-indigo-100 text-indigo-700',
+  rose: 'bg-rose-100 text-rose-700',
+};
+
+function CalendarKpiCard({
+  icon: Icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: React.ElementType;
+  label: string;
+  value: number;
+  tone: keyof typeof CALENDAR_KPI_TONES;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+      <div className={`flex h-10 w-10 items-center justify-center rounded-lg shrink-0 ${CALENDAR_KPI_TONES[tone]}`}>
+        <Icon className="w-5 h-5" />
+      </div>
+      <div>
+        <p className="text-2xl font-bold leading-none text-charcoal-900">{value}</p>
+        <p className="mt-1 text-xs text-slate-500">{label}</p>
+      </div>
+    </div>
+  );
+}
 
 interface PsychologistPortalProps {
   onOpenDrMindWithPatient: (patient: Patient) => void;
@@ -75,7 +123,7 @@ interface PsychologistPortalProps {
   onContextChange: (context: WorkspaceContext) => void;
 }
 
-type ActiveTab = 'dashboard' | 'video' | 'evaluations' | 'clinical_history' | 'chat' | 'research' | 'screening';
+type ActiveTab = 'dashboard' | 'video' | 'evaluations' | 'patients' | 'clinical_history' | 'chat' | 'research' | 'screening' | 'drive';
 
 export default function PsychologistPortal({
   onOpenDrMindWithPatient,
@@ -89,7 +137,20 @@ export default function PsychologistPortal({
 
   const token = localStorage.getItem('mind_token');
   const { appointments: realAppointments, loading: apptsLoading, refetch: refetchAppointments } = useAppointments(token);
+  const { patients: realPatients } = usePatients(token);
   const { unreadCount } = useGlobalChat();
+
+  const getPatientName = (id: string | null): string => {
+    if (!id) return '';
+    // Fuente primaria: el paciente embebido en las citas reales (de ahí sale
+    // selectedPatientId en la mayoría de los flujos, incluyendo el selector
+    // de "Historias Clínicas").
+    const fromAppointment = realAppointments.find(a => a.patient?.id === id)?.patient;
+    if (fromAppointment) return `${fromAppointment.firstName || ''} ${fromAppointment.lastName || ''}`.trim();
+    const real = realPatients.find(p => p.id === id);
+    if (real) return `${real.firstName} ${real.lastName}`.trim();
+    return patients.find(p => p.id === id)?.name || '';
+  };
 
   // ---------------------------------------------------------------
   // Notificaciones de Citas Delegadas
@@ -273,7 +334,7 @@ export default function PsychologistPortal({
   });
   const [isSigningNote, setIsSigningNote] = useState(false);
   const [noteAlert, setNoteAlert] = useState<string | null>(null);
-  const [view, setView] = useState<'month' | 'week' | 'day'>('day');
+  const [view, setView] = useState<'month' | 'week' | 'day'>('month');
   const [currentDate, setCurrentDate] = useState(new Date());
 
   useEffect(() => {
@@ -297,6 +358,22 @@ export default function PsychologistPortal({
       startMinute: parseInt(appt.timeSlot ? appt.timeSlot.split(':')[1] : appDate.getMinutes().toString())
     };
   });
+
+  const calendarKpis = (() => {
+    const todayStr = new Date().toDateString();
+    const counts = { pendiente: 0, atendida: 0, no_atendido: 0, reprogramada: 0 };
+    let hoy = 0;
+    weeklyAppointments.forEach(app => {
+      counts[normalizeStatus(app.estatus)]++;
+      if (app.appDate.toDateString() === todayStr) hoy++;
+    });
+    return { hoy, ...counts };
+  })();
+
+  const [showNewAppointmentModal, setShowNewAppointmentModal] = useState(false);
+  const [showSecurityInfo, setShowSecurityInfo] = useState(false);
+  const [showDataPolicyModal, setShowDataPolicyModal] = useState(false);
+
   const [reprogramaciones, setReprogramaciones] = useState([
     { id: 'rep_1', patientName: 'Valeria Sotomayor', originalTime: 'Mar 15:00', requestedTime: 'Mar 17:30', reason: 'Cruce imprevisto con horario laboral unificado' },
     { id: 'rep_2', patientName: 'Mauricio Gómez Ruiz', originalTime: 'Jue 09:00', requestedTime: 'Vier 11:30', reason: 'Incapacidad médica certificada por migraña' },
@@ -346,10 +423,10 @@ export default function PsychologistPortal({
         body: formData,
       });
       await fetchDocuments(type);
-      alert(`Documento "${file.name}" subido correctamente`);
+      toast.success(`Documento "${file.name}" subido correctamente`);
     } catch (error) {
       console.error('Upload error:', error);
-      alert('Error al subir el documento');
+      toast.error('Error al subir el documento');
     }
   };
 
@@ -364,11 +441,11 @@ export default function PsychologistPortal({
         },
         body: JSON.stringify({ documentId }),
       });
-      alert('Procesamiento iniciado en segundo plano');
+      toast.success('Procesamiento iniciado en segundo plano');
       setTimeout(() => fetchDocuments(), 2000);
     } catch (error) {
       console.error('Process error:', error);
-      alert('Error al procesar el documento');
+      toast.error('Error al procesar el documento');
     }
   };
 
@@ -496,10 +573,10 @@ export default function PsychologistPortal({
   // Render principal con información dinámica del usuario
   // ---------------------------------------------------------------
   return (
-    <div className="flex h-[calc(110vh-70px)] bg-slate-50 overflow-hidden font-sans">
+    <div className="flex h-full bg-slate-50 overflow-hidden font-sans">
 
       {/* SIDEBAR NAVIGATION */}
-      <aside className="w-16 md:w-64 bg-charcoal-950 text-slate-300 flex flex-col justify-between shrink-0 border-r border-charcoal-800">
+      <aside className="w-16 md:w-64 bg-charcoal-950 text-slate-300 flex flex-col justify-between shrink-0 border-r border-charcoal-800 overflow-y-auto">
         <div className="py-6 flex flex-col space-y-2">
           <button
             onClick={() => setActiveTab('dashboard')}
@@ -540,6 +617,17 @@ export default function PsychologistPortal({
             <ClipboardList className="w-5 h-5 shrink-0" />
             <span className="ml-3 text-xs hidden md:block">Pruebas y Evaluaciones</span>
             {activeTab === 'evaluations' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+          </button>
+
+          <button
+            onClick={() => setActiveTab('patients')}
+            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+              activeTab === 'patients' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
+            }`}
+          >
+            <Users className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Pacientes</span>
+            {activeTab === 'patients' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
           <button
@@ -601,23 +689,109 @@ export default function PsychologistPortal({
           )}
         </div>
 
-        {/* License Signature Block – ahora con datos reales del usuario */}
-        <div className="p-4 border-t border-charcoal-800 hidden md:block bg-charcoal-950/40 text-left">
-          <div className="flex items-center space-x-2 text-toast-400 mb-1">
-            <Award className="w-4 h-4" />
-            <span className="text-[10px] font-bold font-mono uppercase tracking-wider">Licencia Verificada</span>
-          </div>
-          <p className="text-[11px] font-semibold text-white truncate">{currentUser.name}</p>
-          <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-            {currentUser.role} · {currentUser.tenantId}
-          </p>
-          {currentUser.licenseNumber && (
-            <p className="text-[9px] text-slate-500 font-mono mt-1">
-              Lic. {currentUser.licenseNumber}
+        {/* License + Compliance Signature Block – reemplaza al footer general de la app */}
+        <div className="hidden md:flex flex-col border-t border-charcoal-800 bg-charcoal-950/40 text-left">
+          <div className="p-4 pb-3">
+            <div className="flex items-center space-x-2 text-toast-400 mb-1">
+              <Award className="w-4 h-4" />
+              <span className="text-[10px] font-bold font-mono uppercase tracking-wider">Licencia Verificada</span>
+            </div>
+            <p className="text-[11px] font-semibold text-white truncate">{currentUser.name}</p>
+            <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+              {currentUser.role} · {currentUser.tenantId}
             </p>
-          )}
+            {currentUser.licenseNumber && (
+              <p className="text-[9px] text-slate-500 font-mono mt-1">
+                Lic. {currentUser.licenseNumber}
+              </p>
+            )}
+          </div>
+
+          {/* Infraestructura Segura (plegable) */}
+          <div className="mx-3 mb-3 rounded-lg bg-charcoal-900/60">
+            <button
+              onClick={() => setShowSecurityInfo(v => !v)}
+              aria-expanded={showSecurityInfo}
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-charcoal-900 cursor-pointer"
+            >
+              <Shield className="w-4 h-4 shrink-0 text-emerald-400" />
+              <span className="flex-1 text-[11px] font-semibold leading-tight text-white">Infraestructura Segura</span>
+              <ChevronDown className={`w-3.5 h-3.5 shrink-0 text-slate-500 transition-transform ${showSecurityInfo ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showSecurityInfo && (
+              <div className="flex flex-col gap-3 px-2.5 pb-3 pt-1">
+                <p className="text-[11px] leading-relaxed text-slate-400">
+                  Expedientes y notas clínicas encriptados con estándar médico (TLS 1.3 / AES-256). Cumple la Ley 1581 de 2012 (Habeas Data) y directrices de teleorientación en salud.
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  <span className="rounded border border-charcoal-700 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-slate-400">ISO 27001</span>
+                  <span className="rounded border border-charcoal-700 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-slate-400">HIPAA</span>
+                  <span className="flex items-center gap-1 rounded border border-emerald-500/40 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-emerald-400">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                    TLS ACTIVE
+                  </span>
+                </div>
+                <button
+                  onClick={() => setShowDataPolicyModal(true)}
+                  className="flex items-center gap-1.5 text-[11px] font-medium text-slate-300 transition-colors hover:text-white cursor-pointer"
+                >
+                  <Scale className="w-3.5 h-3.5" />
+                  Tratamiento de Datos
+                </button>
+              </div>
+            )}
+          </div>
+
+          <p className="px-4 pb-3 text-[9px] leading-tight text-slate-600">
+            © 2026 MindPsic &amp; MindHealth
+          </p>
         </div>
       </aside>
+
+      {/* Modal: Política de Tratamiento de Datos Personales */}
+      {showDataPolicyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl border border-slate-100">
+            <div className="bg-gradient-to-r from-charcoal-900 to-charcoal-950 px-6 py-4 text-white flex items-center justify-between border-b border-toast-200">
+              <div className="flex items-center space-x-2">
+                <FileText className="w-5 h-5 text-toast-400" />
+                <h3 className="font-bold text-base tracking-tight">Política de Tratamiento de Datos Personales</h3>
+              </div>
+              <button
+                onClick={() => setShowDataPolicyModal(false)}
+                className="text-slate-300 hover:text-white rounded-lg p-1 hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 max-h-[60vh] overflow-y-auto text-slate-600 space-y-4">
+              <p className="font-semibold text-slate-900 text-sm">
+                Compromiso de Confidencialidad y Cumplimiento Normativo (Ecosistema MindPsic - MindHealth)
+              </p>
+              <div className="bg-slate-50 p-4 rounded-xl text-xs font-mono border border-slate-200 text-slate-700 whitespace-pre-line leading-relaxed">
+                {legalDisclosureSpanish}
+              </div>
+              <div className="space-y-2 text-xs leading-relaxed">
+                <p className="font-semibold text-slate-800">Derechos de los Usuarios:</p>
+                <ul className="list-disc list-inside space-y-1 text-slate-500">
+                  <li>Consultar y actualizar en cualquier momento su información en las historias clínicas.</li>
+                  <li>Solicitar la revocatoria de autorización de uso no clínico cuando lo considere pertinente.</li>
+                  <li>Inamovilidad del registro evolutivo clínico firmado digitalmente por su correspondiente psicólogo de cabecera.</li>
+                </ul>
+              </div>
+            </div>
+            <div className="border-t border-slate-100 px-6 py-4 bg-slate-50 flex justify-end">
+              <button
+                onClick={() => setShowDataPolicyModal(false)}
+                className="bg-slate-900 text-white rounded-xl px-4 py-2 text-xs font-semibold hover:bg-slate-800 transition-colors shadow-sm cursor-pointer"
+              >
+                Entendido y Aceptar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 overflow-y-auto p-6 md:p-8">
@@ -632,9 +806,9 @@ export default function PsychologistPortal({
         {/* DASHBOARD HISTORY FALLBACK (Kept for backwards compatibility) */}
         {activeTab === 'dashboard' && currentView === 'history' && selectedPatientId && (
           <div className="max-w-7xl mx-auto">
-            <ClinicalHistoryEditor 
-              patientId={selectedPatientId} 
-              onBack={() => setCurrentView('dashboard')} 
+            <ClinicalPatientChart
+              patientId={selectedPatientId}
+              onBack={() => setCurrentView('dashboard')}
             />
           </div>
         )}
@@ -680,232 +854,34 @@ export default function PsychologistPortal({
             {/* Aquí iría el resto del dashboard (calendario, pacientes recientes, notas clínicas, etc.) 
                 Por razones de espacio no se replica todo, pero la estructura es idéntica a la original,
                 usando currentUser en lugar de valores estáticos. */}
-            {/* PREMIUM CALENDAR */}
-            <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm text-left flex flex-col h-[700px]">
-              {/* Header */}
-              <div className="flex justify-between items-center mb-6">
-                <div className="flex items-center gap-4">
-                  <h2 className="text-2xl font-bold text-slate-800 capitalize">
-                    {currentDate.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}
-                    {view === 'day' && `, ${currentDate.getDate()}`}
-                  </h2>
-                  <div className="flex bg-slate-100 p-1 rounded-lg">
-                    <button onClick={() => {
-                        const d = new Date(currentDate);
-                        if (view === 'month') d.setMonth(d.getMonth() - 1);
-                        else if (view === 'week') d.setDate(d.getDate() - 7);
-                        else d.setDate(d.getDate() - 1);
-                        setCurrentDate(d);
-                      }}
-                      className="px-3 py-1.5 hover:bg-white rounded-md shadow-sm text-slate-600 transition cursor-pointer"
-                    >
-                      &larr;
-                    </button>
-                    <button onClick={() => setCurrentDate(new Date())} className="px-4 py-1.5 hover:bg-white rounded-md shadow-sm text-sm font-medium text-slate-700 transition cursor-pointer">
-                      Hoy
-                    </button>
-                    <button onClick={() => {
-                        const d = new Date(currentDate);
-                        if (view === 'month') d.setMonth(d.getMonth() + 1);
-                        else if (view === 'week') d.setDate(d.getDate() + 7);
-                        else d.setDate(d.getDate() + 1);
-                        setCurrentDate(d);
-                      }}
-                      className="px-3 py-1.5 hover:bg-white rounded-md shadow-sm text-slate-600 transition cursor-pointer"
-                    >
-                      &rarr;
-                    </button>
-                  </div>
-                </div>
-                <div className="flex bg-slate-100 p-1 rounded-lg">
-                  <button onClick={() => setView('day')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition cursor-pointer ${view === 'day' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:bg-slate-200'}`}>Día</button>
-                  <button onClick={() => setView('week')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition cursor-pointer ${view === 'week' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:bg-slate-200'}`}>Semana</button>
-                  <button onClick={() => setView('month')} className={`px-4 py-1.5 rounded-md text-sm font-medium transition cursor-pointer ${view === 'month' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-600 hover:bg-slate-200'}`}>Mes</button>
-                </div>
-              </div>
-
-              {/* View Content */}
-              <div className="flex-1 overflow-hidden border border-slate-200 rounded-xl bg-slate-50 relative flex flex-col">
-                {view === 'month' && (
-                  <div className="flex-1 grid grid-cols-7 grid-rows-[auto_1fr] h-full">
-                    {/* Days of week header */}
-                    {['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'].map(d => (
-                      <div key={d} className="p-3 text-center border-b border-r border-slate-200 bg-white font-semibold text-xs text-slate-500 uppercase tracking-wider">{d}</div>
-                    ))}
-                    {/* Month Grid */}
-                    {(() => {
-                      const year = currentDate.getFullYear();
-                      const month = currentDate.getMonth();
-                      const firstDay = new Date(year, month, 1).getDay();
-                      const daysInMonth = new Date(year, month + 1, 0).getDate();
-                      const cells = [];
-                      for (let i = 0; i < 35; i++) {
-                        const dayNum = i - firstDay + 1;
-                        const isCurrentMonth = dayNum > 0 && dayNum <= daysInMonth;
-                        const cellDate = new Date(year, month, dayNum);
-                        const isToday = cellDate.toDateString() === new Date().toDateString();
-                        const dayAppointments = weeklyAppointments.filter(app => {
-                          return app.appDate.getFullYear() === cellDate.getFullYear() &&
-                                 app.appDate.getMonth() === cellDate.getMonth() &&
-                                 app.appDate.getDate() === cellDate.getDate() && 
-                                 isCurrentMonth;
-                        });
-                        
-                        cells.push(
-                          <div 
-                            key={i} 
-                            onClick={() => {
-                              if (isCurrentMonth) {
-                                setCurrentDate(cellDate);
-                                setView('day');
-                              }
-                            }}
-                            className={`p-2 border-b border-r border-slate-200 min-h-[100px] transition group ${isCurrentMonth ? 'bg-white hover:bg-indigo-50 cursor-pointer' : 'bg-slate-100/50 text-slate-400'}`}
-                          >
-                            {isCurrentMonth && (
-                              <>
-                                <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold mb-1 ${isToday ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-700 group-hover:text-indigo-600'}`}>
-                                  {dayNum}
-                                </span>
-                                <div className="space-y-1 overflow-y-auto max-h-[80px] scrollbar-hide">
-                                  {dayAppointments.slice(0, 3).map(app => (
-                                    <div key={app.id} className="bg-blue-50/80 hover:bg-blue-100 border border-blue-200/50 rounded p-1 text-[10px] leading-tight text-blue-900 shadow-xs truncate">
-                                      {app.timeSlot} - {app.patientName}
-                                    </div>
-                                  ))}
-                                  {dayAppointments.length > 3 && (
-                                    <div className="text-[10px] text-slate-500 font-medium px-1">+{dayAppointments.length - 3} más</div>
-                                  )}
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        );
-                      }
-                      return cells;
-                    })()}
-                  </div>
-                )}
-
-                {(view === 'week' || view === 'day') && (
-                  <div className="flex-1 overflow-y-auto relative flex">
-                    {/* Time Column */}
-                    <div className="w-16 shrink-0 bg-white border-r border-slate-200 sticky left-0 z-20">
-                      <div className="h-12 border-b border-slate-200 bg-slate-50"></div>
-                      {Array.from({ length: 24 }, (_, i) => i).map(hour => (
-                        <div key={hour} className="h-20 border-b border-slate-200 flex items-start justify-center pt-2">
-                          <span className="text-[10px] font-bold text-slate-400">{hour.toString().padStart(2, '0')}:00</span>
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Columns */}
-                    <div className="flex-1 flex min-w-[600px]">
-                      {(() => {
-                        const daysToShow = view === 'day' ? 1 : 7;
-                        const start = new Date(currentDate);
-                        if (view === 'week') {
-                          const day = start.getDay();
-                          start.setDate(start.getDate() - day); // Start at Sunday
-                        }
-                        
-                        return Array.from({ length: daysToShow }).map((_, i) => {
-                          const colDate = new Date(start);
-                          colDate.setDate(start.getDate() + i);
-                          const isToday = colDate.toDateString() === new Date().toDateString();
-                          const colDayName = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'][colDate.getDay()];
-                          
-                          const colAppointments = weeklyAppointments.filter(app => {
-                            return app.appDate.getFullYear() === colDate.getFullYear() &&
-                                   app.appDate.getMonth() === colDate.getMonth() &&
-                                   app.appDate.getDate() === colDate.getDate();
-                          });
-                          
-                          return (
-                            <div key={i} className="flex-1 border-r border-slate-200 relative min-w-[120px]">
-                              {/* Column Header */}
-                              <div className={`h-12 border-b border-slate-200 sticky top-0 z-30 flex flex-col items-center justify-center ${isToday ? 'bg-indigo-50/80 backdrop-blur border-b-indigo-200' : 'bg-white/95 backdrop-blur'}`}>
-                                <span className={`text-[10px] uppercase font-bold tracking-wider ${isToday ? 'text-indigo-600' : 'text-slate-500'}`}>{colDayName}</span>
-                                <span className={`text-lg font-black ${isToday ? 'text-indigo-700' : 'text-slate-800'}`}>{colDate.getDate()}</span>
-                              </div>
-                              
-                              {/* Grid lines */}
-                              <div className="absolute inset-0 top-12 pointer-events-none">
-                                {Array.from({ length: 24 }).map((_, h) => (
-                                  <div key={h} className="h-20 border-b border-dashed border-slate-200 opacity-50 relative">
-                                    <div className="absolute top-10 w-full border-b border-dotted border-slate-100"></div>
-                                  </div>
-                                ))}
-                              </div>
-
-                              {/* Appointments */}
-                              <div className="absolute inset-0 top-12 p-1">
-                                {(() => {
-                                  // Agrupar citas por hora
-                                  const grouped = colAppointments.reduce((acc, app) => {
-                                    const key = `${app.startHour}`;
-                                    if (!acc[key]) acc[key] = [];
-                                    acc[key].push(app);
-                                    return acc;
-                                  }, {} as Record<string, typeof colAppointments>);
-
-                                  return Object.values(grouped).map(group => {
-                                    const firstApp = group[0];
-                                    const top = firstApp.startHour * 80;
-                                    const height = 76; // 1 hora aprox
-
-                                    return (
-                                      <div 
-                                        key={`group-${firstApp.startHour}`}
-                                        className="absolute left-1 right-1 flex flex-row gap-1 z-10"
-                                        style={{ top: `${top}px`, height: `${height}px` }}
-                                      >
-                                        {group.map(app => (
-                                          <div 
-                                            key={app.id}
-                                            className="flex-1 bg-blue-50 border-l-4 border-l-blue-500 border border-blue-100 rounded-md p-2 shadow-sm hover:shadow-md transition cursor-pointer hover:-translate-y-0.5 flex flex-col justify-between overflow-hidden group"
-                                          >
-                                            <div onClick={() => {
-                                              setSelectedSessionForModal(app);
-                                            }}>
-                                              <div className="text-[11px] font-bold text-blue-900 leading-tight truncate">{app.patientName}</div>
-                                              <div className="text-[9px] text-blue-600 font-mono mt-0.5">{app.timeSlot}</div>
-                                            </div>
-                                            
-                                            <div className="flex justify-between items-center mt-1 gap-1">
-                                              <span className="text-[8px] font-bold text-blue-800 bg-white/60 px-1 rounded truncate uppercase tracking-wider">
-                                                {app.modalidad === 'Virtual' || (app as any).modality === 'VIRTUAL' ? '📹 Virtual' : '🏢 Presencial'}
-                                              </span>
-                                              <div className="flex items-center gap-1">
-                                                {(app.modalidad === 'Virtual' || (app as any).modality === 'VIRTUAL') && (
-                                                  <button 
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      window.open('https://mindhealthips.com/', '_blank');
-                                                    }}
-                                                    className="text-[9px] bg-indigo-600 hover:bg-indigo-700 text-white px-2 py-1 rounded shadow-xs cursor-pointer"
-                                                  >
-                                                    Unirse
-                                                  </button>
-                                                )}
-                                              </div>
-                                            </div>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    );
-                                  });
-                                })()}
-                              </div>
-                            </div>
-                          );
-                        });
-                      })()}
-                    </div>
-                  </div>
-                )}
-              </div>
+            {/* KPIs DE AGENDAMIENTO */}
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+              <CalendarKpiCard icon={CalendarDays} label="Citas hoy" value={calendarKpis.hoy} tone="charcoal" />
+              <CalendarKpiCard icon={CircleDot} label="Pendientes" value={calendarKpis.pendiente} tone="toast" />
+              <CalendarKpiCard icon={CheckCircle2} label="Atendidas" value={calendarKpis.atendida} tone="emerald" />
+              <CalendarKpiCard icon={RotateCcw} label="Reprogramadas" value={calendarKpis.reprogramada} tone="indigo" />
+              <CalendarKpiCard icon={XCircle} label="No Atendió" value={calendarKpis.no_atendido} tone="rose" />
             </div>
+
+            {/* PANEL DE AGENDAMIENTO */}
+            <CalendarPanel
+              appointments={weeklyAppointments as CalendarAppointment[]}
+              view={view}
+              setView={setView}
+              currentDate={currentDate}
+              setCurrentDate={setCurrentDate}
+              onSelectAppointment={(app) => setSelectedSessionForModal(app)}
+              onNewAppointment={() => setShowNewAppointmentModal(true)}
+            />
+
+            <DelegatedAppointmentModal
+              isOpen={showNewAppointmentModal}
+              onClose={() => setShowNewAppointmentModal(false)}
+              onSuccess={() => {
+                setShowNewAppointmentModal(false);
+                refetchAppointments();
+              }}
+            />
           </div>
         )}
 
@@ -950,43 +926,23 @@ export default function PsychologistPortal({
           </div>
         )}
 
+        {/* VIEW: PATIENTS */}
+        {activeTab === 'patients' && (
+          <PacientesPanel token={token} />
+        )}
+
         {/* VIEW: CLINICAL HISTORY */}
         {activeTab === 'clinical_history' && (
           <div className="max-w-7xl mx-auto space-y-6">
             {!selectedPatientId ? (
-              <div className="bg-white rounded-xl border border-slate-100 p-8 text-center max-w-2xl mx-auto mt-10 shadow-sm">
-                <FileText className="w-16 h-16 text-indigo-100 mx-auto mb-4" />
-                <h2 className="text-lg font-bold text-slate-800 mb-2">Gestor de Historias Clínicas</h2>
-                <p className="text-sm text-slate-500 mb-6">Seleccione un paciente para ver o redactar su evolución clínica, firmar digitalmente y subir anexos.</p>
-                <div className="relative max-w-md mx-auto text-left">
-                  <select
-                    className="w-full appearance-none bg-slate-50 border border-slate-200 text-slate-800 py-3 px-4 pr-8 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-medium cursor-pointer"
-                    onChange={(e) => setSelectedPatientId(e.target.value)}
-                    value=""
-                  >
-                    <option value="" disabled>-- Seleccionar Paciente --</option>
-                    {/* Extraemos pacientes únicos de las citas para el dropdown */}
-                    {Array.from(new Set(realAppointments.map(a => a.patient?.id))).filter(Boolean).map(patientId => {
-                      const app = realAppointments.find(a => a.patient?.id === patientId);
-                      const p = app?.patient;
-                      return (
-                        <option key={patientId} value={patientId}>
-                          {p?.firstName || ''} {p?.lastName || ''}
-                        </option>
-                      );
-                    })}
-                  </select>
-                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-slate-500">
-                    <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                      <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
-                    </svg>
-                  </div>
-                </div>
-              </div>
+              <ClinicalRecordsList
+                patients={realPatients}
+                onSelect={(id) => setSelectedPatientId(id)}
+              />
             ) : (
-              <ClinicalHistoryEditor 
-                patientId={selectedPatientId} 
-                onBack={() => setSelectedPatientId(null)} 
+              <ClinicalPatientChart
+                patientId={selectedPatientId}
+                onBack={() => setSelectedPatientId(null)}
               />
             )}
           </div>

@@ -10,13 +10,28 @@
  *
  * FLUJO:
  *  1. Firma Habeas Data / Ley 1581 — checkbox obligatorio
- *  2. Formulario de nueva contraseña (min 8 chars, confirmación)
- *  3. Llama a supabase.auth.updateUser({ password }) — Supabase Auth
+ *  2. Contraseña ACTUAL (re-autenticación) + nueva contraseña (min 12,
+ *     confirmación)
+ *  3. Llama a PATCH /users/me/password del backend de Mind
  *  4. Al éxito: borra la flag `mind_must_change_pwd` de localStorage
  *     y llama a onCompleted() para liberar el acceso al portal
  *
- * IMPORTANTE: No llama al backend Node.js (congelado). El cambio de
- * contraseña es una operación nativa de Supabase Auth SDK.
+ * ─── CORRECCIÓN DE SEGURIDAD A-05 ───────────────────────────────────────────
+ * Este componente llamaba a supabase.auth.updateUser(), lo cual estaba roto:
+ *   1. El EHR nunca abre sesión en Supabase (supabaseClient usa
+ *      persistSession: false), así que updateUser fallaba con "Auth session
+ *      missing" — el cambio de contraseña no funcionaba en absoluto.
+ *   2. Aun funcionando, actualizaba Supabase Auth, mientras que /auth/login
+ *      valida contra User.password de Prisma (bcrypt). La contraseña temporal
+ *      seguía siendo válida indefinidamente.
+ * Ahora apunta al backend de Mind, que es la fuente de verdad del login, exige
+ * la contraseña actual y sincroniza Supabase como efecto secundario.
+ *
+ * PENDIENTE (requiere migración): el bloqueo de "primer ingreso" aún depende de
+ * una flag en localStorage y de un regex sobre la contraseña en el cliente —
+ * ambos eludibles. La solución definitiva es una columna
+ * `mustChangePassword` en la tabla User, marcada por el backend al aprovisionar
+ * y limpiada por este endpoint.
  */
 
 import { useState, FormEvent } from 'react';
@@ -30,10 +45,12 @@ import {
   AlertTriangle,
   KeyRound,
 } from 'lucide-react';
-import { supabase } from '../lib/supabaseClient';
+import { apiFetch } from '../lib/apiClient';
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
-const MIN_PASSWORD_LENGTH = 8;
+// SEGURIDAD (A-05): 12 caracteres. Antes eran 8, y el reset administrativo
+// aceptaba 6. El backend valida el mismo mínimo en PATCH /users/me/password.
+const MIN_PASSWORD_LENGTH = 12;
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 interface ForcePasswordChangeProps {
@@ -82,6 +99,11 @@ export default function ForcePasswordChange({
 }: ForcePasswordChangeProps) {
 
   // ── Estados del formulario ──
+  // SEGURIDAD (A-05): se exige la contraseña ACTUAL (re-autenticación). Sin
+  // esto, cualquiera con un token de sesión robado podía cambiar la contraseña
+  // y apropiarse de la cuenta sin conocer la credencial original.
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [showCurrent,     setShowCurrent]     = useState(false);
   const [newPassword,     setNewPassword]     = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showNew,         setShowNew]         = useState(false);
@@ -102,7 +124,8 @@ export default function ForcePasswordChange({
   // ── Validaciones inline ──
   const passwordsMatch  = newPassword === confirmPassword;
   const passwordLongEnough = newPassword.length >= MIN_PASSWORD_LENGTH;
-  const canSubmit = habeasAccepted && passwordLongEnough && passwordsMatch && newPassword.length > 0;
+  const hasCurrentPassword = currentPassword.length > 0;
+  const canSubmit = habeasAccepted && hasCurrentPassword && passwordLongEnough && passwordsMatch && newPassword.length > 0;
 
   // ── Manejador de envío ──
   const handleSubmit = async (e: FormEvent) => {
@@ -124,38 +147,47 @@ export default function ForcePasswordChange({
       return;
     }
 
+    if (!hasCurrentPassword) {
+      setErrorMsg('Debes ingresar tu contraseña actual para confirmar el cambio.');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      console.log('[ForcePasswordChange] 🔑 Actualizando contraseña via Supabase Auth SDK...');
-
-      // ── Llamada a Supabase Auth — updateUser ──
-      // Esta operación requiere que el usuario tenga una sesión activa en Supabase.
-      // Si el frontend usa su propio JWT (Node.js), necesita que Supabase también
-      // tenga sesión activa para este usuario. El usuario puede autenticarse con
-      // la contraseña temporal antes de llamar este endpoint.
-      const { error } = await supabase.auth.updateUser({
-        password: newPassword,
+      // ── SEGURIDAD (A-05): cambio contra el backend de Mind ─────────────────
+      // Antes esto llamaba a supabase.auth.updateUser(), lo cual estaba roto por
+      // dos razones:
+      //   1. El EHR nunca abre sesión en Supabase (persistSession: false), así
+      //      que updateUser fallaba con "Auth session missing".
+      //   2. Aun funcionando, habría actualizado Supabase Auth — el almacén
+      //      equivocado. El login (/auth/login) valida contra User.password de
+      //      Prisma con bcrypt. La contraseña temporal seguía siendo válida.
+      //
+      // Ahora se usa PATCH /users/me/password, que verifica la contraseña actual,
+      // actualiza Prisma (fuente de verdad) y sincroniza Supabase.
+      const response = await apiFetch('/users/me/password', {
+        method: 'PATCH',
+        body: JSON.stringify({ currentPassword, newPassword }),
       });
 
-      if (error) {
-        console.error('[ForcePasswordChange] ❌ supabase.auth.updateUser error:', error.message);
-
-        // Manejar errores específicos de Supabase
-        if (error.message?.toLowerCase().includes('session')) {
-          setErrorMsg(
-            'Tu sesión de Supabase no está activa. Por favor cierra sesión e inicia de nuevo para completar el cambio de contraseña.'
-          );
-        } else if (error.message?.toLowerCase().includes('weak')) {
-          setErrorMsg('La contraseña es demasiado débil. Usa al menos 8 caracteres con letras y números.');
-        } else {
-          setErrorMsg(`Error al actualizar contraseña: ${error.message}`);
+      if (!response.ok) {
+        let msg = 'No se pudo actualizar la contraseña.';
+        try {
+          const errData = await response.json();
+          if (errData?.code === 'INVALID_CREDENTIALS') {
+            msg = 'La contraseña actual es incorrecta.';
+          } else if (errData?.error) {
+            msg = errData.error;
+          }
+        } catch {
+          // Cuerpo no-JSON: se conserva el mensaje genérico
         }
+        setErrorMsg(msg);
         return;
       }
 
       // ── Éxito ──
-      console.log('[ForcePasswordChange] ✅ Contraseña actualizada exitosamente.');
       setSuccess(true);
 
       // Esperar 2 segundos para que el usuario vea el mensaje de éxito
@@ -175,7 +207,7 @@ export default function ForcePasswordChange({
   // ── Pantalla de éxito ──
   if (success) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-[80vh] px-6 text-center">
+      <div className="h-full overflow-y-auto flex flex-col items-center justify-center px-6 py-12 text-center">
         <div className="w-16 h-16 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center mb-6 shadow-sm animate-bounce">
           <CheckCircle className="w-8 h-8 text-emerald-500" />
         </div>
@@ -190,16 +222,25 @@ export default function ForcePasswordChange({
   }
 
   // ── Formulario principal ──
+  // LAYOUT: el contenedor raíz de App.tsx es `h-screen overflow-hidden`, así que
+  // NADA hace scroll por encima de este componente. Con `min-h-[92vh]` el
+  // formulario superaba el alto disponible (ventana menos la barra superior) y
+  // se recortaba: el bloque de Habeas Data quedaba cortado y el botón de envío
+  // era inalcanzable. Se usa `h-full` + `overflow-y-auto` para que el scroll
+  // ocurra AQUÍ dentro, sin tocar el contenedor global (los portales clínicos
+  // manejan su propio scroll y cambiarlo allí los afectaría).
   return (
     <div
-      className="min-h-[92vh] flex flex-col lg:flex-row font-sans antialiased"
+      className="h-full flex overflow-hidden font-sans antialiased"
       style={{ backgroundColor: '#FAF6F3' }}
     >
       {/* ══════════════════════════════════════════════
           COLUMNA IZQUIERDA — Contexto de seguridad
+          h-full + overflow-hidden: ocupa siempre el alto completo y NUNCA
+          scrollea, así el bloque oscuro no se corta a media altura.
       ══════════════════════════════════════════════ */}
       <div
-        className="hidden lg:flex flex-col items-center justify-center w-[420px] xl:w-[480px] shrink-0 px-12 py-16 relative overflow-hidden"
+        className="hidden lg:flex flex-col items-center justify-center w-[360px] xl:w-[400px] shrink-0 h-full px-10 relative overflow-hidden"
         style={{ backgroundColor: '#1A1A1A' }}
       >
         {/* Textura sutil */}
@@ -211,31 +252,31 @@ export default function ForcePasswordChange({
           }}
         />
 
-        <div className="relative z-10 flex flex-col items-center gap-8 w-full">
+        <div className="relative z-10 flex flex-col items-center gap-6 w-full">
           {/* Ícono principal */}
-          <div className="w-20 h-20 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center">
-            <KeyRound className="w-9 h-9 text-amber-400" />
+          <div className="w-16 h-16 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center">
+            <KeyRound className="w-7 h-7 text-amber-400" />
           </div>
 
           <div className="text-center">
             <p
               className="text-white tracking-[0.2em] font-semibold uppercase"
-              style={{ fontFamily: 'Georgia, serif', fontSize: '18px' }}
+              style={{ fontFamily: 'Georgia, serif', fontSize: '17px' }}
             >
               Primer Acceso
             </p>
             <div className="mt-2 h-px w-16 mx-auto bg-white/25" />
-            <p className="mt-3 text-white/40 text-xs leading-relaxed font-sans max-w-xs">
+            <p className="mt-3 text-white/40 text-[11px] leading-relaxed font-sans max-w-[260px]">
               Tu cuenta fue aprovisionada por un administrador de {' '}
               <span className="text-amber-400/70">MindPsic</span>.
-              Para proteger tu información clínica, debes establecer una contraseña personal segura.
+              Establece una contraseña personal segura.
             </p>
           </div>
 
           {/* Lista de reglas */}
-          <div className="w-full space-y-2 mt-2">
+          <div className="w-full space-y-2">
             {[
-              { ok: newPassword.length >= 8,          label: 'Mínimo 8 caracteres'            },
+              { ok: passwordLongEnough,                label: `Mínimo ${MIN_PASSWORD_LENGTH} caracteres` },
               { ok: /[A-Z]/.test(newPassword),         label: 'Al menos una letra mayúscula'   },
               { ok: /[0-9]/.test(newPassword),         label: 'Al menos un número'             },
               { ok: /[^A-Za-z0-9]/.test(newPassword), label: 'Al menos un carácter especial'  },
@@ -257,8 +298,8 @@ export default function ForcePasswordChange({
           </div>
 
           {/* Badges */}
-          <div className="flex flex-col gap-2 w-full mt-2">
-            {['Cumple Ley 1581 · Habeas Data', 'Cifrado TLS 1.3 / AES-256', 'Sesión protegida por Supabase Auth'].map(
+          <div className="flex flex-col gap-1.5 w-full">
+            {['Cumple Ley 1581 · Habeas Data', 'Cifrado TLS 1.3 / AES-256'].map(
               (badge) => (
                 <div key={badge} className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/10">
                   <ShieldCheck className="w-3 h-3 text-white/30 shrink-0" />
@@ -272,45 +313,65 @@ export default function ForcePasswordChange({
 
       {/* ══════════════════════════════════════════════
           COLUMNA DERECHA — Formulario
+          Único elemento con scroll. `min-h-full` + centrado: si el formulario
+          cabe se ve centrado; si no cabe (ventanas muy bajas), scrollea SOLO
+          esta columna y el panel oscuro permanece intacto.
       ══════════════════════════════════════════════ */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-12 lg:py-16">
-        <div className="w-full max-w-[440px]">
+      <div className="flex-1 h-full overflow-y-auto">
+        <div className="min-h-full flex items-center justify-center px-6 py-8">
+          <div className="w-full max-w-[420px]">
 
           {/* Encabezado */}
-          <div className="mb-7 text-left">
-            <span className="inline-block bg-amber-100 text-amber-800 text-[10px] font-bold uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-amber-300 mb-3">
-              Configuración de Cuenta · Paso Obligatorio
+          <div className="mb-4">
+            <span className="inline-block bg-amber-100 text-amber-800 text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border border-amber-300 mb-2">
+              Paso obligatorio
             </span>
             <h1
-              className="text-stone-900 font-bold mb-2"
-              style={{ fontFamily: 'Georgia, serif', fontSize: '24px', lineHeight: '1.2' }}
+              className="text-stone-900 font-bold"
+              style={{ fontFamily: 'Georgia, serif', fontSize: '21px', lineHeight: '1.2' }}
             >
               Establece tu contraseña personal
             </h1>
-            <p className="text-stone-500 text-sm leading-relaxed">
-              Hola{userName ? `, ${userName.split(' ')[0]}` : ''}. Antes de acceder al portal clínico, debes
-              reemplazar tu contraseña temporal y aceptar la política de datos.
+            <p className="text-stone-500 text-xs mt-1">
+              Hola{userName ? `, ${userName.split(' ')[0]}` : ''} · <span className="font-mono text-stone-400">{userEmail}</span>
             </p>
-            <p className="text-stone-400 text-xs font-mono mt-1">{userEmail}</p>
           </div>
 
           {/* Card del formulario */}
           <div className="bg-white rounded-2xl border border-stone-200 shadow-[0_2px_16px_rgba(0,0,0,0.06)] overflow-hidden">
 
-            {/* Banner de seguridad */}
-            <div className="px-6 pt-5 pb-4 border-b border-stone-100 bg-amber-50 flex items-start gap-3">
-              <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-[11px] font-bold text-stone-800 mb-0.5">
-                  Primer ingreso detectado · Acción requerida
-                </p>
-                <p className="text-[10px] text-stone-500 leading-relaxed">
-                  Tu cuenta fue creada con una contraseña provisional. No podrás acceder al EHR hasta completar este paso.
-                </p>
-              </div>
-            </div>
+            <form onSubmit={handleSubmit} className="px-5 py-5 space-y-4">
 
-            <form onSubmit={handleSubmit} className="px-6 py-6 space-y-5">
+              {/* ── Contraseña actual (re-autenticación — A-05) ──
+                  El backend exige la credencial vigente para confirmar el
+                  cambio. Sin este paso, un token de sesión robado bastaba para
+                  apropiarse de la cuenta. */}
+              <div>
+                <label htmlFor="current-password" className="block text-xs font-semibold text-stone-700 mb-1.5">
+                  Contraseña actual <span className="font-normal text-stone-400">(la provisional que recibiste)</span>
+                </label>
+                <div className="relative">
+                  <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none" />
+                  <input
+                    id="current-password"
+                    type={showCurrent ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    required
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="Confirma tu identidad"
+                    className="w-full pl-10 pr-10 py-2.5 text-xs text-stone-900 font-mono bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-stone-900 placeholder:text-stone-300 placeholder:font-sans transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowCurrent(!showCurrent)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600 cursor-pointer"
+                    aria-label={showCurrent ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                  >
+                    {showCurrent ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
 
               {/* ── Nueva contraseña ── */}
               <div>
@@ -326,7 +387,7 @@ export default function ForcePasswordChange({
                     required
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    placeholder="Mínimo 8 caracteres"
+                    placeholder={`Mínimo ${MIN_PASSWORD_LENGTH} caracteres`}
                     className="w-full pl-10 pr-10 py-2.5 text-xs text-stone-900 font-mono bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-stone-900 focus:border-stone-900 placeholder:text-stone-300 placeholder:font-sans transition-all"
                   />
                   <button
@@ -399,21 +460,14 @@ export default function ForcePasswordChange({
 
               {/* ── Consentimiento Habeas Data / Ley 1581 ── */}
               <div className="rounded-xl border border-stone-200 overflow-hidden">
-                <div className="px-4 py-3 bg-stone-50 border-b border-stone-100 flex items-center gap-2">
-                  <FileText className="w-4 h-4 text-stone-500 shrink-0" />
-                  <span className="text-[11px] font-bold text-stone-700 uppercase tracking-wider">
+                <div className="px-3.5 py-2 bg-stone-50 border-b border-stone-100 flex items-center gap-2">
+                  <FileText className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                  <span className="text-[10px] font-bold text-stone-700 uppercase tracking-wider">
                     Habeas Data · Ley 1581 de 2012
                   </span>
                 </div>
 
-                <div className="px-4 py-3 space-y-3">
-                  {/* Texto resumido */}
-                  <p className="text-[11px] text-stone-500 leading-relaxed">
-                    Al utilizar el EHR Clínico de MindPsic, autorizo el tratamiento de mis datos personales y de los
-                    datos de los pacientes bajo mi cuidado, conforme a la política de privacidad del sistema y la
-                    normativa colombiana de protección de datos personales.
-                  </p>
-
+                <div className="px-3.5 py-2.5 space-y-2">
                   {/* Texto completo expandible */}
                   {showHabeasText && (
                     <div
@@ -466,7 +520,7 @@ export default function ForcePasswordChange({
                   {/* Checkbox obligatorio */}
                   <label
                     htmlFor="habeas-data-accept"
-                    className={`flex items-start gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                    className={`flex items-start gap-2.5 p-2.5 rounded-lg border-2 cursor-pointer transition-all ${
                       habeasAccepted
                         ? 'border-emerald-400 bg-emerald-50'
                         : 'border-stone-200 bg-white hover:border-stone-300'
@@ -477,12 +531,12 @@ export default function ForcePasswordChange({
                       type="checkbox"
                       checked={habeasAccepted}
                       onChange={(e) => setHabeasAccepted(e.target.checked)}
-                      className="mt-0.5 accent-emerald-500 cursor-pointer"
+                      className="mt-0.5 accent-emerald-500 cursor-pointer shrink-0"
                       required
                     />
-                    <span className="text-[11px] text-stone-700 leading-relaxed font-medium">
-                      He leído y acepto la política de tratamiento de datos personales conforme a la Ley 1581 de 2012
-                      y me comprometo a resguardar la confidencialidad de la información clínica de los pacientes.
+                    <span className="text-[10.5px] text-stone-700 leading-snug font-medium">
+                      Acepto la política de tratamiento de datos (Ley 1581 de 2012) y me comprometo a resguardar la
+                      confidencialidad de la información clínica de los pacientes.
                     </span>
                   </label>
                 </div>
@@ -529,11 +583,11 @@ export default function ForcePasswordChange({
               </button>
 
               {/* ── Salida de emergencia ── */}
-              <div className="pt-1 text-center">
+              <div className="text-center">
                 <button
                   type="button"
                   onClick={onLogout}
-                  className="text-[11px] text-stone-400 hover:text-stone-600 cursor-pointer transition-colors underline"
+                  className="text-[10.5px] text-stone-400 hover:text-stone-600 cursor-pointer transition-colors underline"
                 >
                   Cerrar sesión y volver al inicio
                 </button>
@@ -542,10 +596,7 @@ export default function ForcePasswordChange({
             </form>
           </div>
 
-          {/* Footer legal */}
-          <p className="text-center text-[10px] text-stone-400 mt-6 leading-relaxed">
-            © 2026 Ecosistema Clínico MindPsic &amp; MindHealth · Datos protegidos bajo Ley 1581
-          </p>
+          </div>
         </div>
       </div>
     </div>
