@@ -57,7 +57,6 @@ import {
   BookOpen,
   Download,
   Share2,
-  CloudLightning,
   CheckCircle,
   AlertCircle,
   Folder,
@@ -79,6 +78,7 @@ import {
   Scale,
   X,
   Users,
+  Stethoscope,
 } from 'lucide-react';
 import CalendarPanel, { normalizeStatus, type CalendarAppointment } from '../components/EHR/CalendarPanel';
 import { legalDisclosureSpanish } from '../data/mockData';
@@ -297,6 +297,44 @@ export default function PsychologistPortal({
   const [currentView, setCurrentView] = useState<'dashboard' | 'history'>('dashboard');
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
   const [selectedSessionForModal, setSelectedSessionForModal] = useState<any>(null);
+  // Cupo/sesión real del lote activo del paciente — no viene en el objeto
+  // liviano del calendario, se trae vía la misma ficha del paciente que ya
+  // usa el modal de agendamiento (GET .../schedule-summary).
+  const [sessionDetailInfo, setSessionDetailInfo] = useState<{
+    sessionNumber: number | null;
+    statusLabel: string;
+    sessionsTaken: number;
+    sessionsAuthorized: number | null;
+    companyName: string | null;
+  } | null>(null);
+  const [loadingSessionDetail, setLoadingSessionDetail] = useState(false);
+  const [rescheduleTarget, setRescheduleTarget] = useState<any>(null);
+
+  useEffect(() => {
+    if (!selectedSessionForModal?.patientId) { setSessionDetailInfo(null); return; }
+    let cancelled = false;
+    setLoadingSessionDetail(true);
+    const token = localStorage.getItem('mind_token');
+    const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+    fetch(`${apiUrl}/api/patients/${selectedSessionForModal.patientId}/schedule-summary`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const match = data.appointments?.find((a: any) => a.id === selectedSessionForModal.id);
+        setSessionDetailInfo({
+          sessionNumber: match?.sessionNumber ?? null,
+          statusLabel: match?.statusLabel || selectedSessionForModal.estatus || 'Programada',
+          sessionsTaken: data.sessionsTaken ?? 0,
+          sessionsAuthorized: data.activeAuthorization?.sessionsAuthorized ?? null,
+          companyName: data.activeAuthorization?.companyName || data.patient?.companyName || null,
+        });
+      })
+      .catch(() => { if (!cancelled) setSessionDetailInfo(null); })
+      .finally(() => { if (!cancelled) setLoadingSessionDetail(false); });
+    return () => { cancelled = true; };
+  }, [selectedSessionForModal?.id, selectedSessionForModal?.patientId]);
 
   const handleMarkAttendance = async (status: string) => {
     if (!selectedSessionForModal) return;
@@ -322,7 +360,32 @@ export default function PsychologistPortal({
       toast.error('Error al actualizar la cita');
     }
   };
-  
+
+  const handleCancelAppointment = async () => {
+    if (!selectedSessionForModal) return;
+    if (!window.confirm('¿Cancelar esta cita? Esta acción no se puede deshacer.')) return;
+    try {
+      const token = localStorage.getItem('mind_token');
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      // No existe DELETE /api/appointments/:id — cancelar es un cambio de
+      // estado (igual que "No asistió"), no un borrado físico del registro.
+      const res = await fetch(`${apiUrl}/api/appointments/${selectedSessionForModal.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ status: 'Cancelada' }),
+      });
+      if (res.ok) {
+        toast.success('Cita cancelada.');
+        refetchAppointments();
+        setSelectedSessionForModal(null);
+      } else {
+        toast.error('Error al cancelar la cita');
+      }
+    } catch {
+      toast.error('Error al cancelar la cita');
+    }
+  };
+
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [patients, setPatients] = useState<Patient[]>(initialPatients);
   const [progressNotes, setProgressNotes] = useState<ProgressNote[]>(initialProgressNotes);
@@ -357,10 +420,14 @@ export default function PsychologistPortal({
       id: appt?.id || 'unknown',
       patientName: `${appt?.patient?.firstName || ''} ${appt?.patient?.lastName || ''}`.trim() || 'Paciente Desconocido',
       patientId: appt?.patient?.id || 'unknown',
+      documentId: appt?.patient?.documentId || '',
+      phone: appt?.patient?.phone || '',
+      corporateClient: appt?.patient?.corporateClient || '',
+      notes: appt?.notes || '',
       appDate,
       dayIndex: appDate.getDay(),
       timeSlot: appt.timeSlot || `${appDate.getHours().toString().padStart(2, '0')}:${appDate.getMinutes().toString().padStart(2, '0')} - ${(appDate.getHours() + 1).toString().padStart(2, '0')}:${appDate.getMinutes().toString().padStart(2, '0')}`,
-      atencionType: appt.type || 'psicología clínica',
+      atencionType: appt.specialty?.name || appt.type || 'psicología clínica',
       estatus: appt.status || 'Confirmada',
       modalidad: appt.type === 'Virtual' || appt.type === 'Presencial' ? appt.type : 'Virtual',
       roomUrl: appt.roomUrl || 'https://meet.jit.si/mind_psic_default',
@@ -825,43 +892,7 @@ export default function PsychologistPortal({
 
         {activeTab === 'dashboard' && currentView === 'dashboard' && (
           <div className="max-w-7xl mx-auto space-y-6">
-            {/* MindPsic Welcome & Active Profile Information Banner – CON DATOS REALES */}
-            <div className="bg-gradient-to-r from-charcoal-900 to-charcoal-950 border border-toast-300 rounded-2xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <div className="absolute top-0 right-0 w-64 h-64 bg-toast-400/10 rounded-full blur-2xl transform translate-x-12 -translate-y-12" />
-              <div className="space-y-2 z-10 text-left">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="bg-toast-500/30 text-toast-300 text-[10px] font-bold uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-toast-500/20">
-                    Área Médica Activa
-                  </span>
-                  <span className="bg-white/10 text-white/70 text-[10px] font-mono px-2 py-0.5 rounded-full">
-                    Tenant: {currentUser.tenantId}
-                  </span>
-                  <span className="bg-white/10 text-white/70 text-[10px] font-mono px-2 py-0.5 rounded-full capitalize">
-                    Rol: {currentUser.role}
-                  </span>
-                </div>
-                <h1 className="text-2xl md:text-3xl font-extrabold tracking-tight">
-                  Panel de {currentUser.name}{' '}
-                  <span className="text-toast-300 font-sans font-normal text-sm block sm:inline sm:ml-2">
-                    — {currentUser.role === 'DIRECTIVO' ? 'Administración' : 'Psicólogo / Investigador'}
-                  </span>
-                </h1>
-                <p className="text-toast-100 text-xs max-w-lg leading-relaxed font-sans">
-                  Bienvenido al panel consultor unificado de historias clínicas electrónicas de MindPsic. Dr.Mind está disponible a la derecha para asistir tu jornada terapéutica actual.
-                </p>
-              </div>
-
-              <div className="bg-charcoal-900/65 p-4 rounded-xl border border-charcoal-800 flex flex-col shrink-0 text-left min-w-48 z-10">
-                <span className="text-[9px] text-toast-400 font-bold uppercase font-mono tracking-widest">Sincronización Clínica</span>
-                <span className="text-xs text-slate-300 font-medium font-mono mt-1 flex items-center">
-                  <CloudLightning className="w-3.5 h-3.5 mr-1 text-toast-400" />
-                  Conectado • Secure TLS
-                </span>
-                <span className="text-[10px] text-slate-500 font-mono mt-0.5">ESTADO: 2026-05-30 UTC</span>
-              </div>
-            </div>
-
-            {/* Aquí iría el resto del dashboard (calendario, pacientes recientes, notas clínicas, etc.) 
+            {/* Aquí iría el resto del dashboard (calendario, pacientes recientes, notas clínicas, etc.)
                 Por razones de espacio no se replica todo, pero la estructura es idéntica a la original,
                 usando currentUser en lugar de valores estáticos. */}
             {/* KPIs DE AGENDAMIENTO */}
@@ -885,10 +916,15 @@ export default function PsychologistPortal({
             />
 
             <DelegatedAppointmentModal
-              isOpen={showNewAppointmentModal}
-              onClose={() => setShowNewAppointmentModal(false)}
+              isOpen={showNewAppointmentModal || !!rescheduleTarget}
+              initialData={rescheduleTarget}
+              onClose={() => {
+                setShowNewAppointmentModal(false);
+                setRescheduleTarget(null);
+              }}
               onSuccess={() => {
                 setShowNewAppointmentModal(false);
+                setRescheduleTarget(null);
                 refetchAppointments();
               }}
             />
@@ -981,78 +1017,202 @@ export default function PsychologistPortal({
       </main>
 
       {/* MODAL DE DETALLES DE SESIÓN */}
-      {selectedSessionForModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden text-left">
-            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-              <div>
-                <h3 className="text-base font-bold text-slate-800">Detalles de la Cita</h3>
-                <p className="text-[11px] text-slate-400 mt-0.5">Gestión de sesión clínica</p>
-              </div>
-              <button
-                onClick={() => setSelectedSessionForModal(null)}
-                className="text-slate-400 hover:text-slate-600 text-lg leading-none cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-            
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Paciente</label>
-                <div className="text-sm font-bold text-slate-800">{selectedSessionForModal.patientName}</div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Día</label>
-                  <div className="text-sm text-slate-700">{selectedSessionForModal.dayIndex !== undefined ? ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'][selectedSessionForModal.dayIndex] : 'Fecha no definida'}</div>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Hora</label>
-                  <div className="text-sm text-slate-700 font-mono">{selectedSessionForModal.timeSlot}</div>
-                </div>
-              </div>
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Notas / Observaciones</label>
-                <div className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200">
-                  {selectedSessionForModal.notes || selectedSessionForModal.reason || 'Sin observaciones previas.'}
-                </div>
-              </div>
-            </div>
+      {selectedSessionForModal && (() => {
+        const start: Date = selectedSessionForModal.appDate;
+        const end = new Date(start.getTime() + 50 * 60000);
+        const fmtTime = (d: Date) => d.toLocaleTimeString('es-CO', { hour: 'numeric', minute: '2-digit', hour12: true });
+        const fmtDate = (d: Date) => {
+          const s = d.toLocaleDateString('es-CO', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+          return s.charAt(0).toUpperCase() + s.slice(1);
+        };
+        const isVirtual = selectedSessionForModal.modalidad !== 'Presencial';
+        const statusLabel = sessionDetailInfo?.statusLabel || 'Programada';
+        // Igual que en el modal de edición: una cita ya atendida/cancelada, o
+        // cuya fecha ya pasó, no se puede reprogramar.
+        const isLockedForReschedule = statusLabel === 'Atendida' || statusLabel === 'Cancelada' || start.getTime() < Date.now();
+        const STATUS_TONE: Record<string, string> = {
+          Programada: 'bg-toast-500/15 text-toast-300 border-toast-500/30',
+          Atendida: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
+          'No Atendido': 'bg-rose-500/15 text-rose-300 border-rose-500/30',
+          Reprogramada: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
+          Cancelada: 'bg-slate-500/15 text-slate-300 border-slate-500/30',
+        };
 
-            <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex flex-wrap justify-end gap-3">
-              <button
-                onClick={() => {
-                  setSelectedSessionForModal(null);
-                  setSelectedPatientId(selectedSessionForModal.patientId);
-                  setActiveTab('clinical_history');
-                }}
-                className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-xs rounded-lg transition-colors cursor-pointer flex items-center mr-auto"
-              >
-                📝 Ver/Editar Historia Clínica
-              </button>
-              <button
-                onClick={() => window.open('https://mindhealthips.com/', '_blank')}
-                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer flex items-center gap-2"
-              >
-                📹 Unirse a la videollamada
-              </button>
-              <button
-                onClick={() => handleMarkAttendance('No Atendido')}
-                className="px-4 py-2 bg-red-50 text-red-600 hover:bg-red-100 font-semibold text-xs rounded-lg transition-colors cursor-pointer"
-              >
-                No Asistió
-              </button>
-              <button
-                onClick={() => handleMarkAttendance('Atendida')}
-                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-lg transition-colors cursor-pointer"
-              >
-                Marcar Atendido
-              </button>
+        return (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden text-left">
+
+              {/* Header oscuro institucional */}
+              <div className="px-6 py-4 bg-charcoal-900 flex justify-between items-start">
+                <div>
+                  <h3 className="text-base font-bold text-white">Detalles de la Cita</h3>
+                  <p className="text-[10.5px] font-semibold uppercase tracking-widest text-slate-400 mt-0.5">
+                    Gestión de sesión clínica
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${STATUS_TONE[statusLabel] || STATUS_TONE.Programada}`}>
+                    {statusLabel}
+                  </span>
+                  <button
+                    onClick={() => setSelectedSessionForModal(null)}
+                    className="text-slate-400 hover:text-white text-lg leading-none cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-6 space-y-4">
+                {/* Paciente */}
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-toast-50 border border-toast-200">
+                      <UserIcon className="h-5 w-5 text-toast-500" />
+                    </div>
+                    <div>
+                      <p className="text-base font-bold text-slate-900">{selectedSessionForModal.patientName}</p>
+                      <p className="text-xs text-slate-500">
+                        {selectedSessionForModal.documentId ? `CC ${selectedSessionForModal.documentId}` : 'Sin documento'}
+                        {selectedSessionForModal.phone ? ` • ${selectedSessionForModal.phone}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                  {selectedSessionForModal.corporateClient && (
+                    <span className="shrink-0 rounded-md bg-toast-500 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-white">
+                      {selectedSessionForModal.corporateClient}
+                    </span>
+                  )}
+                </div>
+
+                {/* Grid de info */}
+                <div className="grid grid-cols-2 gap-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-start gap-2">
+                    <Stethoscope className="h-4 w-4 shrink-0 text-slate-400 mt-0.5" />
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Especialista</p>
+                      <p className="text-sm font-bold text-slate-800">{currentUser.name}</p>
+                      <p className="text-xs text-slate-500">{currentUser.specialty || selectedSessionForModal.atencionType}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <CalendarDays className="h-4 w-4 shrink-0 text-slate-400 mt-0.5" />
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Programación</p>
+                      <p className="text-sm font-bold text-slate-800">{fmtDate(start)}</p>
+                      <p className="text-xs text-slate-500">{fmtTime(start)} – {fmtTime(end)} (50 min)</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <Video className="h-4 w-4 shrink-0 text-slate-400 mt-0.5" />
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Modalidad</p>
+                      <p className="text-sm font-bold text-slate-800">{isVirtual ? 'Telepsicología' : 'Presencial'}</p>
+                      <p className="text-xs text-slate-500">{isVirtual ? 'Sala virtual asignada' : 'Atención en sede'}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2">
+                    <Clock className="h-4 w-4 shrink-0 text-slate-400 mt-0.5" />
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">Sesión</p>
+                      <p className="text-sm font-bold text-slate-800">
+                        {loadingSessionDetail ? 'Cargando…' : sessionDetailInfo?.sessionNumber ? `Sesión #${sessionDetailInfo.sessionNumber}` : 'Sin lote asociado'}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {loadingSessionDetail
+                          ? ''
+                          : sessionDetailInfo?.sessionsAuthorized === null && sessionDetailInfo?.companyName
+                            ? 'Sesiones libres'
+                            : sessionDetailInfo?.sessionsAuthorized
+                              ? `${sessionDetailInfo.sessionsTaken} usadas de ${sessionDetailInfo.sessionsAuthorized}`
+                              : 'Sin cupo vigente'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Notas */}
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Notas / Observaciones</label>
+                  <div className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                    {selectedSessionForModal.notes || 'Sin observaciones previas para esta sesión.'}
+                  </div>
+                </div>
+
+                {/* Acciones primarias */}
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    disabled={!isVirtual}
+                    onClick={() => {
+                      startVideoSession({
+                        id: selectedSessionForModal.id,
+                        patientId: selectedSessionForModal.patientId,
+                        patientName: selectedSessionForModal.patientName,
+                        time: fmtTime(start),
+                        date: start.toISOString(),
+                        status: 'programada',
+                        roomUrl: selectedSessionForModal.roomUrl,
+                      });
+                      setSelectedSessionForModal(null);
+                    }}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-charcoal-800 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    <Video className="h-4 w-4" /> Unirse a videollamada
+                  </button>
+                  <button
+                    onClick={() => handleMarkAttendance('Atendida')}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-emerald-700 cursor-pointer"
+                  >
+                    <CheckCircle2 className="h-4 w-4" /> Marcar asistencia
+                  </button>
+                </div>
+              </div>
+
+              {/* Acciones secundarias */}
+              <div className="px-6 py-4 border-t border-slate-100 bg-slate-50 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setSelectedSessionForModal(null);
+                      setSelectedPatientId(selectedSessionForModal.patientId);
+                      setActiveTab('clinical_history');
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+                  >
+                    <FileText className="h-3.5 w-3.5" /> Historia clínica
+                  </button>
+                  <button
+                    disabled={isLockedForReschedule}
+                    title={isLockedForReschedule ? 'No se puede reprogramar: la cita ya fue atendida/cancelada o su fecha ya pasó.' : undefined}
+                    onClick={() => {
+                      const fullAppt = (realAppointments || []).find((a: any) => a.id === selectedSessionForModal.id);
+                      setSelectedSessionForModal(null);
+                      setRescheduleTarget(fullAppt || null);
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" /> Re-programar
+                  </button>
+                </div>
+                <div className="flex items-center gap-4">
+                  <button
+                    onClick={() => handleMarkAttendance('No Atendido')}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 hover:text-rose-800 cursor-pointer"
+                  >
+                    <XCircle className="h-3.5 w-3.5" /> No asistió
+                  </button>
+                  <button
+                    onClick={handleCancelAppointment}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 hover:text-rose-800 cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" /> Cancelar cita
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

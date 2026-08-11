@@ -4,7 +4,7 @@
  * Panel de agendamiento (Día / Semana / Mes) del portal de psicólogos.
  * Tema claro institucional (toast + charcoal), consistente con el resto de ehr.
  */
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -13,6 +13,7 @@ import {
   MapPin,
   Clock,
   CalendarDays,
+  User2,
 } from 'lucide-react';
 
 export type CalendarView = 'day' | 'week' | 'month';
@@ -54,7 +55,7 @@ function sameDay(a: Date, b: Date) {
 }
 
 function fmtTime(d: Date) {
-  return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true });
 }
 
 interface CalendarPanelProps {
@@ -65,6 +66,11 @@ interface CalendarPanelProps {
   setCurrentDate: (d: Date) => void;
   onSelectAppointment: (app: CalendarAppointment) => void;
   onNewAppointment: () => void;
+  // Slot libre en el header, entre la navegación de fecha y el selector de
+  // vista (Día/Semana/Mes) — p. ej. un filtro por psicólogo. CalendarPanel no
+  // conoce ese concepto a propósito (lo usan tanto el calendario general del
+  // admin como el personal del psicólogo, que no necesita filtrar por sí mismo).
+  filterSlot?: ReactNode;
 }
 
 export default function CalendarPanel({
@@ -75,6 +81,7 @@ export default function CalendarPanel({
   setCurrentDate,
   onSelectAppointment,
   onNewAppointment,
+  filterSlot,
 }: CalendarPanelProps) {
   const today = new Date();
 
@@ -129,6 +136,8 @@ export default function CalendarPanel({
             </button>
           </div>
         </div>
+
+        {filterSlot}
 
         <div className="flex items-center gap-3">
           <div className="flex items-center rounded-lg border border-slate-200 bg-toast-50 p-0.5">
@@ -381,6 +390,12 @@ function ApptCard({ a, compact, onClick }: { a: CalendarAppointment; compact?: b
           {isVirtual ? <Video className="h-3 w-3" /> : <MapPin className="h-3 w-3" />}
           {a.atencionType}
         </p>
+        {a.psychologistName && (
+          <p className="flex items-center gap-1 truncate text-xs text-slate-500">
+            <User2 className="h-3 w-3 shrink-0" />
+            {a.psychologistName}
+          </p>
+        )}
       </div>
     </div>
   );

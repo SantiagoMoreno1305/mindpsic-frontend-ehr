@@ -24,6 +24,7 @@ interface PatientChart {
   firstName: string;
   lastName: string;
   documentId: string;
+  documentType?: string | null;
   email?: string | null;
   phone?: string | null;
   birthDate?: string | null;
@@ -222,6 +223,8 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
           patientId={patientId}
           patientFirstName={patient.firstName}
           patientLastName={patient.lastName}
+          patientDocumentId={patient.documentId}
+          patientDocumentType={patient.documentType}
           onComplete={fetchChart}
         />
       </div>

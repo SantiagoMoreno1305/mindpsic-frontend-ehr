@@ -6,10 +6,16 @@
  * OPERATIVO) — el backend ya expone /api/patients y /api/appointments a
  * cualquier rol autenticado del tenant, así que la disponibilidad real la
  * da simplemente montar este componente en el tab de cada portal.
+ *
+ * RENDIMIENTO: esta tabla NO usa el hook usePatients (trae el listado
+ * completo del tenant, pensado para vistas acotadas). Un tenant real puede
+ * tener decenas o cientos de miles de pacientes, así que aquí se pagina y
+ * busca del lado del servidor — GET /api/patients?q=&page=&limit=20 — nunca
+ * se trae todo de una vez.
  */
-import { useEffect, useMemo, useState } from 'react';
-import { Search, UserPlus, CalendarPlus, Users, Building2, CalendarClock } from 'lucide-react';
-import { usePatients } from '../../hooks/usePatients';
+import { useEffect, useState } from 'react';
+import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight } from 'lucide-react';
+import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal from './CreatePatientModal';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../DelegatedAppointmentModal';
 import type { BackendPatient } from '../../types';
@@ -18,13 +24,18 @@ interface PacientesPanelProps {
   token: string | null;
 }
 
+const PAGE_SIZE = 10;
+
 export default function PacientesPanel({ token }: PacientesPanelProps) {
-  const { patients, loading, refetch } = usePatients(token);
+  const [patients, setPatients] = useState<BackendPatient[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
 
   const [createOpen, setCreateOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [scheduleForPatientId, setScheduleForPatientId] = useState<string | null>(null);
+  const [scheduleForPatient, setScheduleForPatient] = useState<BackendPatient | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   // RENDIMIENTO: desde este panel se agenda constantemente, así que se precargan
@@ -38,24 +49,50 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
     setTimeout(() => setToast(null), 3500);
   }
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return patients;
-    return patients.filter((p) => {
-      const fullName = `${p.firstName} ${p.lastName}`.toLowerCase();
-      return fullName.includes(q) || (p.documentId || '').toLowerCase().includes(q);
-    });
-  }, [patients, query]);
+  const fetchPatients = async () => {
+    if (!token) { setLoading(false); return; }
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+      if (query.trim()) params.set('q', query.trim());
+      const res = await apiFetch(`/api/patients?${params.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPatients(Array.isArray(data.patients) ? data.patients : []);
+      setTotal(typeof data.total === 'number' ? data.total : 0);
+    } catch (err) {
+      console.error('[PacientesPanel] Error cargando pacientes:', err);
+      setPatients([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const conConvenio = patients.filter((p) => p.corporateClient && p.corporateClient !== 'Particular').length;
+  // Cambiar de página se aplica de inmediato; la búsqueda se debounce (el
+  // administrativo suele seguir escribiendo) y siempre vuelve a la página 1.
+  useEffect(() => {
+    const handle = setTimeout(fetchPatients, query ? 300 : 0);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, page, query]);
 
-  function openScheduleFor(patientId: string) {
-    setScheduleForPatientId(patientId);
+  useEffect(() => {
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const rangeEnd = Math.min(page * PAGE_SIZE, total);
+
+  function openScheduleFor(patient: BackendPatient) {
+    setScheduleForPatient(patient);
     setScheduleOpen(true);
   }
 
   function openScheduleGeneral() {
-    setScheduleForPatientId(null);
+    setScheduleForPatient(null);
     setScheduleOpen(true);
   }
 
@@ -88,10 +125,14 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
       </div>
 
       {/* Stats */}
-      <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <StatCard icon={Users} label="Pacientes registrados" value={patients.length} />
-        <StatCard icon={Building2} label="Con convenio corporativo" value={conConvenio} />
-        <StatCard icon={CalendarClock} label="Resultados filtrados" value={filtered.length} />
+      <div className="mb-5">
+        <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+          <Users className="h-4 w-4 text-toast-500" />
+          <span className="text-xs font-medium text-slate-500">
+            {query.trim() ? 'Resultados de la búsqueda:' : 'Pacientes registrados:'}
+          </span>
+          <span className="text-sm font-bold text-charcoal-900">{total.toLocaleString('es-CO')}</span>
+        </div>
       </div>
 
       {/* Filters + table */}
@@ -124,7 +165,7 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
                   <td colSpan={6} className="py-10 text-center text-sm text-slate-400">Cargando pacientes...</td>
                 </tr>
               )}
-              {!loading && filtered.map((p) => (
+              {!loading && patients.map((p) => (
                 <tr key={p.id} className="transition-colors hover:bg-toast-50/40">
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-3">
@@ -145,7 +186,7 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
                   </td>
                   <td className="px-3 py-3 text-right">
                     <button
-                      onClick={() => openScheduleFor(p.id)}
+                      onClick={() => openScheduleFor(p)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-toast-50 cursor-pointer"
                     >
                       <CalendarPlus className="h-3.5 w-3.5 text-toast-500" />
@@ -154,7 +195,7 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
                   </td>
                 </tr>
               ))}
-              {!loading && filtered.length === 0 && (
+              {!loading && patients.length === 0 && (
                 <tr>
                   <td colSpan={6} className="py-10 text-center text-sm text-slate-400">
                     No se encontraron pacientes con los filtros aplicados.
@@ -164,6 +205,34 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
             </tbody>
           </table>
         </div>
+
+        {/* Paginación */}
+        {!loading && total > 0 && (
+          <div className="mt-4 flex flex-col items-center justify-between gap-2 border-t border-slate-100 pt-3 sm:flex-row">
+            <span className="text-xs text-slate-400">
+              Mostrando {rangeStart}–{rangeEnd} de {total.toLocaleString('es-CO')}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-toast-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" /> Anterior
+              </button>
+              <span className="px-2 text-xs text-slate-400">Página {page} de {totalPages}</span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-toast-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Siguiente <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Toast */}
@@ -178,17 +247,17 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
         isOpen={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={(patient) => {
-          refetch();
+          fetchPatients();
           showToast(`Paciente "${patient.firstName} ${patient.lastName}" creado correctamente.`);
         }}
       />
       <DelegatedAppointmentModal
         isOpen={scheduleOpen}
         onClose={() => setScheduleOpen(false)}
-        initialData={scheduleForPatientId ? { patientId: scheduleForPatientId } : undefined}
+        initialData={scheduleForPatient ? { patient: scheduleForPatient, patientId: scheduleForPatient.id } : undefined}
         onSuccess={() => {
           setScheduleOpen(false);
-          refetch();
+          fetchPatients();
           showToast('Cita agendada correctamente.');
         }}
       />
@@ -204,25 +273,5 @@ function ConvenioTag({ name }: { name?: string }) {
     }`}>
       {isParticular ? 'Particular' : name}
     </span>
-  );
-}
-
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value: number;
-}) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="flex items-center gap-2 text-slate-500">
-        <Icon className="h-4 w-4" />
-        <span className="text-xs font-medium">{label}</span>
-      </div>
-      <p className="mt-1 text-2xl font-bold text-charcoal-900">{value}</p>
-    </div>
   );
 }

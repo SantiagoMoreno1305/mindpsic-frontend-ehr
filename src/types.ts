@@ -293,8 +293,9 @@ export interface BackendPatient {
 
 export interface BackendAppointment {
   id: string;
-  patient: { id: string; firstName: string; lastName: string };
+  patient: { id: string; firstName: string; lastName: string; documentId?: string; phone?: string | null; corporateClient?: string | null };
   psychologist: { id: string; name: string };
+  specialty?: { id: string; name: string } | null;
   dateTime: string;
   date?: string;
   timeSlot?: string;
