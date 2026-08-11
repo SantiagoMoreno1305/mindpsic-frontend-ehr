@@ -1,16 +1,62 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { User, UserRole } from '../types';
-import { useChatModel } from '../hooks/useChatModel';
-import { 
-  Send, 
-  Search, 
-  MessageSquare, 
-  Lock, 
-  CheckCheck, 
+import { useChatModel, MAX_ATTACHMENT_SIZE_BYTES } from '../hooks/useChatModel';
+import { toast } from 'react-hot-toast';
+import {
+  Send,
+  Search,
+  MessageSquare,
+  Lock,
+  CheckCheck,
   AlertCircle,
   Network,
-  User as UserIcon
+  User as UserIcon,
+  Paperclip,
+  FileText,
+  Download,
+  Loader2,
+  Mic,
+  X as XIcon,
 } from 'lucide-react';
+
+/** Formatea bytes a una unidad legible (KB/MB). */
+function formatFileSize(bytes?: number): string {
+  if (!bytes) return '';
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Formatea segundos a mm:ss para el cronómetro de grabación. */
+function formatDuration(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Descarga un adjunto sin exponer la URL firmada de S3 en la barra de
+ * direcciones. En vez de navegar (`<a target="_blank">`), trae el archivo
+ * con fetch y dispara la descarga desde un blob local — la pestaña nunca
+ * sale del dominio de la app.
+ */
+async function downloadFile(url: string, fileName: string) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    console.error('[InternalChat] Error al descargar adjunto:', err);
+    toast.error('No se pudo descargar el archivo.');
+  }
+}
 
 // ── Etiquetas de rol para el banner del chat ─────────────────────────────────
 const CHAT_ROLE_LABELS: Record<UserRole, string> = {
@@ -63,11 +109,14 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
     searchQuery,
     setSearchQuery,
     selectContact,
-    sendMessage
+    sendMessage,
+    sendAttachment,
+    isUploadingAttachment,
   } = useChatModel(currentUser);
 
   const [inputVal, setInputVal] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-scroll al último mensaje
   useEffect(() => {
@@ -79,6 +128,95 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
     if (!inputVal.trim()) return;
     sendMessage(inputVal);
     setInputVal('');
+  };
+
+  const handleAttachClick = () => fileInputRef.current?.click();
+
+  const handleFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite volver a elegir el mismo archivo
+    if (!file) return;
+    if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
+      toast.error(`El archivo supera el límite de ${MAX_ATTACHMENT_SIZE_BYTES / (1024 * 1024)}MB.`);
+      return;
+    }
+    sendAttachment(file);
+  };
+
+  // Visor ampliado de imágenes — nunca navega a la URL de S3, solo agranda
+  // el <img> dentro de la misma app.
+  const [lightboxImage, setLightboxImage] = useState<{ url: string; fileName: string } | null>(null);
+
+  // ── Notas de voz (MediaRecorder) ──────────────────────────────────────────
+  // Reutiliza sendAttachment tal cual — un audio grabado es, para el backend,
+  // un adjunto más (mismo endpoint de URL firmada, mismo límite de tamaño).
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopRecordingStream = () => {
+    recordingStreamRef.current?.getTracks().forEach((t) => t.stop());
+    recordingStreamRef.current = null;
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    setIsRecording(false);
+  };
+
+  // Al desmontar el componente con una grabación activa, liberar el micrófono
+  useEffect(() => stopRecordingStream, []);
+
+  const startRecording = async () => {
+    if (!activeContact) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      recordedChunksRef.current = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+        if (blob.size > 0) {
+          const file = new File([blob], `nota-de-voz-${Date.now()}.webm`, { type: blob.type });
+          sendAttachment(file);
+        }
+      };
+
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      recordingTimerRef.current = setInterval(() => setRecordingSeconds((s) => s + 1), 1000);
+    } catch (err) {
+      console.error('[InternalChat] No se pudo acceder al micrófono:', err);
+      toast.error('No se pudo acceder al micrófono. Revisa los permisos del navegador.');
+    }
+  };
+
+  // Detiene y ENVÍA la nota de voz grabada
+  const finishRecording = () => {
+    mediaRecorderRef.current?.stop(); // dispara onstop -> sendAttachment
+    mediaRecorderRef.current = null;
+    stopRecordingStream();
+  };
+
+  // Detiene y DESCARTA la grabación (sin enviar)
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.onstop = null; // evita que se envíe
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+    }
+    stopRecordingStream();
   };
 
   return (
@@ -268,6 +406,8 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
 
                 {messages.map((msg) => {
                   const isMe = msg.senderId !== activeContact.id;
+                  const isImage = msg.fileType?.startsWith('image/');
+                  const isAudio = msg.fileType?.startsWith('audio/');
                   return (
                     <div
                       key={msg.id}
@@ -275,15 +415,62 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
                         isMe ? 'self-end text-right' : 'self-start text-left'
                       }`}
                     >
-                      <div
-                        className={`text-xs p-3 rounded-2xl relative border ${
-                          isMe
-                            ? 'bg-charcoal-900 text-white rounded-tr-none border-charcoal-950'
-                            : 'bg-toast-100 text-charcoal-900 rounded-tl-none border-toast-300/60'
-                        }`}
-                      >
-                        <p className="leading-relaxed font-sans font-medium whitespace-pre-wrap">{msg.content}</p>
-                      </div>
+                      {/* Adjunto: imagen inline — clic abre el visor interno, nunca navega a S3 */}
+                      {msg.fileName && isImage && msg.downloadUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setLightboxImage({ url: msg.downloadUrl!, fileName: msg.fileName! })}
+                          className={`block overflow-hidden rounded-2xl border cursor-pointer ${isMe ? 'border-charcoal-950' : 'border-toast-300/60'}`}
+                        >
+                          <img src={msg.downloadUrl} alt={msg.fileName} className="max-h-64 w-full object-cover" />
+                        </button>
+                      )}
+
+                      {/* Adjunto: nota de voz (reproductor nativo) */}
+                      {msg.fileName && isAudio && msg.downloadUrl && (
+                        <div
+                          className={`rounded-2xl border p-2.5 ${
+                            isMe ? 'bg-charcoal-900 border-charcoal-950' : 'bg-toast-100 border-toast-300/60'
+                          }`}
+                        >
+                          <audio controls src={msg.downloadUrl} className="h-9 max-w-full" style={{ minWidth: '220px' }} />
+                        </div>
+                      )}
+
+                      {/* Adjunto: archivo/documento — descarga vía blob, nunca navega a S3 */}
+                      {msg.fileName && !isImage && !isAudio && (
+                        <button
+                          type="button"
+                          onClick={() => msg.downloadUrl && downloadFile(msg.downloadUrl, msg.fileName!)}
+                          disabled={!msg.downloadUrl}
+                          className={`flex items-center gap-2 rounded-2xl border p-3 text-xs cursor-pointer disabled:opacity-60 disabled:cursor-default ${
+                            isMe
+                              ? 'bg-charcoal-900 text-white border-charcoal-950 hover:bg-charcoal-800'
+                              : 'bg-toast-100 text-charcoal-900 border-toast-300/60 hover:bg-toast-200/60'
+                          }`}
+                        >
+                          <FileText className="w-5 h-5 shrink-0" />
+                          <span className="min-w-0 flex-1 text-left">
+                            <span className="block truncate font-semibold">{msg.fileName}</span>
+                            <span className={`block text-[10px] ${isMe ? 'text-white/60' : 'text-charcoal-700/60'}`}>{formatFileSize(msg.fileSize)}</span>
+                          </span>
+                          <Download className="w-4 h-4 shrink-0" />
+                        </button>
+                      )}
+
+                      {/* Texto (pie de foto o mensaje normal) */}
+                      {msg.content && (
+                        <div
+                          className={`text-xs p-3 rounded-2xl relative border ${
+                            isMe
+                              ? 'bg-charcoal-900 text-white rounded-tr-none border-charcoal-950'
+                              : 'bg-toast-100 text-charcoal-900 rounded-tl-none border-toast-300/60'
+                          }`}
+                        >
+                          <p className="leading-relaxed font-sans font-medium whitespace-pre-wrap">{msg.content}</p>
+                        </div>
+                      )}
+
                       <div className="flex items-center space-x-1 justify-end text-[9px] text-toast-400 font-mono">
                         <span>{msg.timestamp}</span>
                         {isMe && <CheckCheck className="w-3.5 h-3.5 text-toast-400 shrink-0" />}
@@ -309,20 +496,74 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
               <form onSubmit={handleSend} className="p-3 border-t border-toast-200 bg-white">
                 <div className="flex items-center space-x-2">
                   <input
-                    type="text"
-                    value={inputVal}
-                    onChange={(e) => setInputVal(e.target.value)}
-                    placeholder={`Escribe un mensaje a ${activeContact.name.split(' ')[0] || 'colega'}...`}
-                    className="flex-1 bg-slate-50 border border-slate-200 text-charcoal-950 rounded-xl px-4 py-2.5 text-xs focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 focus:outline-hidden font-medium"
+                    ref={fileInputRef}
+                    type="file"
+                    className="hidden"
+                    onChange={handleFileSelected}
+                    accept="image/*,.pdf,.doc,.docx,.xls,.xlsx"
                   />
-                  <button
-                    type="submit"
-                    id="btn-chat-send"
-                    className="p-2.5 bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700 rounded-xl shadow-md transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
-                    title="Enviar Mensaje"
-                  >
-                    <Send className="w-4 h-4" />
-                  </button>
+
+                  {isRecording ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={cancelRecording}
+                        title="Cancelar grabación"
+                        className="p-2.5 bg-slate-50 hover:bg-slate-100 text-charcoal-700 border border-slate-200 rounded-xl transition-all cursor-pointer shrink-0"
+                      >
+                        <XIcon className="w-4 h-4" />
+                      </button>
+                      <div className="flex-1 flex items-center gap-2 bg-rose-50 border border-rose-200 rounded-xl px-4 py-2.5">
+                        <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0" />
+                        <span className="text-xs font-mono font-bold text-rose-600">{formatDuration(recordingSeconds)}</span>
+                        <span className="text-[10px] text-rose-400 truncate">Grabando nota de voz...</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={finishRecording}
+                        title="Enviar nota de voz"
+                        className="p-2.5 bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700 rounded-xl shadow-md transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] shrink-0"
+                      >
+                        <Send className="w-4 h-4" />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleAttachClick}
+                        disabled={isUploadingAttachment}
+                        title="Adjuntar documento o foto"
+                        className="p-2.5 bg-slate-50 hover:bg-slate-100 text-charcoal-700 border border-slate-200 rounded-xl transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                      >
+                        {isUploadingAttachment ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+                      </button>
+                      <input
+                        type="text"
+                        value={inputVal}
+                        onChange={(e) => setInputVal(e.target.value)}
+                        placeholder={`Escribe un mensaje a ${activeContact.name.split(' ')[0] || 'colega'}...`}
+                        className="flex-1 bg-slate-50 border border-slate-200 text-charcoal-950 rounded-xl px-4 py-2.5 text-xs focus:ring-1 focus:ring-emerald-400 focus:border-emerald-400 focus:outline-hidden font-medium"
+                      />
+                      <button
+                        type="button"
+                        onClick={startRecording}
+                        disabled={isUploadingAttachment}
+                        title="Grabar nota de voz"
+                        className="p-2.5 bg-slate-50 hover:bg-slate-100 text-charcoal-700 border border-slate-200 rounded-xl transition-all cursor-pointer disabled:opacity-50 shrink-0"
+                      >
+                        <Mic className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="submit"
+                        id="btn-chat-send"
+                        className="p-2.5 bg-emerald-600 hover:bg-emerald-700 text-white border border-emerald-700 rounded-xl shadow-md transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] shrink-0"
+                        title="Enviar Mensaje"
+                      >
+                        <Send className="w-4 h-4" />
+                      </button>
+                    </>
+                  )}
                 </div>
                 <p className="text-[9px] text-toast-400 text-left mt-1.5 flex items-center font-mono">
                   <AlertCircle className="w-3 h-3 mr-1" />
@@ -345,6 +586,37 @@ export default function InternalChat({ currentUser }: InternalChatProps) {
         </div>
 
       </div>
+
+      {/* Visor ampliado de imágenes — overlay dentro de la app, nunca navega a S3 */}
+      {lightboxImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-charcoal-950/90 p-6"
+          onClick={() => setLightboxImage(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setLightboxImage(null)}
+            className="absolute top-4 right-4 p-2 bg-white/10 hover:bg-white/20 text-white rounded-lg cursor-pointer"
+            title="Cerrar"
+          >
+            <XIcon className="w-5 h-5" />
+          </button>
+          <img
+            src={lightboxImage.url}
+            alt={lightboxImage.fileName}
+            className="max-h-[85vh] max-w-full rounded-xl shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); downloadFile(lightboxImage.url, lightboxImage.fileName); }}
+            className="absolute bottom-4 flex items-center gap-1.5 px-4 py-2 bg-white text-charcoal-900 text-xs font-semibold rounded-xl shadow-lg cursor-pointer hover:bg-slate-100"
+          >
+            <Download className="w-4 h-4" />
+            Descargar
+          </button>
+        </div>
+      )}
 
     </div>
   );

@@ -53,11 +53,60 @@ export default function App() {
   // ============================================================================
   // SESSION SYNC — Fuente única de verdad: Prisma (no el JWT)
   //
+  // Se invoca tanto al montar la app (refresh de página) como justo después
+  // de un login exitoso, para que el avatar y demás datos canónicos (role,
+  // tenantId, specialty, level) lleguen sin necesidad de recargar la página.
+  // ============================================================================
+  const syncUserFromBackend = (token: string) => {
+    const apiBase = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9000';
+    fetch(`${apiBase}/auth/sync`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          // Token expirado o inválido → forzar logout
+          if (res.status === 401 || res.status === 403) {
+            console.warn('[App][sync] Token inválido detectado → cerrando sesión.');
+            handleLogout();
+          } else {
+            console.warn('[App][sync] /auth/sync respondió', res.status, '— usando datos locales.');
+          }
+          return;
+        }
+
+        const syncData = await res.json();
+        console.log('[App][sync] ✅ Datos canónicos de Prisma recibidos:', syncData);
+
+        // Actualizamos el estado global con role y tenantId canónicos de Prisma.
+        // IMPORTANTE: ignoramos el rol que pudiera venir en el JWT local.
+        setCurrentUser((prev) => {
+          if (!prev) return prev;
+          const updatedUser: User = {
+            ...prev,
+            role: resolveRole(syncData.role),     // Fuente de verdad: Prisma
+            tenantId: syncData.tenantId ?? prev.tenantId, // Fuente de verdad: Prisma
+            specialty: syncData.specialty ?? prev.specialty,
+            level: syncData.level ?? prev.level,
+            avatarUrl: syncData.avatarUrl ?? undefined,
+          };
+          // Persistir el usuario actualizado en localStorage
+          localStorage.setItem('mind_user', JSON.stringify(updatedUser));
+          console.log('[App][sync] Estado global actualizado con datos de Prisma:', updatedUser.role, updatedUser.tenantId);
+          return updatedUser;
+        });
+      })
+      .catch((err) => {
+        // No crítico — se usa el usuario local. El backend podría no estar disponible.
+        console.warn('[App][sync] /auth/sync no disponible (red/backend). Usando datos locales.', err.message);
+      });
+  };
+
   // Al montar la app:
   //  1. Restauramos el usuario desde localStorage para evitar pantalla de Login en refresh.
-  //  2. Llamamos a GET /auth/sync con el mind_token para obtener el role y tenantId
-  //     canónicos desde Prisma, ignorando cualquier valor desactualizado en el JWT.
-  // ============================================================================
+  //  2. Sincronizamos con Prisma para obtener los datos canónicos (incluye avatarUrl).
   useEffect(() => {
     const token = localStorage.getItem('mind_token');
     const userStr = localStorage.getItem('mind_user');
@@ -69,48 +118,8 @@ export default function App() {
         const canonicalRole = resolveRole(storedUser.role);
         setCurrentUser({ ...storedUser, role: canonicalRole });
 
-        // Paso 2: Sincronizar con Prisma para obtener el rol canónico real
-        const apiBase = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9000';
-        fetch(`${apiBase}/auth/sync`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        })
-          .then(async (res) => {
-            if (!res.ok) {
-              // Token expirado o inválido → forzar logout
-              if (res.status === 401 || res.status === 403) {
-                console.warn('[App][sync] Token inválido detectado → cerrando sesión.');
-                handleLogout();
-              } else {
-                console.warn('[App][sync] /auth/sync respondió', res.status, '— usando datos locales.');
-              }
-              return;
-            }
-
-            const syncData = await res.json();
-            console.log('[App][sync] ✅ Datos canónicos de Prisma recibidos:', syncData);
-
-            // Actualizamos el estado global con role y tenantId canónicos de Prisma.
-            // IMPORTANTE: ignoramos el rol que pudiera venir en el JWT local.
-            setCurrentUser((prev) => {
-              if (!prev) return prev;
-              const updatedUser: User = {
-                ...prev,
-                role: resolveRole(syncData.role),     // Fuente de verdad: Prisma
-                tenantId: syncData.tenantId ?? prev.tenantId, // Fuente de verdad: Prisma
-              };
-              // Persistir el usuario actualizado en localStorage
-              localStorage.setItem('mind_user', JSON.stringify(updatedUser));
-              console.log('[App][sync] Estado global actualizado con datos de Prisma:', updatedUser.role, updatedUser.tenantId);
-              return updatedUser;
-            });
-          })
-          .catch((err) => {
-            // No crítico — se usa el usuario local. El backend podría no estar disponible.
-            console.warn('[App][sync] /auth/sync no disponible (red/backend). Usando datos locales.', err.message);
-          });
+        // Paso 2: Sincronizar con Prisma para obtener los datos canónicos reales
+        syncUserFromBackend(token);
       } catch {
         // Datos corruptos en localStorage → limpiar
         localStorage.removeItem('mind_token');
@@ -129,6 +138,21 @@ export default function App() {
 
     console.log('[App] ✅ handleLoginSuccess — rol raw:', rawUser.role, '→ canónico:', canonicalRole);
     setCurrentUser(user);
+
+    // /auth/login no incluye avatarUrl (solo id/email/name/role/tenantId) — sincronizamos
+    // de inmediato con Prisma para que la foto de perfil cargue sin necesidad de recargar.
+    const token = localStorage.getItem('mind_token');
+    if (token) {
+      syncUserFromBackend(token);
+    }
+  };
+
+  // Actualiza el usuario en memoria + localStorage tras una acción propia
+  // (hoy: subir foto de perfil desde UserProfileModal) sin necesidad de
+  // esperar al próximo /auth/sync.
+  const handleUserUpdated = (updatedUser: User) => {
+    setCurrentUser(updatedUser);
+    localStorage.setItem('mind_user', JSON.stringify(updatedUser));
   };
 
   const handleLogout = () => {
@@ -309,6 +333,7 @@ export default function App() {
       <Navbar
         user={currentUser}
         onLogout={handleLogout}
+        onUserUpdated={handleUserUpdated}
         currentContext={workspaceContext}
         onContextChange={setWorkspaceContext}
       />

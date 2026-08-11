@@ -8,18 +8,22 @@
  * alineación óptica, espacio negativo generoso y comportamiento responsivo.
  */
 
+import { useState } from 'react';
 import { User } from '../types';
 import ContextSwitcher, { WorkspaceContext } from './ContextSwitcher';
+import UserProfileModal from './UserProfileModal';
 import { ShieldCheck, LogOut, User as UserIcon } from 'lucide-react';
 
 interface NavbarProps {
   user: User | null;
   onLogout: () => void;
+  onUserUpdated: (user: User) => void;
   currentContext: WorkspaceContext;
   onContextChange: (context: WorkspaceContext) => void;
 }
 
-export default function Navbar({ user, onLogout, currentContext, onContextChange }: NavbarProps) {
+export default function Navbar({ user, onLogout, onUserUpdated, currentContext, onContextChange }: NavbarProps) {
+  const [showProfile, setShowProfile] = useState(false);
   return (
     <nav className="bg-white border-b border-stone-100 sticky top-0 z-40 shadow-[0_1px_0_0_rgba(0,0,0,0.06)]">
       <div className="max-w-7xl mx-auto px-8 py-0 flex items-stretch justify-between min-h-[72px]">
@@ -90,18 +94,27 @@ export default function Navbar({ user, onLogout, currentContext, onContextChange
             CORE V5
           </span>
 
-          {/* Context Switcher — Hybrid Workspace Toggle */}
-          <div className="hidden lg:block ml-8">
-            <ContextSwitcher currentContext={currentContext} onContextChange={onContextChange} />
-          </div>
+          {/* Context Switcher — Hybrid Workspace Toggle. Oculto a propósito:
+              aún no es funcional, se habilita meses después. No se elimina
+              para no perder la integración ya hecha (currentContext/onContextChange). */}
+          {false && (
+            <div className="hidden lg:block ml-8">
+              <ContextSwitcher currentContext={currentContext} onContextChange={onContextChange} />
+            </div>
+          )}
         </div>
 
         {/* ── RIGHT: USER ZONE ── */}
         <div className="flex items-center gap-3 py-4">
           {user && (
             <>
-              {/* User identity card */}
-              <div className="flex items-center gap-3">
+              {/* User identity card — clic abre el perfil */}
+              <button
+                type="button"
+                onClick={() => setShowProfile(true)}
+                title="Ver perfil"
+                className="flex items-center gap-3 rounded-lg p-1 -m-1 transition-colors hover:bg-stone-50 cursor-pointer"
+              >
                 {/* Avatar */}
                 <div className="relative shrink-0">
                   {user.avatarUrl ? (
@@ -140,7 +153,7 @@ export default function Navbar({ user, onLogout, currentContext, onContextChange
                 >
                   {user.role === 'DIRECTIVO' ? 'Directivo' : 'Clínico'}
                 </span>
-              </div>
+              </button>
 
               {/* Logout */}
               <button
@@ -161,6 +174,15 @@ export default function Navbar({ user, onLogout, currentContext, onContextChange
         </div>
 
       </div>
+
+      {user && (
+        <UserProfileModal
+          isOpen={showProfile}
+          onClose={() => setShowProfile(false)}
+          user={user}
+          onUserUpdated={onUserUpdated}
+        />
+      )}
     </nav>
   );
 }

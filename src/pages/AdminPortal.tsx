@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, FormEvent, useEffect } from 'react';
+import { useState, FormEvent, useEffect, useRef } from 'react';
 import { toast } from 'react-hot-toast';
 import * as XLSX from 'xlsx-js-style';
 import { confirmToast } from '../lib/confirmToast';
@@ -14,10 +14,13 @@ import {
 import { useAppointments } from '../hooks/useAppointments';
 import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
+import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
+import ClinicalRecordsList from '../components/EHR/ClinicalRecordsList';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
+import CalendarPanel, { type CalendarAppointment } from '../components/EHR/CalendarPanel';
 import { apiFetch } from '../lib/apiClient';
 import { 
   Patient, 
@@ -41,6 +44,7 @@ import {
   Receipt,
   FileCode,
   Filter,
+  RefreshCw,
   MessageSquare,
   UserPlus,
   PlusCircle,
@@ -50,10 +54,11 @@ import {
   Building2,
   Pencil,
   X,
-  Download
+  Download,
+  FileText
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
 
 export default function AdminPortal() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -66,9 +71,43 @@ export default function AdminPortal() {
   // Extracción del token de localStorage y consumo de hooks reales
   // IMPORTANT: Hooks MUST be called unconditionally at the top level — Rules of Hooks
   const token = localStorage.getItem('mind_token');
-  const { appointments: realAppointments, loading: apptsLoading } = useAppointments(token);
+  const { appointments: realAppointments, loading: apptsLoading, refetch: refetchAppointments } = useAppointments(token);
   const { patients: realPatients, loading: patientsLoading } = usePatients(token);
   const { unreadCount: globalUnreadCount } = useGlobalChat();
+
+  // ── Calendario general del tenant (Consola de Alertas) ─────────────────
+  // Mismo transform que PsychologistPortal, pero con TODOS los agendamientos
+  // que ya trae useAppointments para este rol (DIRECTIVO/CEO/OPERATIVO ven
+  // todo el tenant, no solo "sus" pacientes — ver listAppointments en el
+  // backend) — así el administrativo ve el agendamiento general de
+  // pacientes, su propio tenant y convenios, no una vista personal.
+  const [calendarView, setCalendarView] = useState<'month' | 'week' | 'day'>('month');
+  const [calendarDate, setCalendarDate] = useState(new Date());
+  const [calendarPsychologistFilter, setCalendarPsychologistFilter] = useState('todos');
+
+  const calendarAppointmentsAll = (realAppointments || []).map((appt: any) => {
+    const appDate = new Date(appt?.date || appt?.dateTime || Date.now());
+    return {
+      id: appt?.id || 'unknown',
+      patientName: `${appt?.patient?.firstName || ''} ${appt?.patient?.lastName || ''}`.trim() || 'Paciente Desconocido',
+      patientId: appt?.patient?.id || 'unknown',
+      appDate,
+      dayIndex: appDate.getDay(),
+      timeSlot: appt.timeSlot || `${appDate.getHours().toString().padStart(2, '0')}:${appDate.getMinutes().toString().padStart(2, '0')}`,
+      atencionType: appt.specialty?.name || appt.type || 'psicología clínica',
+      estatus: appt.status || 'Confirmada',
+      modalidad: appt.type === 'Virtual' || appt.type === 'Presencial' ? appt.type : 'Virtual',
+      psychologistName: appt?.psychologist?.name || 'Sin psicólogo asignado',
+    };
+  });
+
+  const calendarPsychologistOptions = Array.from(
+    new Set(calendarAppointmentsAll.map((a) => a.psychologistName))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const calendarAppointments = calendarPsychologistFilter === 'todos'
+    ? calendarAppointmentsAll
+    : calendarAppointmentsAll.filter((a) => a.psychologistName === calendarPsychologistFilter);
 
   // ── Equipo y Accesos: autoservicio de aprovisionamiento (POST /users/provision) ──
   // NOTA: no se usa apiFetch/apiPost aquí a propósito — ese wrapper trata CUALQUIER
@@ -443,6 +482,7 @@ export default function AdminPortal() {
 
 
   const [activeTab, setActiveTab] = useState<AdminTab>('metrics');
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
 
   // Carga el equipo de mi organización al entrar al tab "Equipo y Accesos"
   useEffect(() => {
@@ -451,10 +491,11 @@ export default function AdminPortal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // Carga los convenios/clientes al entrar al tab "Convenios" o "Facturación y RIPS"
-  // (este último los necesita para el selector de Contrato del generador RIPS)
+  // Carga los convenios/clientes al entrar al tab "Convenios", "Facturación y
+  // RIPS" (selector de Contrato del generador RIPS) o "Tablero general"
+  // (selector de convenio del Panel de Control por RIPS).
   useEffect(() => {
-    if (activeTab !== 'convenios' && activeTab !== 'billing_rips') return;
+    if (activeTab !== 'convenios' && activeTab !== 'billing_rips' && activeTab !== 'metrics') return;
     fetchCompanies();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
@@ -463,25 +504,19 @@ export default function AdminPortal() {
     pacientesAtendidosCount: 0,
     psicologosActivosCount: 0,
     evolucionesHistoricasCount: 0,
-    satisfaccionPromedio: 0
   });
 
   const fetchMetrics = async () => {
     try {
-      const storedToken = localStorage.getItem('mind_token');
-      const userStr = localStorage.getItem('mind_user');
-      const tenantId = userStr ? JSON.parse(userStr).tenantId : '';
       const res = await apiFetch('/api/metrics/dashboard');
       if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
       const data = await res.json();
-      console.log('RAW METRICS RESPONSE:', data);
       const metrics = data.data || data || {};
-      
+
       setDashboardMetrics({
         pacientesAtendidosCount: metrics.pacientesAtendidosCount || 0,
         psicologosActivosCount: metrics.psicologosActivosCount || 0,
         evolucionesHistoricasCount: metrics.evolucionesHistoricasCount || 0,
-        satisfaccionPromedio: metrics.satisfaccionPromedio || 0
       });
     } catch (err) {
       console.error('Error fetching dashboard metrics', err);
@@ -493,7 +528,117 @@ export default function AdminPortal() {
       fetchMetrics();
     }
   }, [currentUser]);
-  
+
+  // ── Panel de Control por RIPS (Tablero general) ─────────────────────────
+  // Mismo panel que ya existe en AdminCenter (ClinicalMetricsView), pero acá
+  // sin selector de empresa/tenant: un administrativo del EHR solo opera
+  // dentro de SU tenant — GET .../dashboard-summary ya lo resuelve así por
+  // su cuenta cuando no se manda ?tenantId= (usa el tenant del token). El
+  // filtro de convenio sí aplica, igual que en AdminCenter.
+  interface DashRipsSummary {
+    startDate: string;
+    endDate: string;
+    rows: { date: string; category: string; count: number }[];
+    dates: string[];
+    categories: string[];
+    totalsByDate: Record<string, number>;
+    totalsByCategory: Record<string, number>;
+    grandTotal: number;
+    codes: { code: string; label: string; category: string; count: number }[];
+    latestDiagnosisDate: string | null;
+  }
+  const dashTodayISO = new Date().toISOString().slice(0, 10);
+  const dashMonthStartISO = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const [dashRipsStartDate, setDashRipsStartDate] = useState(dashMonthStartISO);
+  const [dashRipsEndDate, setDashRipsEndDate] = useState(dashTodayISO);
+  const [dashRipsCompanyId, setDashRipsCompanyId] = useState('all');
+  const [dashRipsSummary, setDashRipsSummary] = useState<DashRipsSummary | null>(null);
+  const [dashRipsLoading, setDashRipsLoading] = useState(false);
+  const dashRipsAutoAdjustedRef = useRef(false);
+
+  const fetchDashRipsSummary = async () => {
+    setDashRipsLoading(true);
+    try {
+      const params = new URLSearchParams({ startDate: dashRipsStartDate, endDate: dashRipsEndDate });
+      if (dashRipsCompanyId !== 'all') params.set('companyId', dashRipsCompanyId);
+      const res = await apiFetch(`/api/rips-diagnosis/dashboard-summary?${params.toString()}`);
+      if (!res.ok) {
+        setDashRipsSummary(null);
+        return;
+      }
+      const data: DashRipsSummary = await res.json();
+      setDashRipsSummary(data);
+
+      // Igual que en AdminCenter: si el rango actual quedó vacío pero SÍ hay
+      // diagnósticos históricos, reencuadra el rango una sola vez alrededor
+      // del más reciente en vez de dejar el panel viéndose "roto".
+      if (data.grandTotal === 0 && data.latestDiagnosisDate && !dashRipsAutoAdjustedRef.current) {
+        dashRipsAutoAdjustedRef.current = true;
+        const latest = new Date(`${data.latestDiagnosisDate}T00:00:00.000Z`);
+        const newStart = new Date(Date.UTC(latest.getUTCFullYear(), latest.getUTCMonth(), 1)).toISOString().slice(0, 10);
+        if (newStart !== dashRipsStartDate || data.latestDiagnosisDate !== dashRipsEndDate) {
+          setDashRipsStartDate(newStart);
+          setDashRipsEndDate(data.latestDiagnosisDate);
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching RIPS dashboard summary', err);
+      setDashRipsSummary(null);
+    } finally {
+      setDashRipsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'metrics' && currentUser && (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO')) {
+      fetchDashRipsSummary();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, currentUser, dashRipsStartDate, dashRipsEndDate, dashRipsCompanyId]);
+
+  const dashRipsCellMap = new Map<string, number>();
+  (dashRipsSummary?.rows || []).forEach((r) => dashRipsCellMap.set(`${r.date}|${r.category}`, r.count));
+
+  const handleExportDashRipsExcel = () => {
+    if (!dashRipsSummary || dashRipsSummary.grandTotal === 0) {
+      toast.error('No hay datos de RIPS diagnosticados en el rango/filtro seleccionado.');
+      return;
+    }
+    const { dates, categories, totalsByDate, totalsByCategory, grandTotal, startDate, endDate } = dashRipsSummary;
+    const companyLabel = dashRipsCompanyId === 'all'
+      ? 'Todos los convenios'
+      : (companies.find((c) => c.id === dashRipsCompanyId)?.name || dashRipsCompanyId);
+
+    const headerFill = { fill: { fgColor: { rgb: '111111' } }, font: { bold: true, color: { rgb: 'FFFFFF' }, sz: 10 }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: { bottom: { style: 'thin', color: { rgb: '000000' } } } };
+    const totalFill = { fill: { fgColor: { rgb: 'EEEEEE' } }, font: { bold: true, sz: 10 }, alignment: { horizontal: 'center' } };
+    const cellStyle = { alignment: { horizontal: 'center' }, font: { sz: 10 } };
+    const dateCellStyle = { font: { bold: true, sz: 10 } };
+
+    const aoa: any[][] = [];
+    aoa.push([{ v: 'Panel de Control por RIPS — MindPsic', s: { font: { bold: true, sz: 13 } } }]);
+    aoa.push([{ v: `Rango: ${startDate} a ${endDate}  ·  Convenio: ${companyLabel}  ·  Total diagnosticados: ${grandTotal}`, s: { font: { italic: true, sz: 9, color: { rgb: '555555' } } } }]);
+    aoa.push([]);
+    aoa.push([{ v: 'Fecha', s: headerFill }, ...categories.map((c) => ({ v: c, s: headerFill })), { v: 'Total', s: headerFill }]);
+    dates.forEach((date) => {
+      const row = [{ v: date, s: dateCellStyle }];
+      categories.forEach((cat) => row.push({ v: dashRipsCellMap.get(`${date}|${cat}`) || 0, s: cellStyle } as any));
+      row.push({ v: totalsByDate[date] || 0, s: totalFill } as any);
+      aoa.push(row);
+    });
+    aoa.push([{ v: 'Total', s: totalFill }, ...categories.map((cat) => ({ v: totalsByCategory[cat] || 0, s: totalFill })), { v: grandTotal, s: totalFill }]);
+
+    const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+    worksheet['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: categories.length + 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: categories.length + 1 } },
+    ];
+    worksheet['!cols'] = [{ wch: 14 }, ...categories.map(() => ({ wch: 22 })), { wch: 10 }];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Resumen RIPS');
+    XLSX.writeFile(workbook, `panel-rips_${startDate}_a_${endDate}.xlsx`);
+  };
+
   // React dynamic administrative states
   const [performances, setPerformances] = useState<PsychologistPerformance[]>([]);
   const [clinicalFiles, setClinicalFiles] = useState<ClinicalFile[]>(initialClinicalFiles);
@@ -572,7 +717,42 @@ export default function AdminPortal() {
 
   const [ripsYear, setRipsYear] = useState('2026');
   const [ripsMonth, setRipsMonth] = useState('05');
+  // Periodos (año/mes) para los que YA existe al menos un diagnóstico RIPS
+  // asignado — reemplaza la lista fija hardcodeada de años/meses, que no
+  // tenía ninguna relación con los datos reales del tenant.
+  const [ripsPeriods, setRipsPeriods] = useState<{ year: number; month: number }[]>([]);
   const [ripsCompanyId, setRipsCompanyId] = useState('all');
+  useEffect(() => {
+    const fetchRipsPeriods = async () => {
+      try {
+        const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+        const res = await fetch(`${apiUrl}/api/rips-diagnosis/periods`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const periods: { year: number; month: number }[] = data.periods || [];
+        setRipsPeriods(periods);
+        // El periodo más reciente con datos reales reemplaza el default
+        // hardcodeado (mayo/2026) apenas se conoce el histórico real.
+        if (periods.length > 0) {
+          setRipsYear(String(periods[0].year));
+          setRipsMonth(String(periods[0].month).padStart(2, '0'));
+        }
+      } catch {
+        // Silencioso — los selects simplemente quedan vacíos
+      }
+    };
+    fetchRipsPeriods();
+  }, [token]);
+
+  const ripsYearOptions = Array.from(new Set(ripsPeriods.map((p) => p.year))).sort((a, b) => b - a);
+  const ripsMonthOptions = ripsPeriods
+    .filter((p) => String(p.year) === ripsYear)
+    .map((p) => p.month)
+    .sort((a, b) => b - a);
+  const MONTH_LABELS = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+
   const [ripsFiles, setRipsFiles] = useState<{ US: string; AT: string; AC: string; CT: string } | null>(null);
   const [ripsWarnings, setRipsWarnings] = useState<string[]>([]);
   const [ripsPreviewTab, setRipsPreviewTab] = useState<'US' | 'AT' | 'AC' | 'CT'>('US');
@@ -761,16 +941,19 @@ export default function AdminPortal() {
     );
   }
 
-  // Dynamic filter patients by agreement
-  const filteredPatients = selectedAgreement === 'todos' 
-    ? patients 
-    : patients.filter(p => p.agreement.toLowerCase().includes(selectedAgreement.toLowerCase()));
-
   // Dynamic computation of clinical stats
   const totalPatientsCount = dashboardMetrics.pacientesAtendidosCount;
   const activePsychologistsCount = dashboardMetrics.psicologosActivosCount;
   const totalCompletedSessionsCount = dashboardMetrics.evolucionesHistoricasCount;
-  const avgSatisfactionRate = dashboardMetrics.satisfaccionPromedio;
+
+  // Opciones reales para el filtro "Psicólogo Clínico" — derivadas del propio
+  // log de citas (nombres de quienes ya tienen alguna asignada), no de una
+  // lista aparte. Antes este selector estaba conectado a un array vacío
+  // ({[]?.map(...)}) y nunca mostraba nada, así que un DIRECTIVO que también
+  // atiende pacientes no tenía forma de filtrar "solo mis citas".
+  const professionalOptions = Array.from(
+    new Set(appointmentsLog.map((app) => app.professional).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
 
   // Dynamic cross-filtering for interactive clinical auditor dashboard
   const filteredAppointments = appointmentsLog.filter(app => {
@@ -981,6 +1164,21 @@ export default function AdminPortal() {
             {activeTab === 'patients' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
+          {/* Historias Clínicas — el administrador puede consultarlas */}
+          <button
+            onClick={() => { setSelectedPatientId(null); setActiveTab('clinical_history'); }}
+            id="tab-adm-historias"
+            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+              activeTab === 'clinical_history'
+                ? 'bg-charcoal-900 text-white font-semibold'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <FileText className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Historias Clínicas</span>
+            {activeTab === 'clinical_history' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+          </button>
+
           {/* Equipo / Aprovisionamiento RBAC */}
           <button
             onClick={() => setActiveTab('equipo')}
@@ -1089,40 +1287,41 @@ export default function AdminPortal() {
         {/* VIEW: GRAPHIC METRICS DASHBOARD */}
         {activeTab === 'metrics' && (
           <div className="max-w-7xl mx-auto space-y-6">
-            
-            {/* Header with Title - Dinámico con currentUser */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 pb-4 text-left">
-              <div className="space-y-0.5">
-                <span className="bg-toast-100 text-charcoal-900 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-toast-300">
-                  Gerencia de Operaciones Clínicas
-                </span>
-                <h1 className="text-2xl font-black tracking-tight text-slate-900 mt-1">
-                  Panel de Administración — {currentUser.name}
-                </h1>
-                <div className="flex gap-2 mt-1">
-                  <span className="bg-toast-100 text-charcoal-900 text-[10px] font-bold px-2 py-0.5 rounded-full border border-toast-300">
-                    {currentUser.role}
-                  </span>
-                  <span className="bg-slate-100 text-slate-700 text-[10px] font-mono px-2 py-0.5 rounded-full">
-                    Tenant: {currentUser.tenantId}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400 font-sans mt-2">
-                  Sincronización en tiempo real de consultas, psicólogos operativos, e inquilinos cruzados por seguro médico.
-                </p>
-              </div>
 
-              <button
-                onClick={() => {
-                  setEditingAppointment(null);
+            {/* CALENDARIO GENERAL DEL TENANT — agendamiento de pacientes y convenios */}
+            <CalendarPanel
+              appointments={calendarAppointments as CalendarAppointment[]}
+              view={calendarView}
+              setView={setCalendarView}
+              currentDate={calendarDate}
+              setCurrentDate={setCalendarDate}
+              onSelectAppointment={(app) => {
+                const realAppt = realAppointments?.find((r: any) => r.id === app.id);
+                if (realAppt) {
+                  setEditingAppointment(realAppt);
                   setShowDelegatedModal(true);
-                }}
-                className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-md transition-colors shrink-0 cursor-pointer"
-              >
-                <CalendarPlus className="w-4 h-4" />
-                Agendar Cita Delegada
-              </button>
-            </div>
+                }
+              }}
+              onNewAppointment={() => {
+                setEditingAppointment(null);
+                setShowDelegatedModal(true);
+              }}
+              filterSlot={
+                <div className="flex items-center gap-1.5">
+                  <Filter className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  <select
+                    value={calendarPsychologistFilter}
+                    onChange={(e) => setCalendarPsychologistFilter(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-toast-50 px-2.5 py-1.5 text-sm font-medium text-charcoal-900 focus:ring-2 focus:ring-toast-500 outline-none cursor-pointer"
+                  >
+                    <option value="todos">Todos los psicólogos</option>
+                    {calendarPsychologistOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+              }
+            />
 
             {/* COMPLEJO PANEL DE FILTROS CRUZADOS (REQUERIMIENTO PRINCIPAL DE UX/UI) */}
             <div className="bg-white rounded-2xl border border-slate-150 p-5 shadow-2xs space-y-4 text-left">
@@ -1138,24 +1337,35 @@ export default function AdminPortal() {
                       🔄 Refrescar Métricas
                     </button>
                   </h3>
-                  <p className="text-[11px] text-slate-400 font-sans">Cruza analíticas de salud por psicólogo asignado, rama clínica, día de la semana y mes contable.</p>
                 </div>
-                
-                {/* Reset button to default "todos" */}
-                {(selectedAgreement !== 'todos' || selectedProfessional !== 'todos' || selectedSpecialty !== 'todos' || selectedDay !== 'todos' || selectedMonth !== 'todos') && (
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Reset button to default "todos" */}
+                  {(selectedAgreement !== 'todos' || selectedProfessional !== 'todos' || selectedSpecialty !== 'todos' || selectedDay !== 'todos' || selectedMonth !== 'todos') && (
+                    <button
+                      onClick={() => {
+                        setSelectedAgreement('todos');
+                        setSelectedProfessional('todos');
+                        setSelectedSpecialty('todos');
+                        setSelectedDay('todos');
+                        setSelectedMonth('todos');
+                      }}
+                      className="text-[10px] font-bold text-toast-500 hover:text-toast-600 hover:underline px-2.5 py-1 bg-toast-50 rounded-lg border border-toast-200 transition-all cursor-pointer shadow-3xs"
+                    >
+                      Restablecer Filtros
+                    </button>
+                  )}
                   <button
                     onClick={() => {
-                      setSelectedAgreement('todos');
-                      setSelectedProfessional('todos');
-                      setSelectedSpecialty('todos');
-                      setSelectedDay('todos');
-                      setSelectedMonth('todos');
+                      setEditingAppointment(null);
+                      setShowDelegatedModal(true);
                     }}
-                    className="text-[10px] font-bold text-toast-500 hover:text-toast-600 hover:underline px-2.5 py-1 bg-toast-50 rounded-lg border border-toast-200 transition-all cursor-pointer shadow-3xs"
+                    className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-md transition-colors cursor-pointer"
                   >
-                    Restablecer Filtros
+                    <CalendarPlus className="w-4 h-4" />
+                    Agendar Cita Delegada
                   </button>
-                )}
+                </div>
               </div>
 
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
@@ -1183,8 +1393,8 @@ export default function AdminPortal() {
                     className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todos los Profesionales</option>
-                    {[]?.map((opt: any, idx) => (
-                      <option key={idx} value={opt.value}>{opt.label}</option>
+                    {professionalOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
                     ))}
                   </select>
                 </div>
@@ -1234,15 +1444,10 @@ export default function AdminPortal() {
                   </select>
                 </div>
               </div>
-
-              {/* Conector clínico con base de datos en español */}
-              <span className="block text-[10.5px] text-slate-400 italic font-medium pt-1">
-                * Aplicando filtros cruzados reactivos en memoria. En producción, estos selectores realizan consultas indexadas asíncronas directas a su Spanner / Cloud SQL.
-              </span>
             </div>
 
             {/* HIGH-LEVEL STATS COMPONENT GRID */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
               {/* Patients count */}
               <div className="bg-white rounded-xl border border-slate-100 p-5 flex items-center space-x-4 shadow-xs text-left">
                 <div className="w-10 h-10 bg-toast-100 text-toast-500 rounded-xl flex items-center justify-center border border-toast-300 shrink-0">
@@ -1273,17 +1478,6 @@ export default function AdminPortal() {
                 <div>
                   <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Evoluciones Históricas</span>
                   <p className="text-xl font-extrabold text-slate-900 font-mono mt-0.5">{totalCompletedSessionsCount}</p>
-                </div>
-              </div>
-
-              {/* Average Clinical Satisfaction Rate */}
-              <div className="bg-white rounded-xl border border-slate-100 p-5 flex items-center space-x-4 shadow-xs text-left">
-                <div className="w-10 h-10 bg-toast-100 text-toast-500 rounded-xl flex items-center justify-center border border-toast-300 shrink-0">
-                  <ShieldCheck className="w-5 h-5" />
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Satisfacción Promedio</span>
-                  <p className="text-xl font-extrabold text-slate-900 font-mono mt-0.5">{avgSatisfactionRate}%</p>
                 </div>
               </div>
             </div>
@@ -1382,7 +1576,7 @@ export default function AdminPortal() {
                     </h3>
                   </div>
                   <span className="text-xs font-mono font-extrabold text-toast-500 bg-toast-100 p-1 px-2 rounded-lg border border-toast-300">
-                    {totalFilteredCount > 0 ? Math.round((unattendedOrReprogrammedCount / totalFilteredCount) * 100) : 0}% reprogramaciones
+                    {totalFilteredCount > 0 ? Math.round((unattendedOrReprogrammedCount / totalFilteredCount) * 100) : 0}% sin completar
                   </span>
                 </div>
 
@@ -1461,86 +1655,173 @@ export default function AdminPortal() {
               </div>
             </div>
 
-            {/* PERFORMANCE ANALYSIS CROSS GRID BY INDIVIDUAL THERAPIST */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* table of performance metric metrics per psychologist */}
-              <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 shadow-xs p-5 space-y-4">
-                <div className="border-b border-slate-100 pb-3 text-left">
-                  <h2 className="font-extrabold text-sm text-slate-900 tracking-tight flex items-center">
-                    <BarChart3 className="w-4 h-4 mr-2 text-toast-500" />
-                    Métricas de Consistencia y Desempeño Clínico Individual
-                  </h2>
-                  <p className="text-xs text-slate-400">Eficiencia acumulada e índice de retención de pacientes por profesional.</p>
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs text-left">
-                    <thead className="bg-slate-50 text-slate-400 font-mono uppercase text-[9px] border-b border-slate-150">
-                      <tr>
-                        <th className="p-3 pl-4">Nombre del Clínico</th>
-                        <th className="p-3">Especialidad Principal</th>
-                        <th className="p-3 text-center">Pacientes Activos</th>
-                        <th className="p-3 text-center">Sesiones Total</th>
-                        <th className="p-3 text-right pr-4">Tasa Satisfacción</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {performances.map((perf) => (
-                        <tr key={perf.id} className="hover:bg-slate-50/50">
-                          <td className="p-3 pl-4 font-bold text-slate-800 flex items-center">
-                            <span className="w-2.5 h-2.5 rounded-full bg-toast-500 mr-2" />
-                            {perf.name}
-                          </td>
-                          <td className="p-3 text-slate-600 font-medium">{perf.specialty}</td>
-                          <td className="p-3 text-center text-slate-900 font-mono">{perf.activePatients}</td>
-                          <td className="p-3 text-center text-slate-900 font-mono font-semibold">{perf.completedSessions}</td>
-                          <td className="p-3 text-right pr-4 font-bold text-slate-800 font-mono">
-                            <span className="bg-toast-100 text-toast-500 px-2 py-0.5 rounded-md border border-toast-300">
-                              {perf.satisfactionRate}%
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+            {/* PANEL DE CONTROL POR RIPS — mismo panel de AdminCenter, acá
+                acotado al tenant propio (sin selector de empresa). */}
+            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4 text-left">
+              <div className="border-b border-slate-100 pb-3">
+                <h2 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
+                  <FileCode className="w-4 h-4 mr-1.5 text-toast-500" />
+                  Panel de Control por RIPS
+                </h2>
+                <p className="text-[11px] text-slate-400">Resumen de diagnósticos RIPS (CIE-10) asignados por fecha y categoría, filtrable por convenio.</p>
               </div>
 
-              {/* Dynamic demographic patients grid matching selected Agreement */}
-              <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 space-y-4">
-                <div className="border-b border-slate-100 pb-3 text-left">
-                  <h2 className="font-extrabold text-xs text-slate-800 uppercase tracking-widest">
-                    Inscritos en el Convenio ({selectedAgreement === 'todos' ? 'Global' : selectedAgreement})
-                  </h2>
-                  <p className="text-[11px] text-slate-400">Detalle demográfico de pacientes bajo este seguro.</p>
+              {currentUser.role !== 'CEO' && currentUser.role !== 'DIRECTIVO' ? (
+                <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
+                  Tu rol no tiene permisos para ver el panel de control por RIPS (solo CEO/DIRECTIVO).
                 </div>
-
-                <div className="space-y-3 max-h-[40vh] overflow-y-auto pr-1">
-                  {patientsLoading ? (
-                    <p className="text-center text-slate-500 text-xs py-4 animate-pulse font-semibold">Cargando pacientes desde el servidor...</p>
-                  ) : (
-                    <>
-                      {filteredPatients.map((pat) => (
-                        <div key={pat.id} className="p-3.5 bg-slate-50 border border-slate-150 rounded-xl text-xs space-y-1.5 flex flex-col text-left">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-slate-800">{pat.name}</span>
-                            <span className="text-[10px] bg-slate-200 text-slate-700 rounded px-1.5 py-0.2 font-mono">{pat.id}</span>
-                          </div>
-                          <p className="text-[11px] text-slate-500">{pat.gender} • {pat.age} años • {pat.email}</p>
-                          
-                          <div className="flex justify-between items-center text-[10px] text-slate-400 font-mono border-t border-slate-200/50 pt-1.5 mt-1.5">
-                            <span>Notas: {pat.progressNotesCount} firmadas</span>
-                            <span>Último: {pat.lastSessionDate}</span>
-                          </div>
-                        </div>
-                      ))}
-
-                      {filteredPatients.length === 0 && (
-                        <p className="text-center text-slate-400 text-xs py-4">No hay pacientes de este convenio cargados en el sistema actual.</p>
-                      )}
-                    </>
-                  )}
+              ) : (
+              <>
+              <div className="flex flex-wrap items-end gap-3 bg-slate-50 p-4 rounded-xl border border-slate-150">
+                <div className="space-y-1 text-xs">
+                  <label className="block text-[10px] uppercase font-bold text-slate-600">Desde</label>
+                  <input
+                    type="date"
+                    value={dashRipsStartDate}
+                    max={dashRipsEndDate}
+                    onChange={(e) => setDashRipsStartDate(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                  />
                 </div>
+                <div className="space-y-1 text-xs">
+                  <label className="block text-[10px] uppercase font-bold text-slate-600">Hasta</label>
+                  <input
+                    type="date"
+                    value={dashRipsEndDate}
+                    min={dashRipsStartDate}
+                    onChange={(e) => setDashRipsEndDate(e.target.value)}
+                    className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                  />
+                </div>
+                <div className="flex-1 min-w-[160px] space-y-1 text-xs">
+                  <label className="block text-[10px] uppercase font-bold text-slate-600">Convenio</label>
+                  <select
+                    value={dashRipsCompanyId}
+                    onChange={(e) => setDashRipsCompanyId(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                  >
+                    <option value="all">Todos los convenios</option>
+                    {companies.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  onClick={fetchDashRipsSummary}
+                  disabled={dashRipsLoading}
+                  className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${dashRipsLoading ? 'animate-spin' : ''}`} /> Actualizar
+                </button>
+                <button
+                  onClick={handleExportDashRipsExcel}
+                  disabled={dashRipsLoading || !dashRipsSummary || dashRipsSummary.grandTotal === 0}
+                  className="bg-charcoal-900 hover:bg-slate-950 text-white font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <Download className="w-3.5 h-3.5" /> Exportar Excel
+                </button>
+              </div>
+
+              {dashRipsLoading ? (
+                <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
+                  Cargando resumen de RIPS...
+                </div>
+              ) : !dashRipsSummary || dashRipsSummary.grandTotal === 0 ? (
+                <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
+                  No se encontraron diagnósticos RIPS en el rango/filtro seleccionado.
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-3">
+                    <div className="border border-slate-200 rounded-lg px-4 py-2">
+                      <span className="text-[9px] text-slate-400 font-mono font-bold uppercase block">Total Diagnosticados</span>
+                      <span className="text-xl font-black text-slate-900 font-mono">{dashRipsSummary.grandTotal}</span>
+                    </div>
+                    <div className="border border-slate-200 rounded-lg px-4 py-2">
+                      <span className="text-[9px] text-slate-400 font-mono font-bold uppercase block">Categorías CIE-10 distintas</span>
+                      <span className="text-xl font-black text-slate-900 font-mono">{dashRipsSummary.categories.length}</span>
+                    </div>
+                    <div className="border border-slate-200 rounded-lg px-4 py-2">
+                      <span className="text-[9px] text-slate-400 font-mono font-bold uppercase block">Días con registros</span>
+                      <span className="text-xl font-black text-slate-900 font-mono">{dashRipsSummary.dates.length}</span>
+                    </div>
+                  </div>
+
+                  <div className="border border-slate-200 rounded-lg overflow-x-auto bg-white">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[9px] font-mono tracking-widest">
+                          <th className="p-3 sticky left-0 bg-slate-50">Fecha</th>
+                          {dashRipsSummary.categories.map((cat) => (
+                            <th key={cat} className="p-3 text-center whitespace-nowrap">{cat}</th>
+                          ))}
+                          <th className="p-3 text-center bg-slate-100">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {dashRipsSummary.dates.map((date) => (
+                          <tr key={date} className="border-b border-slate-100 hover:bg-slate-50">
+                            <td className="p-3 font-mono font-bold text-slate-800 sticky left-0 bg-white">{date}</td>
+                            {dashRipsSummary.categories.map((cat) => (
+                              <td key={cat} className="p-3 text-center font-mono text-slate-600">
+                                {dashRipsCellMap.get(`${date}|${cat}`) || 0}
+                              </td>
+                            ))}
+                            <td className="p-3 text-center font-mono font-bold text-slate-800 bg-slate-50">{dashRipsSummary.totalsByDate[date] || 0}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr className="bg-slate-100 font-mono font-black text-slate-900">
+                          <td className="p-3 sticky left-0 bg-slate-100">Total</td>
+                          {dashRipsSummary.categories.map((cat) => (
+                            <td key={cat} className="p-3 text-center">{dashRipsSummary.totalsByCategory[cat] || 0}</td>
+                          ))}
+                          <td className="p-3 text-center">{dashRipsSummary.grandTotal}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </>
+              )}
+              </>
+              )}
+            </div>
+
+            {/* PERFORMANCE ANALYSIS: DESEMPEÑO CLÍNICO INDIVIDUAL */}
+            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 space-y-4">
+              <div className="border-b border-slate-100 pb-3 text-left">
+                <h2 className="font-extrabold text-sm text-slate-900 tracking-tight flex items-center">
+                  <BarChart3 className="w-4 h-4 mr-2 text-toast-500" />
+                  Métricas de Consistencia y Desempeño Clínico Individual
+                </h2>
+                <p className="text-xs text-slate-400">Eficiencia acumulada e índice de retención de pacientes por profesional.</p>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-400 font-mono uppercase text-[9px] border-b border-slate-150">
+                    <tr>
+                      <th className="p-3 pl-4">Nombre del Clínico</th>
+                      <th className="p-3">Especialidad Principal</th>
+                      <th className="p-3 text-center">Pacientes Activos</th>
+                      <th className="p-3 text-center pr-4">Sesiones Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {performances.map((perf) => (
+                      <tr key={perf.id} className="hover:bg-slate-50/50">
+                        <td className="p-3 pl-4 font-bold text-slate-800 flex items-center">
+                          <span className="w-2.5 h-2.5 rounded-full bg-toast-500 mr-2" />
+                          {perf.name}
+                        </td>
+                        <td className="p-3 text-slate-600 font-medium">{perf.specialty}</td>
+                        <td className="p-3 text-center text-slate-900 font-mono">{perf.activePatients}</td>
+                        <td className="p-3 text-center pr-4 text-slate-900 font-mono font-semibold">{perf.completedSessions}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -1689,6 +1970,24 @@ export default function AdminPortal() {
         {/* VIEW: PACIENTES */}
         {activeTab === 'patients' && (
           <PacientesPanel token={token} />
+        )}
+
+        {/* VIEW: HISTORIAS CLÍNICAS — mismo componente que usa PsychologistPortal,
+            el administrador puede consultarlas (solo lectura desde este portal). */}
+        {activeTab === 'clinical_history' && (
+          <div className="max-w-7xl mx-auto space-y-6">
+            {!selectedPatientId ? (
+              <ClinicalRecordsList
+                patients={realPatients}
+                onSelect={(id) => setSelectedPatientId(id)}
+              />
+            ) : (
+              <ClinicalPatientChart
+                patientId={selectedPatientId}
+                onBack={() => setSelectedPatientId(null)}
+              />
+            )}
+          </div>
         )}
 
         {/* VIEW: EQUIPO Y ACCESOS — Aprovisionamiento RBAC de Usuarios (Migrado) */}
@@ -2317,20 +2616,31 @@ export default function AdminPortal() {
                     <select
                       value={ripsYear}
                       onChange={(e) => setRipsYear(e.target.value)}
-                      className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                      disabled={ripsYearOptions.length === 0}
+                      className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500 disabled:opacity-50"
                     >
-                      <option value="2026">Año 2026</option>
-                      <option value="2025">Año 2025</option>
+                      {ripsYearOptions.length === 0 ? (
+                        <option value="">Sin diagnósticos RIPS aún</option>
+                      ) : (
+                        ripsYearOptions.map((y) => <option key={y} value={y}>Año {y}</option>)
+                      )}
                     </select>
 
                     <select
                       value={ripsMonth}
                       onChange={(e) => setRipsMonth(e.target.value)}
-                      className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                      disabled={ripsMonthOptions.length === 0}
+                      className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500 disabled:opacity-50"
                     >
-                      <option value="05">Mayo (05)</option>
-                      <option value="06">Junio (06)</option>
-                      <option value="07">Julio (07)</option>
+                      {ripsMonthOptions.length === 0 ? (
+                        <option value="">—</option>
+                      ) : (
+                        ripsMonthOptions.map((m) => (
+                          <option key={m} value={String(m).padStart(2, '0')}>
+                            {MONTH_LABELS[m]} ({String(m).padStart(2, '0')})
+                          </option>
+                        ))
+                      )}
                     </select>
                   </div>
                 </div>
@@ -2588,7 +2898,7 @@ export default function AdminPortal() {
           }}
           initialData={editingAppointment}
           onSuccess={() => {
-            window.location.reload(); 
+            refetchAppointments();
           }}
         />
       </main>

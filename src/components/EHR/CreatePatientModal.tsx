@@ -7,8 +7,9 @@
  * restringe POST /api/patients por rol, solo exige tenant).
  *
  * Endpoints consumidos:
- *   GET  /api/companies   → Convenios / clientes corporativos del tenant
- *   POST /api/patients    → Creación del paciente
+ *   GET  /api/companies         → Convenios / clientes corporativos del tenant
+ *   GET  /api/users/specialists → Psicólogos del tenant (para asignar responsable)
+ *   POST /api/patients          → Creación del paciente
  */
 import { useState, useEffect } from 'react';
 import { X, UserPlus, Loader2 } from 'lucide-react';
@@ -21,21 +22,33 @@ interface CompanyOption {
   clientType: 'EMPRESA' | 'PARTICULAR';
 }
 
+interface SpecialistOption {
+  id: string;
+  name: string;
+}
+
 interface CreatePatientModalProps {
   isOpen: boolean;
   onClose: () => void;
   onCreated: (patient: BackendPatient) => void;
 }
 
+const DOCUMENT_TYPE_OPTIONS = ['CC', 'TI', 'PEP', 'PA', 'CE'];
+
 export default function CreatePatientModal({ isOpen, onClose, onCreated }: CreatePatientModalProps) {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [documentType, setDocumentType] = useState('CC');
   const [documentId, setDocumentId] = useState('');
+  const [birthDate, setBirthDate] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [companies, setCompanies] = useState<CompanyOption[]>([]);
   const [loadingCompanies, setLoadingCompanies] = useState(false);
+  const [psychologistId, setPsychologistId] = useState('');
+  const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
+  const [loadingSpecialists, setLoadingSpecialists] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,15 +60,24 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
       .then(data => setCompanies(Array.isArray(data) ? data : []))
       .catch(() => setCompanies([]))
       .finally(() => setLoadingCompanies(false));
+    setLoadingSpecialists(true);
+    apiFetch('/api/users/specialists')
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setSpecialists(Array.isArray(data?.specialists) ? data.specialists : Array.isArray(data) ? data : []))
+      .catch(() => setSpecialists([]))
+      .finally(() => setLoadingSpecialists(false));
   }, [isOpen]);
 
   function reset() {
     setFirstName('');
     setLastName('');
+    setDocumentType('CC');
     setDocumentId('');
+    setBirthDate('');
     setEmail('');
     setPhone('');
     setCompanyId('');
+    setPsychologistId('');
     setError(null);
   }
 
@@ -80,11 +102,14 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
         body: JSON.stringify({
           firstName: firstName.trim(),
           lastName: lastName.trim(),
+          documentType: documentType || undefined,
           documentId: documentId.trim(),
+          birthDate: birthDate || undefined,
           email: email.trim() || undefined,
           phone: phone.trim() || undefined,
           companyId: companyId || undefined,
           corporateClient: selectedCompany?.name || 'Particular',
+          psychologistId: psychologistId || undefined,
         }),
       });
 
@@ -152,12 +177,30 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
               <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 Documento <span className="text-rose-500">*</span>
               </label>
+              <div className="flex gap-2">
+                <select
+                  value={documentType}
+                  onChange={(e) => setDocumentType(e.target.value)}
+                  className="w-20 shrink-0 rounded-lg border border-slate-200 bg-slate-50 px-2 py-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                >
+                  {DOCUMENT_TYPE_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                </select>
+                <input
+                  value={documentId}
+                  onChange={(e) => setDocumentId(e.target.value)}
+                  placeholder="Ej. 1024556778"
+                  inputMode="numeric"
+                  className="w-full min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fecha de nacimiento</label>
               <input
-                value={documentId}
-                onChange={(e) => setDocumentId(e.target.value)}
-                placeholder="Ej. 1024556778"
-                inputMode="numeric"
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                type="date"
+                value={birthDate}
+                onChange={(e) => setBirthDate(e.target.value)}
+                className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
               />
             </div>
             <div>
@@ -182,19 +225,38 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
             />
           </div>
 
-          <div>
-            <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Convenio / Cliente corporativo</label>
-            <select
-              value={companyId}
-              onChange={(e) => setCompanyId(e.target.value)}
-              disabled={loadingCompanies}
-              className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
-            >
-              <option value="">Particular (sin convenio)</option>
-              {companies.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Convenio / Cliente corporativo</label>
+              <select
+                value={companyId}
+                onChange={(e) => setCompanyId(e.target.value)}
+                disabled={loadingCompanies}
+                className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+              >
+                <option value="">Particular (sin convenio)</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Psicólogo asignado
+              </label>
+              <select
+                value={psychologistId}
+                onChange={(e) => setPsychologistId(e.target.value)}
+                disabled={loadingSpecialists}
+                className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+              >
+                <option value="">Sin asignar (se define después)</option>
+                {specialists.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              <p className="mt-1 text-[10.5px] text-slate-400">Opcional — si no lo eliges ahora, se asignará automáticamente al agendar la primera cita.</p>
+            </div>
           </div>
 
           {error && (

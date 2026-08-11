@@ -138,9 +138,9 @@ function calcAge(birthDate: string) {
 }
 
 export default function InitialAssessmentWizard({
-  patientId, patientFirstName, patientLastName, onComplete,
+  patientId, patientFirstName, patientLastName, patientDocumentId, patientDocumentType, onComplete,
 }: {
-  patientId: string; patientFirstName?: string; patientLastName?: string; onComplete: () => void;
+  patientId: string; patientFirstName?: string; patientLastName?: string; patientDocumentId?: string; patientDocumentType?: string | null; onComplete: () => void;
 }) {
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<AssessmentForm>(EMPTY_FORM);
@@ -168,10 +168,12 @@ export default function InitialAssessmentWizard({
           setForm({
             ...EMPTY_FORM,
             ...assessment,
-            // Si la valoración aún no tiene su propio nombre editado, se
-            // prellena con el nombre YA REGISTRADO del paciente.
+            // Si la valoración aún no tiene su propio nombre/documento
+            // editado, se prellena con los datos YA REGISTRADOS del paciente.
             nombresPaciente: assessment.nombresPaciente || patientFirstName || '',
             apellidosPaciente: assessment.apellidosPaciente || patientLastName || '',
+            numeroDocumento: assessment.numeroDocumento || patientDocumentId || '',
+            tipoDocumento: assessment.tipoDocumento || patientDocumentType || '',
             fechaNacimiento: assessment.fechaNacimiento ? assessment.fechaNacimiento.slice(0, 10) : '',
             estrato: assessment.estrato?.toString() || '',
             poblacionDiferencial: assessment.poblacionDiferencial || [],
@@ -179,7 +181,13 @@ export default function InitialAssessmentWizard({
           });
           setMembers(assessment.householdMembers || []);
         } else {
-          setForm({ ...EMPTY_FORM, nombresPaciente: patientFirstName || '', apellidosPaciente: patientLastName || '' });
+          setForm({
+            ...EMPTY_FORM,
+            nombresPaciente: patientFirstName || '',
+            apellidosPaciente: patientLastName || '',
+            numeroDocumento: patientDocumentId || '',
+            tipoDocumento: patientDocumentType || '',
+          });
         }
       }
     } catch {
