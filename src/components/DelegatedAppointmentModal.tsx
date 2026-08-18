@@ -611,8 +611,15 @@ export default function DelegatedAppointmentModal({
         // en `date` pero la hora VIEJA en `timeSlot`, y como el correo/
         // WhatsApp de confirmación usa `timeSlot`, el paciente recibe una
         // hora distinta a la que realmente quedó agendada.
+        // form.dateTime es un datetime-local "ingenuo" (ej. "2026-08-18T10:00",
+        // sin zona horaria) — el navegador lo interpreta como hora de Bogotá,
+        // pero el backend en Lambda corre en UTC. Si se manda tal cual, Lambda
+        // lo reinterpreta como 10:00 UTC = 5:00 a.m. Bogotá, un desfase de 5h.
+        // toISOString() lo convierte a un instante UTC inequívoco ANTES de
+        // enviarlo, para que no importe en qué huso horario corra el backend.
+        const dateTimeIso = form.dateTime ? new Date(form.dateTime).toISOString() : form.dateTime;
         const payload: Record<string, unknown> = {
-          date:            form.dateTime,
+          date:            dateTimeIso,
           timeSlot:        form.dateTime?.split('T')[1]?.slice(0, 5) || form.timeSlot || '08:00',
           specialistId:    form.userId,
           userId:          form.userId,
@@ -643,11 +650,15 @@ export default function DelegatedAppointmentModal({
       // programando de una vez el bloque de sesiones disponibles).
       let created = 0;
       for (const dateTime of slotDates) {
+        // Mismo motivo que en la reprogramación: dateTime es un datetime-local
+        // ingenuo (hora de Bogotá sin zona horaria) — se convierte a UTC
+        // inequívoco antes de enviarlo para que Lambda no lo reinterprete
+        // como si ya fuera UTC (desfase de 5 horas).
         const payload = {
           patientId:       form.patientId,
           userId:          form.userId,
           specialtyId:     form.specialtyId || null,
-          date:            dateTime,
+          date:            new Date(dateTime).toISOString(),
           timeSlot:        dateTime.split('T')[1]?.slice(0, 5) || '08:00',
           appointmentType: form.appointmentType,
           modality:        form.modality,
