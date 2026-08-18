@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'react-hot-toast';
-import { Loader2, ShieldCheck, Plus, Trash2, ChevronLeft, ChevronRight, Upload } from 'lucide-react';
+import { Loader2, ShieldCheck, Plus, Trash2, ChevronLeft, ChevronRight, Upload, Send, CheckCircle2, RefreshCw } from 'lucide-react';
 import { COLOMBIA_DEPARTAMENTOS, DEPARTAMENTOS_ORDENADOS } from '../../data/colombiaData';
+import { confirmToast } from '../../lib/confirmToast';
 
 interface HouseholdMember {
   id: string;
@@ -151,6 +152,8 @@ export default function InitialAssessmentWizard({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [signing, setSigning] = useState(false);
+  const [sendingConsentLink, setSendingConsentLink] = useState(false);
+  const [consentLinkSentAt, setConsentLinkSentAt] = useState<Date | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -255,6 +258,80 @@ export default function InitialAssessmentWizard({
       setMembers((prev) => prev.filter((m) => m.id !== id));
     } catch {
       toast.error('Error al eliminar la persona');
+    }
+  };
+
+  // Chequeo liviano de si el paciente ya firmó — a propósito NO reusa
+  // fetchAssessment() (esa sobreescribe TODO el form con lo que haya en el
+  // servidor, incluido lo que el psicólogo esté escribiendo ahora mismo y
+  // que el autoguardado con debounce todavía no mandó). Aquí solo se toman
+  // los 2 campos del consentimiento y se mezclan, el resto del form no se toca.
+  const [checkingConsent, setCheckingConsent] = useState(false);
+  const checkConsentStatus = async (opts: { silent?: boolean } = {}) => {
+    setCheckingConsent(true);
+    try {
+      const res = await fetch(`${apiBase()}/api/initial-assessment/${patientId}`, { headers: authHeaders() });
+      if (!res.ok) return;
+      const { assessment } = await res.json();
+      if (assessment?.anexoConsentimientoDocId && !form.anexoConsentimientoDocId) {
+        update({ anexoConsentimientoDocId: assessment.anexoConsentimientoDocId, tipoConsentimiento: assessment.tipoConsentimiento || form.tipoConsentimiento });
+        toast.success('✅ El paciente ya firmó su consentimiento');
+      } else if (!opts.silent) {
+        toast('Todavía no hay firma registrada', { icon: '⏳' });
+      }
+    } catch {
+      if (!opts.silent) toast.error('No se pudo consultar el estado');
+    } finally {
+      setCheckingConsent(false);
+    }
+  };
+
+  // Mientras haya un enlace enviado y sin firmar, revisa cada 20s — se
+  // detiene solo (sin más peticiones) apenas llega el anexo.
+  useEffect(() => {
+    if (!consentLinkSentAt || form.anexoConsentimientoDocId) return;
+    const id = setInterval(() => checkConsentStatus({ silent: true }), 20000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [consentLinkSentAt, form.anexoConsentimientoDocId]);
+
+  const handleSendConsentLink = async (force = false) => {
+    if (!form.tipoConsentimiento) {
+      toast.error('Selecciona primero el tipo de consentimiento o asentimiento');
+      return;
+    }
+    setSendingConsentLink(true);
+    try {
+      // El enlace firma sobre el borrador ya guardado en el servidor (la
+      // Valoración Individual se resuelve por patientId, igual que el resto
+      // de este formulario) — se asegura de que exista antes de enviar.
+      await saveDraft(form);
+      const res = await fetch(`${apiBase()}/api/consent/tokens`, {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ patientId, consentType: form.tipoConsentimiento, force }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        setSendingConsentLink(false);
+        const confirmed = await confirmToast(
+          `${data.error || 'Este paciente ya tiene un consentimiento firmado.'}\n\n¿Enviar de todas formas un enlace nuevo?`,
+          { confirmLabel: 'Enviar de todas formas', cancelLabel: 'Cancelar' }
+        );
+        if (confirmed) await handleSendConsentLink(true);
+        return;
+      }
+      if (!res.ok) {
+        toast.error(data.error || 'No se pudo enviar el enlace de firma');
+        return;
+      }
+      const sentTo = data.sentTo?.email || data.sentTo?.phone;
+      toast.success(sentTo ? `Enlace enviado a ${sentTo}` : 'Enlace generado — el paciente no tiene correo ni celular registrado');
+      setConsentLinkSentAt(new Date());
+    } catch {
+      toast.error('Error de red al enviar el enlace de firma');
+    } finally {
+      setSendingConsentLink(false);
     }
   };
 
@@ -593,12 +670,49 @@ export default function InitialAssessmentWizard({
               />
             </Field>
             <Field label="Anexo — Consentimiento/Asentimiento firmado">
-              <AnexoUpload
-                patientId={patientId}
-                docId={form.anexoConsentimientoDocId}
-                onUploaded={(id) => update({ anexoConsentimientoDocId: id })}
-                label="anexo de consentimiento"
-              />
+              <div className="flex flex-col gap-2 rounded-lg border border-toast-200 bg-toast-50/60 p-3">
+                {form.anexoConsentimientoDocId ? (
+                  <span className="inline-flex w-fit items-center gap-1.5 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Firmado — anexo cargado
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleSendConsentLink()}
+                    disabled={sendingConsentLink || !form.tipoConsentimiento}
+                    className="inline-flex w-fit items-center gap-2 rounded-lg bg-charcoal-900 px-3.5 py-2 text-xs font-bold text-white hover:bg-charcoal-800 disabled:opacity-40"
+                  >
+                    {sendingConsentLink ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                    Enviar enlace de firma al paciente
+                  </button>
+                )}
+                {consentLinkSentAt && !form.anexoConsentimientoDocId && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-toast-500">
+                      Enviado a las {consentLinkSentAt.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })} — se revisa solo cada 20s, o revisa ahora:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => checkConsentStatus()}
+                      disabled={checkingConsent}
+                      className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-toast-300 px-2.5 py-1 text-[11px] font-bold text-toast-600 hover:bg-toast-100 disabled:opacity-40"
+                    >
+                      {checkingConsent ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                      Revisar estado
+                    </button>
+                  </div>
+                )}
+                {!form.anexoConsentimientoDocId && (
+                  <span className="text-[11px] text-slate-400">o, si ya tienes el documento firmado por otro medio:</span>
+                )}
+                <AnexoUpload
+                  patientId={patientId}
+                  docId={form.anexoConsentimientoDocId}
+                  onUploaded={(id) => update({ anexoConsentimientoDocId: id })}
+                  label="anexo de consentimiento"
+                />
+              </div>
             </Field>
           </div>
         )}
