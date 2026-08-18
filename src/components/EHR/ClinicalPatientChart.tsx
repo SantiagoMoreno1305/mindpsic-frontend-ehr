@@ -225,6 +225,9 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
           patientLastName={patient.lastName}
           patientDocumentId={patient.documentId}
           patientDocumentType={patient.documentType}
+          patientBirthDate={patient.birthDate}
+          patientEmail={patient.email}
+          patientPhone={patient.phone}
           onComplete={fetchChart}
         />
       </div>
