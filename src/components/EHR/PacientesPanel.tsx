@@ -14,28 +14,50 @@
  * se trae todo de una vez.
  */
 import { useEffect, useState } from 'react';
-import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal from './CreatePatientModal';
+import EditPatientModal from './EditPatientModal';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../DelegatedAppointmentModal';
+import { useCompanies } from '../../hooks/useCompanies';
 import type { BackendPatient } from '../../types';
 
 interface PacientesPanelProps {
   token: string | null;
+  /** Navega a la ficha/historia clínica del paciente (tab "Historias Clínicas"). */
+  onSelectPatient?: (patientId: string) => void;
+}
+
+interface SpecialistOption {
+  id: string;
+  name: string;
 }
 
 const PAGE_SIZE = 10;
 
-export default function PacientesPanel({ token }: PacientesPanelProps) {
+const STATUS_OPTIONS: { value: string; label: string }[] = [
+  { value: 'activo', label: 'Activo' },
+  { value: 'pausa', label: 'En pausa' },
+  { value: 'alta', label: 'De alta' },
+];
+
+export default function PacientesPanel({ token, onSelectPatient }: PacientesPanelProps) {
   const [patients, setPatients] = useState<BackendPatient[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
+  const [companyId, setCompanyId] = useState('');
+  const [psychologistId, setPsychologistId] = useState('');
+  const [status, setStatus] = useState('');
+  const { companies } = useCompanies();
+  const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleForPatient, setScheduleForPatient] = useState<BackendPatient | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editPatientTarget, setEditPatientTarget] = useState<BackendPatient | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   // RENDIMIENTO: desde este panel se agenda constantemente, así que se precargan
@@ -43,6 +65,16 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
   useEffect(() => {
     prefetchSelectoresAgendamiento();
   }, []);
+
+  // Catálogo del filtro de psicólogo — el de convenio ya lo trae useCompanies
+  // (caché compartida, ver src/hooks/useCompanies.ts).
+  useEffect(() => {
+    if (!token) return;
+    apiFetch('/api/users/specialists')
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setSpecialists(Array.isArray(data?.specialists) ? data.specialists : Array.isArray(data) ? data : []))
+      .catch(() => setSpecialists([]));
+  }, [token]);
 
   function showToast(msg: string) {
     setToast(msg);
@@ -55,6 +87,9 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
     try {
       const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
       if (query.trim()) params.set('q', query.trim());
+      if (companyId) params.set('companyId', companyId);
+      if (psychologistId) params.set('psychologistId', psychologistId);
+      if (status) params.set('status', status);
       const res = await apiFetch(`/api/patients?${params.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -75,12 +110,19 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
     const handle = setTimeout(fetchPatients, query ? 300 : 0);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, page, query]);
+  }, [token, page, query, companyId, psychologistId, status]);
 
   useEffect(() => {
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
+  }, [query, companyId, psychologistId, status]);
+
+  const hasActiveFilters = !!(companyId || psychologistId || status);
+  function clearFilters() {
+    setCompanyId('');
+    setPsychologistId('');
+    setStatus('');
+  }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -94,6 +136,11 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
   function openScheduleGeneral() {
     setScheduleForPatient(null);
     setScheduleOpen(true);
+  }
+
+  function openEditFor(patient: BackendPatient) {
+    setEditPatientTarget(patient);
+    setEditOpen(true);
   }
 
   return (
@@ -147,6 +194,53 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
           />
         </div>
 
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-400">
+            <Filter className="h-3.5 w-3.5" />
+            Filtros:
+          </span>
+          <select
+            value={companyId}
+            onChange={(e) => setCompanyId(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+          >
+            <option value="">Todos los convenios</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+          <select
+            value={psychologistId}
+            onChange={(e) => setPsychologistId(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+          >
+            <option value="">Todos los psicólogos</option>
+            {specialists.map((s) => (
+              <option key={s.id} value={s.id}>{s.name}</option>
+            ))}
+          </select>
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+          >
+            <option value="">Todos los estados</option>
+            {STATUS_OPTIONS.map((s) => (
+              <option key={s.value} value={s.value}>{s.label}</option>
+            ))}
+          </select>
+          {hasActiveFilters && (
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="inline-flex items-center gap-1 rounded-lg px-2.5 py-2 text-xs font-semibold text-slate-500 transition-colors hover:bg-slate-100 hover:text-charcoal-900 cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+              Limpiar filtros
+            </button>
+          )}
+        </div>
+
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] border-collapse text-sm">
             <thead>
@@ -166,13 +260,29 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
                 </tr>
               )}
               {!loading && patients.map((p) => (
-                <tr key={p.id} className="transition-colors hover:bg-toast-50/40">
+                <tr
+                  key={p.id}
+                  onClick={onSelectPatient ? () => onSelectPatient(p.id) : undefined}
+                  className={`transition-colors hover:bg-toast-50/40 ${onSelectPatient ? 'cursor-pointer' : ''}`}
+                >
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-3">
                       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-toast-100 text-xs font-bold text-toast-500">
                         {`${p.firstName?.[0] || ''}${p.lastName?.[0] || ''}`.toUpperCase()}
                       </div>
-                      <span className="font-semibold text-charcoal-900">{p.firstName} {p.lastName}</span>
+                      <span className="font-semibold text-charcoal-900">
+                        {onSelectPatient ? (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); onSelectPatient(p.id); }}
+                            className="hover:underline cursor-pointer"
+                          >
+                            {p.firstName} {p.lastName}
+                          </button>
+                        ) : (
+                          <>{p.firstName} {p.lastName}</>
+                        )}
+                      </span>
                     </div>
                   </td>
                   <td className="px-3 py-3 font-mono text-xs text-slate-500">{p.documentId}</td>
@@ -185,13 +295,22 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
                     <span className="block text-xs">{p.phone || ''}</span>
                   </td>
                   <td className="px-3 py-3 text-right">
-                    <button
-                      onClick={() => openScheduleFor(p)}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-toast-50 cursor-pointer"
-                    >
-                      <CalendarPlus className="h-3.5 w-3.5 text-toast-500" />
-                      Agendar
-                    </button>
+                    <div className="inline-flex items-center gap-1.5">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openEditFor(p); }}
+                        title="Editar paciente"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 cursor-pointer"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openScheduleFor(p); }}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-toast-50 cursor-pointer"
+                      >
+                        <CalendarPlus className="h-3.5 w-3.5 text-toast-500" />
+                        Agendar
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -246,9 +365,13 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
       <CreatePatientModal
         isOpen={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={(patient) => {
+        onCreated={(patient, wasReactivated) => {
           fetchPatients();
-          showToast(`Paciente "${patient.firstName} ${patient.lastName}" creado correctamente.`);
+          showToast(
+            wasReactivated
+              ? `Paciente "${patient.firstName} ${patient.lastName}" reactivado correctamente.`
+              : `Paciente "${patient.firstName} ${patient.lastName}" creado correctamente.`
+          );
         }}
       />
       <DelegatedAppointmentModal
@@ -259,6 +382,15 @@ export default function PacientesPanel({ token }: PacientesPanelProps) {
           setScheduleOpen(false);
           fetchPatients();
           showToast('Cita agendada correctamente.');
+        }}
+      />
+      <EditPatientModal
+        isOpen={editOpen}
+        patient={editPatientTarget}
+        onClose={() => setEditOpen(false)}
+        onUpdated={(patient) => {
+          fetchPatients();
+          showToast(`Paciente "${patient.firstName} ${patient.lastName}" actualizado correctamente.`);
         }}
       />
     </div>
