@@ -14,6 +14,7 @@ import {
 import { useAppointments } from '../hooks/useAppointments';
 import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
+import { useCompanies, type CompanyRecord, type CompanyLocation } from '../hooks/useCompanies';
 import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
 import ClinicalRecordsList from '../components/EHR/ClinicalRecordsList';
 import InternalChat from '../components/InternalChat';
@@ -55,7 +56,12 @@ import {
   Pencil,
   X,
   Download,
-  FileText
+  FileText,
+  Eye,
+  EyeOff,
+  History,
+  ClipboardX,
+  Bell
 } from 'lucide-react';
 
 type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
@@ -114,16 +120,63 @@ export default function AdminPortal() {
   // 403 como "tenant suspendido" y dispara logout global. /users/provision responde
   // 403 también para límite de licencias alcanzado o rol insuficiente, que son
   // errores de negocio normales, no una suspensión — se maneja con fetch directo.
-  const [newStaffName, setNewStaffName] = useState('');
-  const [newStaffEmail, setNewStaffEmail] = useState('');
-  const [newStaffRole, setNewStaffRole] = useState<'ESPECIALISTA_B2B' | 'OPERATIVO'>('ESPECIALISTA_B2B');
+  const ACADEMIC_LEVEL_OPTIONS = ['Técnico', 'Tecnólogo', 'Pregrado', 'Especialización', 'Maestría', 'Doctorado'];
+
+  const emptyStaffForm = {
+    firstName: '', lastName: '', email: '',
+    role: 'ESPECIALISTA_B2B' as 'ESPECIALISTA_B2B' | 'OPERATIVO',
+    professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
+    dataConsentAccepted: false,
+  };
+  const [newStaffForm, setNewStaffForm] = useState(emptyStaffForm);
   const [isCreatingStaff, setIsCreatingStaff] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
   const [staffSuccess, setStaffSuccess] = useState<{ name: string; email: string; tempPassword: string } | null>(null);
 
+  // ── Catálogos reales para los selectores de la ficha profesional ──
+  // Especialidad y roles ya existen en el backend (mismos que usa el
+  // agendamiento); EPS es un catálogo enorme (miles de filas) — se busca por
+  // texto en vez de traerlo completo, igual patrón que ya usa
+  // InitialAssessmentWizard para el mismo endpoint.
+  interface SpecialtyOption { id: string; name: string }
+  const [staffSpecialties, setStaffSpecialties] = useState<SpecialtyOption[]>([]);
+  useEffect(() => {
+    // Catálogo pequeño (~10 filas por tenant) — se trae una sola vez al
+    // montar el portal, no hace falta condicionarlo a la pestaña activa.
+    (async () => {
+      try {
+        const res = await apiFetch('/api/specialties/options');
+        if (res.ok) setStaffSpecialties(await res.json());
+      } catch { /* silencioso — el select simplemente queda vacío */ }
+    })();
+  }, []);
+
+  interface EpsOption { code: string; nombre: string }
+  function useEpsSearch() {
+    const [query, setQuery] = useState('');
+    const [results, setResults] = useState<EpsOption[]>([]);
+    useEffect(() => {
+      if (query.trim().length < 2) { setResults([]); return; }
+      const timer = setTimeout(async () => {
+        try {
+          const res = await apiFetch(`/api/eps?q=${encodeURIComponent(query.trim())}`);
+          if (res.ok) setResults(await res.json());
+        } catch { /* silencioso */ }
+      }, 300);
+      return () => clearTimeout(timer);
+    }, [query]);
+    return { query, setQuery, results, setResults };
+  }
+  const newStaffEpsSearch = useEpsSearch();
+
   const handleCreateStaff = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newStaffName.trim() || !newStaffEmail.trim()) return;
+    const f = newStaffForm;
+    if (!f.firstName.trim() || !f.lastName.trim() || !f.email.trim()) return;
+    if (!f.dataConsentAccepted) {
+      setStaffError('Debes marcar la autorización de tratamiento de datos personales.');
+      return;
+    }
 
     setIsCreatingStaff(true);
     setStaffError(null);
@@ -140,9 +193,16 @@ export default function AdminPortal() {
         // tenantId NUNCA se envía — el backend lo resuelve desde el usuario
         // real (DIRECTIVO queda bloqueado a su propio tenant automáticamente).
         body: JSON.stringify({
-          name: newStaffName.trim(),
-          email: newStaffEmail.trim().toLowerCase(),
-          role: newStaffRole,
+          firstName: f.firstName.trim(),
+          lastName: f.lastName.trim(),
+          email: f.email.trim().toLowerCase(),
+          role: f.role,
+          professionalCard: f.professionalCard.trim() || undefined,
+          specialtyId: f.specialtyId || undefined,
+          academicLevel: f.academicLevel || undefined,
+          experienceYears: f.experienceYears || undefined,
+          epsCode: f.epsCode || undefined,
+          dataConsentAccepted: f.dataConsentAccepted,
         }),
       });
 
@@ -154,13 +214,12 @@ export default function AdminPortal() {
       }
 
       setStaffSuccess({
-        name: newStaffName.trim(),
-        email: newStaffEmail.trim().toLowerCase(),
+        name: `${f.firstName.trim()} ${f.lastName.trim()}`.trim(),
+        email: f.email.trim().toLowerCase(),
         tempPassword: data.tempPassword,
       });
-      setNewStaffName('');
-      setNewStaffEmail('');
-      setNewStaffRole('ESPECIALISTA_B2B');
+      setNewStaffForm(emptyStaffForm);
+      newStaffEpsSearch.setQuery('');
       await fetchTeamUsers(); // refresca la lista de abajo con el nuevo colaborador
     } catch (err: any) {
       setStaffError('Error de red o comunicación con el servidor: ' + err.message);
@@ -175,14 +234,29 @@ export default function AdminPortal() {
   interface TeamUser {
     id: string;
     name: string;
+    firstName: string | null;
+    lastName: string | null;
     email: string;
     role: string;
+    status: 'active' | 'inactive';
+    professionalCard: string | null;
+    academicLevel: string | null;
+    experienceYears: number | null;
+    specialtyId: string | null;
+    specialtyName: string | null;
+    epsCode: string | null;
+    epsName: string | null;
   }
 
   const [teamUsers, setTeamUsers] = useState<TeamUser[]>([]);
   const [teamUsersLoading, setTeamUsersLoading] = useState(false);
   const [teamUsersError, setTeamUsersError] = useState<string | null>(null);
   const [deletingStaffId, setDeletingStaffId] = useState<string | null>(null);
+  // Enmascarado por defecto (principio de acceso mínimo) — correo y tarjeta
+  // profesional se ocultan parcialmente hasta que el DIRECTIVO pulsa "Revelar
+  // datos". Es un toggle de visualización: los datos ya llegaron completos
+  // en la respuesta de /api/users, esto no hace una petición aparte.
+  const [staffDataRevealed, setStaffDataRevealed] = useState(false);
 
   const fetchTeamUsers = async () => {
     setTeamUsersLoading(true);
@@ -229,71 +303,159 @@ export default function AdminPortal() {
     }
   };
 
+  const handleToggleStaffActive = async (member: TeamUser) => {
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/users/${member.id}/active`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ active: member.status !== 'active' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Error al cambiar el estado del colaborador.');
+        return;
+      }
+      await fetchTeamUsers();
+    } catch (err: any) {
+      toast.error('Error de red: ' + err.message);
+    }
+  };
+
+  // ── Edición de colaborador (nombres/apellidos + ficha profesional) ──
+  const emptyEditStaffForm = {
+    firstName: '', lastName: '',
+    professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
+  };
+  const [showEditStaffModal, setShowEditStaffModal] = useState(false);
+  const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
+  const [editStaffForm, setEditStaffForm] = useState(emptyEditStaffForm);
+  const [savingStaff, setSavingStaff] = useState(false);
+  const [editStaffError, setEditStaffError] = useState<string | null>(null);
+  const editStaffEpsSearch = useEpsSearch();
+
+  const openEditStaffModal = (member: TeamUser) => {
+    setEditingStaffId(member.id);
+    setEditStaffForm({
+      firstName: member.firstName || '',
+      lastName: member.lastName || '',
+      professionalCard: member.professionalCard || '',
+      specialtyId: member.specialtyId || '',
+      academicLevel: member.academicLevel || '',
+      experienceYears: member.experienceYears?.toString() || '',
+      epsCode: member.epsCode || '',
+      epsLabel: member.epsName || '',
+    });
+    editStaffEpsSearch.setQuery('');
+    editStaffEpsSearch.setResults([]);
+    setEditStaffError(null);
+    setShowEditStaffModal(true);
+  };
+
+  const handleSaveStaff = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editingStaffId) return;
+    const f = editStaffForm;
+    if (!f.firstName.trim() || !f.lastName.trim()) return;
+
+    setSavingStaff(true);
+    setEditStaffError(null);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/users/${editingStaffId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({
+          firstName: f.firstName.trim(),
+          lastName: f.lastName.trim(),
+          professionalCard: f.professionalCard.trim() || null,
+          specialtyId: f.specialtyId || null,
+          academicLevel: f.academicLevel || null,
+          experienceYears: f.experienceYears || null,
+          epsCode: f.epsCode || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEditStaffError(data.error || `Error HTTP ${res.status}`);
+        return;
+      }
+      setShowEditStaffModal(false);
+      await fetchTeamUsers();
+    } catch (err: any) {
+      setEditStaffError('Error de red: ' + err.message);
+    } finally {
+      setSavingStaff(false);
+    }
+  };
+
+  // ── Historial de cambios de la ficha profesional ──
+  interface StaffHistoryEntry {
+    id: string;
+    changes: Record<string, { from: any; to: any }>;
+    changedByName: string;
+    createdAt: string;
+  }
+  const [showStaffHistoryModal, setShowStaffHistoryModal] = useState(false);
+  const [staffHistoryName, setStaffHistoryName] = useState('');
+  const [staffHistory, setStaffHistory] = useState<StaffHistoryEntry[]>([]);
+  const [staffHistoryLoading, setStaffHistoryLoading] = useState(false);
+
+  const openStaffHistoryModal = async (member: TeamUser) => {
+    setStaffHistoryName(member.name);
+    setShowStaffHistoryModal(true);
+    setStaffHistoryLoading(true);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/users/${member.id}/professional-profile/history`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      setStaffHistory(res.ok && Array.isArray(data.history) ? data.history : []);
+    } catch {
+      setStaffHistory([]);
+    } finally {
+      setStaffHistoryLoading(false);
+    }
+  };
+
+  const STAFF_HISTORY_FIELD_LABELS: Record<string, string> = {
+    name: 'Nombre', professionalCard: 'Tarjeta profesional', specialtyId: 'Especialidad',
+    academicLevel: 'Nivel académico', experienceYears: 'Experiencia (años)', epsCode: 'EPS/IPS', active: 'Estado',
+  };
+
+  function maskEmail(email: string): string {
+    const [user, domain] = email.split('@');
+    if (!domain) return email;
+    const visible = user.slice(0, 2);
+    return `${visible}${'•'.repeat(Math.max(user.length - 2, 3))}@${domain}`;
+  }
+  function maskCard(card: string): string {
+    if (card.length <= 4) return '•'.repeat(card.length);
+    return `••••${card.slice(-4)}`;
+  }
+
   // ── Convenios / Clientes Corporativos: catálogo propio del tenant ──
-  // Igual que Equipo y Accesos: fetch directo (no apiFetch) para no disparar
-  // el logout global ante un 403 de negocio (ej. nombre duplicado en el tenant).
-  interface ServiceLocationRecord {
-    id: string;
-    name: string;
-    address?: string | null;
-  }
-
-  interface CompanyRecord {
-    id: string;
-    name: string;
-    domain?: string | null;
-    taxId?: string | null;
-    clientType: 'EMPRESA' | 'PARTICULAR';
-    agreementType?: string | null;
-    coveredSessions?: number | null;
-    validFrom?: string | null;
-    validUntil?: string | null;
-    contactName?: string | null;
-    contactPhone?: string | null;
-    contactEmail?: string | null;
-    status: string;
-    notes?: string | null;
-    isDefault: boolean;
-    locations: ServiceLocationRecord[];
-  }
-
   const emptyCompanyForm = {
     name: '', domain: '', taxId: '', clientType: 'EMPRESA' as 'EMPRESA' | 'PARTICULAR',
     agreementType: '', coveredSessions: '', validFrom: '', validUntil: '',
     contactName: '', contactPhone: '', contactEmail: '', notes: '',
   };
 
-  const [companies, setCompanies] = useState<CompanyRecord[]>([]);
-  const [companiesLoading, setCompaniesLoading] = useState(false);
-  const [companiesError, setCompaniesError] = useState<string | null>(null);
+  // Caché compartida con PacientesPanel/CreatePatientModal/DelegatedAppointmentModal
+  // (ver src/hooks/useCompanies.ts) — antes este panel tenía su propio fetch a
+  // /api/companies, redundante con el de esos otros consumidores.
+  const { companies, loading: companiesLoading, error: companiesError, refetch: fetchCompanies } = useCompanies();
   const [showCompanyModal, setShowCompanyModal] = useState(false);
   const [editingCompanyId, setEditingCompanyId] = useState<string | null>(null);
   const [companyForm, setCompanyForm] = useState(emptyCompanyForm);
   const [savingCompany, setSavingCompany] = useState(false);
   const [companyFormError, setCompanyFormError] = useState<string | null>(null);
 
-  const [editingLocations, setEditingLocations] = useState<ServiceLocationRecord[]>([]);
+  const [editingLocations, setEditingLocations] = useState<CompanyLocation[]>([]);
   const [newLocationName, setNewLocationName] = useState('');
   const [newLocationAddress, setNewLocationAddress] = useState('');
   const [savingLocation, setSavingLocation] = useState(false);
-
-  const fetchCompanies = async () => {
-    setCompaniesLoading(true);
-    setCompaniesError(null);
-    try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
-      const res = await fetch(`${apiUrl}/api/companies`, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
-      const data = await res.json().catch(() => ([]));
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setCompanies(Array.isArray(data) ? data : []);
-    } catch (err: any) {
-      setCompaniesError(err.message || 'Error al cargar los convenios.');
-    } finally {
-      setCompaniesLoading(false);
-    }
-  };
 
   const openCreateCompanyModal = () => {
     setEditingCompanyId(null);
@@ -481,8 +643,48 @@ export default function AdminPortal() {
 
 
 
-  const [activeTab, setActiveTab] = useState<AdminTab>('metrics');
+  // Recuerda la última tab visitada entre recargas — sin esto, cualquier
+  // refresh de página remonta el componente y activeTab vuelve a su default
+  // ('metrics' / "Tablero Gerencial"), sin importar dónde estaba el usuario.
+  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'equipo', 'convenios', 'billing_rips', 'chat'];
+  const [activeTab, setActiveTab] = useState<AdminTab>(() => {
+    const saved = localStorage.getItem('mind_admin_active_tab');
+    return (saved && (ADMIN_TABS as string[]).includes(saved)) ? (saved as AdminTab) : 'metrics';
+  });
+  useEffect(() => {
+    localStorage.setItem('mind_admin_active_tab', activeTab);
+  }, [activeTab]);
+
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  // Recuerda desde qué tab se entró a la ficha de un paciente (p. ej. desde
+  // "Pacientes") para que "Volver" regrese ahí — antes siempre volvía al
+  // listado de "Historias Clínicas", sin importar de dónde venías.
+  const [clinicalHistoryReturnTab, setClinicalHistoryReturnTab] = useState<AdminTab | null>(null);
+
+  // Soporte real para el botón "atrás" del navegador al entrar a la ficha de
+  // un paciente: como esta SPA no usa una URL distinta por paciente, el back
+  // nativo no tenía nada que deshacer. Al abrir la ficha empujamos una entrada
+  // de historial (misma URL, solo como "punto de retorno"); si el usuario usa
+  // el back del navegador, el evento popstate dispara la misma transición que
+  // ya hace el botón "Volver a la bandeja de pacientes".
+  const handleBackFromPatientChart = () => {
+    if (clinicalHistoryReturnTab) {
+      window.history.back();
+    } else {
+      setSelectedPatientId(null);
+    }
+  };
+  useEffect(() => {
+    const handlePopState = () => {
+      if (selectedPatientId && clinicalHistoryReturnTab) {
+        setSelectedPatientId(null);
+        setActiveTab(clinicalHistoryReturnTab);
+        setClinicalHistoryReturnTab(null);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [selectedPatientId, clinicalHistoryReturnTab]);
 
   // Carga el equipo de mi organización al entrar al tab "Equipo y Accesos"
   useEffect(() => {
@@ -491,20 +693,16 @@ export default function AdminPortal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // Carga los convenios/clientes al entrar al tab "Convenios", "Facturación y
-  // RIPS" (selector de Contrato del generador RIPS) o "Tablero general"
-  // (selector de convenio del Panel de Control por RIPS).
-  useEffect(() => {
-    if (activeTab !== 'convenios' && activeTab !== 'billing_rips' && activeTab !== 'metrics') return;
-    fetchCompanies();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
+  // Los convenios/clientes (usados en "Convenios", "Facturación y RIPS" y
+  // "Tablero general") ya los trae useCompanies() al montar AdminPortal, con
+  // su propia caché — no hace falta re-disparar la carga en cada cambio de tab.
 
   const [dashboardMetrics, setDashboardMetrics] = useState({
     pacientesAtendidosCount: 0,
     psicologosActivosCount: 0,
     evolucionesHistoricasCount: 0,
   });
+  const [corporateDistribution, setCorporateDistribution] = useState<{ name: string; value: number }[]>([]);
 
   const fetchMetrics = async () => {
     try {
@@ -518,6 +716,7 @@ export default function AdminPortal() {
         psicologosActivosCount: metrics.psicologosActivosCount || 0,
         evolucionesHistoricasCount: metrics.evolucionesHistoricasCount || 0,
       });
+      setCorporateDistribution(Array.isArray(metrics.corporateDistribution) ? metrics.corporateDistribution : []);
     } catch (err) {
       console.error('Error fetching dashboard metrics', err);
     }
@@ -590,7 +789,7 @@ export default function AdminPortal() {
   };
 
   useEffect(() => {
-    if (activeTab === 'metrics' && currentUser && (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO')) {
+    if ((activeTab === 'metrics' || activeTab === 'billing_rips') && currentUser && (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO')) {
       fetchDashRipsSummary();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -615,7 +814,7 @@ export default function AdminPortal() {
     const dateCellStyle = { font: { bold: true, sz: 10 } };
 
     const aoa: any[][] = [];
-    aoa.push([{ v: 'Panel de Control por RIPS — MindPsic', s: { font: { bold: true, sz: 13 } } }]);
+    aoa.push([{ v: 'Reporte de Diagnósticos por RIPS — MindPsic', s: { font: { bold: true, sz: 13 } } }]);
     aoa.push([{ v: `Rango: ${startDate} a ${endDate}  ·  Convenio: ${companyLabel}  ·  Total diagnosticados: ${grandTotal}`, s: { font: { italic: true, sz: 9, color: { rgb: '555555' } } } }]);
     aoa.push([]);
     aoa.push([{ v: 'Fecha', s: headerFill }, ...categories.map((c) => ({ v: c, s: headerFill })), { v: 'Total', s: headerFill }]);
@@ -637,6 +836,89 @@ export default function AdminPortal() {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Resumen RIPS');
     XLSX.writeFile(workbook, `panel-rips_${startDate}_a_${endDate}.xlsx`);
+  };
+
+  // ── Panel "Ver pacientes sin Diagnósticos RIPS" ─────────────────────────
+  // Lista accionable (distinta del resumen agregado de ripsControlPanel):
+  // pacientes atendidos en el periodo que TODAVÍA no tienen diagnóstico RIPS,
+  // agrupables por psicólogo para poder notificarles el pendiente.
+  interface PendingRipsPatient {
+    id: string;
+    firstName: string;
+    lastName: string;
+    documentId: string;
+    recordNumber?: string | null;
+    corporateClient?: string | null;
+    psychologist: { id: string; name: string } | null;
+  }
+  const now = new Date();
+  const [pendingRipsYear, setPendingRipsYear] = useState(now.getFullYear());
+  const [pendingRipsMonth, setPendingRipsMonth] = useState(now.getMonth() + 1);
+  const [pendingRipsCompanyId, setPendingRipsCompanyId] = useState('all');
+  const [pendingRipsList, setPendingRipsList] = useState<PendingRipsPatient[]>([]);
+  const [pendingRipsLoading, setPendingRipsLoading] = useState(false);
+  const [pendingRipsNotifying, setPendingRipsNotifying] = useState(false);
+
+  const fetchPendingRipsList = async () => {
+    setPendingRipsLoading(true);
+    try {
+      const params = new URLSearchParams({ year: String(pendingRipsYear), month: String(pendingRipsMonth) });
+      if (pendingRipsCompanyId !== 'all') params.set('companyId', pendingRipsCompanyId);
+      const res = await apiFetch(`/api/rips-diagnosis/pending?${params.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPendingRipsList(Array.isArray(data.pending) ? data.pending : []);
+    } catch (err) {
+      console.error('Error cargando pacientes sin diagnóstico RIPS', err);
+      setPendingRipsList([]);
+    } finally {
+      setPendingRipsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'billing_rips' || !currentUser || (currentUser.role !== 'CEO' && currentUser.role !== 'DIRECTIVO')) return;
+    fetchPendingRipsList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, currentUser, pendingRipsYear, pendingRipsMonth, pendingRipsCompanyId]);
+
+  // Agrupado por psicólogo — solo para mostrar en pantalla cuántos mensajes
+  // saldrían al notificar (el backend recalcula y agrupa de nuevo por su cuenta).
+  const pendingRipsByPsychologist = new Map<string, { name: string; count: number }>();
+  let pendingRipsUnassignedCount = 0;
+  pendingRipsList.forEach((p) => {
+    if (!p.psychologist) { pendingRipsUnassignedCount += 1; return; }
+    const entry = pendingRipsByPsychologist.get(p.psychologist.id) || { name: p.psychologist.name, count: 0 };
+    entry.count += 1;
+    pendingRipsByPsychologist.set(p.psychologist.id, entry);
+  });
+
+  const handleNotifyPendingRips = async () => {
+    if (pendingRipsList.length === 0) return;
+    const psychCount = pendingRipsByPsychologist.size;
+    if (!(await confirmToast(`¿Enviar recordatorio por Mensajería Clínica a ${psychCount} psicólogo(s) sobre sus pacientes sin diagnóstico RIPS de ${MONTH_LABELS[pendingRipsMonth]} ${pendingRipsYear}?`))) {
+      return;
+    }
+    setPendingRipsNotifying(true);
+    try {
+      const res = await apiFetch('/api/rips-diagnosis/notify', {
+        method: 'POST',
+        body: JSON.stringify({ year: pendingRipsYear, month: pendingRipsMonth, companyId: pendingRipsCompanyId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      toast.success(`Recordatorio enviado a ${data.notified?.length || 0} psicólogo(s).`);
+      if (data.failed?.length > 0) {
+        toast.error(`No se pudo notificar a ${data.failed.length} psicólogo(s) — intenta de nuevo.`);
+      }
+      if (data.unassignedPatients?.length > 0) {
+        toast(`${data.unassignedPatients.length} paciente(s) sin psicólogo asignado no recibieron recordatorio.`, { icon: '⚠️' });
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Error al enviar los recordatorios.');
+    } finally {
+      setPendingRipsNotifying(false);
+    }
   };
 
   // React dynamic administrative states
@@ -674,6 +956,7 @@ export default function AdminPortal() {
   const [selectedSpecialty, setSelectedSpecialty] = useState<string>('todos');
   const [selectedDay, setSelectedDay] = useState<string>('todos');
   const [selectedMonth, setSelectedMonth] = useState<string>('todos');
+  const [appointmentSearchTerm, setAppointmentSearchTerm] = useState('');
 
   // Mapeo dinámico de citas reales consumidas desde el custom hook
   const appointmentsLog = (realAppointments || []).map((appt) => {
@@ -683,20 +966,20 @@ export default function AdminPortal() {
     const monthName = dateObj.toLocaleDateString('es-ES', { month: 'long' });
     const capitalizedMonth = monthName.charAt(0).toUpperCase() + monthName.slice(1);
 
-    const docIdNum = parseInt(appt?.patient?.id?.replace(/\D/g, '') || '') || appt?.patient?.id?.charCodeAt(0) || 0;
-    const agreements = ['Sura Medicina Prepagada', 'Colmédica Prepagada', 'MindHealth Global', 'Particular'];
-    const agreement = agreements[docIdNum % agreements.length];
-
     return {
       id: appt?.id || 'unknown',
       patientName: `${appt?.patient?.firstName || ''} ${appt?.patient?.lastName || ''}`.trim() || 'Paciente Desconocido',
       professional: appt?.psychologist?.name || 'Clínico no asignado',
-      specialty: appt.type || 'Terapia Cognitivo-Conductual',
+      // Especialidad REAL con la que se agendó la sesión (catálogo Specialty),
+      // no el tipo/modalidad de la cita — antes se leía appt.type por error.
+      specialty: appt.specialty?.name || 'Sin especialidad asignada',
       day: capitalizedDay,
       month: capitalizedMonth,
       status: appt.status || 'Atendido',
       modality: appt.type === 'Virtual' || appt.type === 'Presencial' ? appt.type : 'Virtual',
-      agreement: agreement,
+      // Convenio REAL del paciente — antes se sorteaba entre 4 aseguradoras
+      // ficticias según un hash del id, sin relación con el dato real.
+      agreement: appt.patient?.corporateClient || 'Particular',
       reason: appt.notes || null
     };
   });
@@ -706,14 +989,6 @@ export default function AdminPortal() {
   const [uploadedFiles, setUploadedFiles] = useState<any[]>([]);
   const [isProcessingRAG, setIsProcessingRAG] = useState(false);
   const [ragStatusMessage, setRagStatusMessage] = useState<string | null>(null);
-
-  // Billing & RIPS panel states
-  const [billingUsers, setBillingUsers] = useState([]);
-  const [newBillingUser, setNewBillingUser] = useState({
-    name: '',
-    role: 'Facturador Clínico',
-    agreement: 'Sura Medicina Prepagada'
-  });
 
   const [ripsYear, setRipsYear] = useState('2026');
   const [ripsMonth, setRipsMonth] = useState('05');
@@ -756,7 +1031,6 @@ export default function AdminPortal() {
   const [ripsFiles, setRipsFiles] = useState<{ US: string; AT: string; AC: string; CT: string } | null>(null);
   const [ripsWarnings, setRipsWarnings] = useState<string[]>([]);
   const [ripsPreviewTab, setRipsPreviewTab] = useState<'US' | 'AT' | 'AC' | 'CT'>('US');
-  const [patientSearchTerm, setPatientSearchTerm] = useState('');
 
   // ── Filtros de exportación del Directorio Clínico (Facturación y RIPS) ──
   const [reportDateFrom, setReportDateFrom] = useState('');
@@ -946,57 +1220,48 @@ export default function AdminPortal() {
   const activePsychologistsCount = dashboardMetrics.psicologosActivosCount;
   const totalCompletedSessionsCount = dashboardMetrics.evolucionesHistoricasCount;
 
-  // Opciones reales para el filtro "Psicólogo Clínico" — derivadas del propio
-  // log de citas (nombres de quienes ya tienen alguna asignada), no de una
-  // lista aparte. Antes este selector estaba conectado a un array vacío
-  // ({[]?.map(...)}) y nunca mostraba nada, así que un DIRECTIVO que también
-  // atiende pacientes no tenía forma de filtrar "solo mis citas".
+  // Opciones reales para los 5 selectores del filtro cruzado — todas
+  // derivadas del propio log de citas, no de listas fijas ni de arrays vacíos.
+  // Antes 4 de los 5 selectores estaban conectados a un array vacío
+  // ({[]?.map(...)}) y nunca mostraban nada más que "Todos" — no había forma
+  // real de acotar el filtro más allá del psicólogo.
   const professionalOptions = Array.from(
     new Set(appointmentsLog.map((app) => app.professional).filter(Boolean))
   ).sort((a, b) => a.localeCompare(b));
 
+  const agreementOptions = Array.from(
+    new Set(appointmentsLog.map((app) => app.agreement).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const specialtyOptions = Array.from(
+    new Set(appointmentsLog.map((app) => app.specialty).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const WEEKDAY_ORDER = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+  const dayOptions = Array.from(new Set(appointmentsLog.map((app) => app.day).filter(Boolean)))
+    .sort((a, b) => WEEKDAY_ORDER.indexOf(a) - WEEKDAY_ORDER.indexOf(b));
+
+  const MONTH_ORDER = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  const monthOptions = Array.from(new Set(appointmentsLog.map((app) => app.month).filter(Boolean)))
+    .sort((a, b) => MONTH_ORDER.indexOf(a) - MONTH_ORDER.indexOf(b));
+
   // Dynamic cross-filtering for interactive clinical auditor dashboard
   const filteredAppointments = appointmentsLog.filter(app => {
-    const matchesAgreement = selectedAgreement === 'todos' || 
-      app.agreement.toLowerCase().includes(selectedAgreement.toLowerCase()) ||
-      (selectedAgreement === 'Sura' && app.agreement.includes('Sura')) ||
-      (selectedAgreement === 'Colmédica' && app.agreement.includes('Colmédica')) ||
-      (selectedAgreement === 'MindHealth Global' && app.agreement.includes('MindHealth'));
-      
+    const matchesAgreement = selectedAgreement === 'todos' || app.agreement === selectedAgreement;
     const matchesProfessional = selectedProfessional === 'todos' || app.professional === selectedProfessional;
     const matchesSpecialty = selectedSpecialty === 'todos' || app.specialty === selectedSpecialty;
     const matchesDay = selectedDay === 'todos' || app.day === selectedDay;
     const matchesMonth = selectedMonth === 'todos' || app.month === selectedMonth;
+    const matchesSearch = !appointmentSearchTerm.trim() ||
+      app.patientName.toLowerCase().includes(appointmentSearchTerm.trim().toLowerCase());
 
-    return matchesAgreement && matchesProfessional && matchesSpecialty && matchesDay && matchesMonth;
+    return matchesAgreement && matchesProfessional && matchesSpecialty && matchesDay && matchesMonth && matchesSearch;
   });
 
   const totalFilteredCount = filteredAppointments.length;
   const attendedCount = filteredAppointments.filter(app => ['Atendida', 'Atendido', 'ATENDIDO'].includes(app.status)).length;
   const unattendedOrReprogrammedCount = filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramada' || app.status === 'Pendiente').length;
 
-
-  // Create billing user handler
-  const handleCreateBillingUser = (e: FormEvent) => {
-    e.preventDefault();
-    if (!newBillingUser.name) return;
-
-    const newObj = {
-      id: 'bill_' + Date.now(),
-      name: newBillingUser.name,
-      role: newBillingUser.role,
-      agreement: newBillingUser.agreement,
-      active: true
-    };
-
-    setBillingUsers(prev => [...prev, newObj]);
-    setNewBillingUser({
-      name: '',
-      role: 'Facturador Clínico',
-      agreement: 'Sura Medicina Prepagada'
-    });
-    toast.success(`Usuario de Facturación "${newObj.name}" registrado e integrado con éxito.`);
-  };
 
   // Genera los 4 archivos planos oficiales del RIPS (US/AT/AC/CT.txt) con
   // datos reales: pacientes/consultas/diagnósticos vienen de Appointment +
@@ -1094,6 +1359,143 @@ export default function AdminPortal() {
       setRagStatusMessage("⚠️ Error en el procesamiento RAG. El simulador de carga persistió los expedientes localmente.");
     }
   };
+
+  // PANEL DE DIAGNÓSTICOS POR RIPS — mismo panel de AdminCenter, acá acotado
+  // al tenant propio (sin selector de empresa). Se muestra tanto en "Tablero
+  // general" como en "Facturación y RIPS", de ahí que quede extraído en una
+  // variable en vez de repetido inline en los dos tabs.
+  const ripsControlPanel = (
+    <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4 text-left">
+      <div className="border-b border-slate-100 pb-3">
+        <h2 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
+          <FileCode className="w-4 h-4 mr-1.5 text-toast-500" />
+          Generar reporte de Diagnósticos por RIPS
+        </h2>
+        <p className="text-[11px] text-slate-400">Resumen de diagnósticos RIPS (CIE-10) asignados por fecha y categoría, filtrable por convenio.</p>
+      </div>
+
+      {currentUser.role !== 'CEO' && currentUser.role !== 'DIRECTIVO' ? (
+        <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
+          Tu rol no tiene permisos para ver el panel de diagnósticos por RIPS (solo CEO/DIRECTIVO).
+        </div>
+      ) : (
+      <>
+      <div className="flex flex-wrap items-end gap-3 bg-slate-50 p-4 rounded-xl border border-slate-150">
+        <div className="space-y-1 text-xs">
+          <label className="block text-[10px] uppercase font-bold text-slate-600">Desde</label>
+          <input
+            type="date"
+            value={dashRipsStartDate}
+            max={dashRipsEndDate}
+            onChange={(e) => setDashRipsStartDate(e.target.value)}
+            className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+          />
+        </div>
+        <div className="space-y-1 text-xs">
+          <label className="block text-[10px] uppercase font-bold text-slate-600">Hasta</label>
+          <input
+            type="date"
+            value={dashRipsEndDate}
+            min={dashRipsStartDate}
+            onChange={(e) => setDashRipsEndDate(e.target.value)}
+            className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+          />
+        </div>
+        <div className="flex-1 min-w-[160px] space-y-1 text-xs">
+          <label className="block text-[10px] uppercase font-bold text-slate-600">Convenio</label>
+          <select
+            value={dashRipsCompanyId}
+            onChange={(e) => setDashRipsCompanyId(e.target.value)}
+            className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+          >
+            <option value="all">Todos los convenios</option>
+            {companies.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+        <button
+          onClick={fetchDashRipsSummary}
+          disabled={dashRipsLoading}
+          className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${dashRipsLoading ? 'animate-spin' : ''}`} /> Actualizar
+        </button>
+        <button
+          onClick={handleExportDashRipsExcel}
+          disabled={dashRipsLoading || !dashRipsSummary || dashRipsSummary.grandTotal === 0}
+          className="bg-charcoal-900 hover:bg-slate-950 text-white font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+        >
+          <Download className="w-3.5 h-3.5" /> Exportar Excel
+        </button>
+      </div>
+
+      {dashRipsLoading ? (
+        <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
+          Cargando resumen de RIPS...
+        </div>
+      ) : !dashRipsSummary || dashRipsSummary.grandTotal === 0 ? (
+        <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
+          No se encontraron diagnósticos RIPS en el rango/filtro seleccionado.
+        </div>
+      ) : (
+        <>
+          <div className="flex flex-wrap gap-3">
+            <div className="border border-slate-200 rounded-lg px-4 py-2">
+              <span className="text-[9px] text-slate-400 font-mono font-bold uppercase block">Total Diagnosticados</span>
+              <span className="text-xl font-black text-slate-900 font-mono">{dashRipsSummary.grandTotal}</span>
+            </div>
+            <div className="border border-slate-200 rounded-lg px-4 py-2">
+              <span className="text-[9px] text-slate-400 font-mono font-bold uppercase block">Categorías CIE-10 distintas</span>
+              <span className="text-xl font-black text-slate-900 font-mono">{dashRipsSummary.categories.length}</span>
+            </div>
+            <div className="border border-slate-200 rounded-lg px-4 py-2">
+              <span className="text-[9px] text-slate-400 font-mono font-bold uppercase block">Días con registros</span>
+              <span className="text-xl font-black text-slate-900 font-mono">{dashRipsSummary.dates.length}</span>
+            </div>
+          </div>
+
+          <div className="border border-slate-200 rounded-lg overflow-x-auto bg-white">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[9px] font-mono tracking-widest">
+                  <th className="p-3 sticky left-0 bg-slate-50">Fecha</th>
+                  {dashRipsSummary.categories.map((cat) => (
+                    <th key={cat} className="p-3 text-center whitespace-nowrap">{cat}</th>
+                  ))}
+                  <th className="p-3 text-center bg-slate-100">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dashRipsSummary.dates.map((date) => (
+                  <tr key={date} className="border-b border-slate-100 hover:bg-slate-50">
+                    <td className="p-3 font-mono font-bold text-slate-800 sticky left-0 bg-white">{date}</td>
+                    {dashRipsSummary.categories.map((cat) => (
+                      <td key={cat} className="p-3 text-center font-mono text-slate-600">
+                        {dashRipsCellMap.get(`${date}|${cat}`) || 0}
+                      </td>
+                    ))}
+                    <td className="p-3 text-center font-mono font-bold text-slate-800 bg-slate-50">{dashRipsSummary.totalsByDate[date] || 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-100 font-mono font-black text-slate-900">
+                  <td className="p-3 sticky left-0 bg-slate-100">Total</td>
+                  {dashRipsSummary.categories.map((cat) => (
+                    <td key={cat} className="p-3 text-center">{dashRipsSummary.totalsByCategory[cat] || 0}</td>
+                  ))}
+                  <td className="p-3 text-center">{dashRipsSummary.grandTotal}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </>
+      )}
+      </>
+      )}
+    </div>
+  );
 
   return (
     <div className="flex h-full bg-slate-50 overflow-hidden font-sans">
@@ -1323,129 +1725,6 @@ export default function AdminPortal() {
               }
             />
 
-            {/* COMPLEJO PANEL DE FILTROS CRUZADOS (REQUERIMIENTO PRINCIPAL DE UX/UI) */}
-            <div className="bg-white rounded-2xl border border-slate-150 p-5 shadow-2xs space-y-4 text-left">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-2.5 gap-2">
-                <div>
-                  <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center gap-2">
-                    <Filter className="w-4 h-4 mr-1.5 text-toast-500 font-bold" />
-                    Consola de Alertas e Inteligencia del Filtro Cruzado
-                    <button
-                      onClick={fetchMetrics}
-                      className="text-[10px] font-bold text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-200 transition-all cursor-pointer ml-2"
-                    >
-                      🔄 Refrescar Métricas
-                    </button>
-                  </h3>
-                </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  {/* Reset button to default "todos" */}
-                  {(selectedAgreement !== 'todos' || selectedProfessional !== 'todos' || selectedSpecialty !== 'todos' || selectedDay !== 'todos' || selectedMonth !== 'todos') && (
-                    <button
-                      onClick={() => {
-                        setSelectedAgreement('todos');
-                        setSelectedProfessional('todos');
-                        setSelectedSpecialty('todos');
-                        setSelectedDay('todos');
-                        setSelectedMonth('todos');
-                      }}
-                      className="text-[10px] font-bold text-toast-500 hover:text-toast-600 hover:underline px-2.5 py-1 bg-toast-50 rounded-lg border border-toast-200 transition-all cursor-pointer shadow-3xs"
-                    >
-                      Restablecer Filtros
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      setEditingAppointment(null);
-                      setShowDelegatedModal(true);
-                    }}
-                    className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-md transition-colors cursor-pointer"
-                  >
-                    <CalendarPlus className="w-4 h-4" />
-                    Agendar Cita Delegada
-                  </button>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                {/* Selector 1: Convenio */}
-                <div className="space-y-1 text-left">
-                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Aseguradora / Convenio</label>
-                  <select
-                    value={selectedAgreement}
-                    onChange={(e) => setSelectedAgreement(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
-                  >
-                    <option value="todos">Todos los Convenios</option>
-                    {[]?.map((opt: any, idx) => (
-                      <option key={idx} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Selector 2: Profesional */}
-                <div className="space-y-1 text-left">
-                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Psicólogo Clínico</label>
-                  <select
-                    value={selectedProfessional}
-                    onChange={(e) => setSelectedProfessional(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
-                  >
-                    <option value="todos">Todos los Profesionales</option>
-                    {professionalOptions.map((name) => (
-                      <option key={name} value={name}>{name}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Selector 3: Especialidades */}
-                <div className="space-y-1 text-left">
-                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Línea de Especialidad</label>
-                  <select
-                    value={selectedSpecialty}
-                    onChange={(e) => setSelectedSpecialty(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
-                  >
-                    <option value="todos">Todas las Especialidades</option>
-                    {[]?.map((opt: any, idx) => (
-                      <option key={idx} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Selector 4: Día */}
-                <div className="space-y-1 text-left">
-                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Día de la Semana</label>
-                  <select
-                    value={selectedDay}
-                    onChange={(e) => setSelectedDay(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
-                  >
-                    <option value="todos">Todos los Días</option>
-                    {[]?.map((opt: any, idx) => (
-                      <option key={idx} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Selector 5: Mes */}
-                <div className="space-y-1 text-left">
-                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Periodo Histórico (Mes)</label>
-                  <select
-                    value={selectedMonth}
-                    onChange={(e) => setSelectedMonth(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
-                  >
-                    <option value="todos">Todos los Meses</option>
-                    {[]?.map((opt: any, idx) => (
-                      <option key={idx} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            </div>
-
             {/* HIGH-LEVEL STATS COMPONENT GRID */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
               {/* Patients count */}
@@ -1482,6 +1761,135 @@ export default function AdminPortal() {
               </div>
             </div>
 
+            {/* COMPLEJO PANEL DE FILTROS CRUZADOS (REQUERIMIENTO PRINCIPAL DE UX/UI) */}
+            <div className="bg-white rounded-2xl border border-slate-150 p-5 shadow-2xs space-y-4 text-left">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-2.5 gap-2">
+                <div>
+                  <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center gap-2">
+                    <Filter className="w-4 h-4 mr-1.5 text-toast-500 font-bold" />
+                    Filtro de Consultas Programadas
+                  </h3>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Reset button to default "todos" */}
+                  {(selectedAgreement !== 'todos' || selectedProfessional !== 'todos' || selectedSpecialty !== 'todos' || selectedDay !== 'todos' || selectedMonth !== 'todos' || appointmentSearchTerm) && (
+                    <button
+                      onClick={() => {
+                        setSelectedAgreement('todos');
+                        setSelectedProfessional('todos');
+                        setSelectedSpecialty('todos');
+                        setSelectedDay('todos');
+                        setSelectedMonth('todos');
+                        setAppointmentSearchTerm('');
+                      }}
+                      className="text-[10px] font-bold text-toast-500 hover:text-toast-600 hover:underline px-2.5 py-1 bg-toast-50 rounded-lg border border-toast-200 transition-all cursor-pointer shadow-3xs"
+                    >
+                      Restablecer Filtros
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setEditingAppointment(null);
+                      setShowDelegatedModal(true);
+                    }}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-md transition-colors cursor-pointer"
+                  >
+                    <CalendarPlus className="w-4 h-4" />
+                    Agendar Cita Delegada
+                  </button>
+                </div>
+              </div>
+
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={appointmentSearchTerm}
+                  onChange={(e) => setAppointmentSearchTerm(e.target.value)}
+                  placeholder="Buscar por nombre del paciente..."
+                  className="w-full rounded-xl border border-slate-205 bg-slate-50 py-2 pl-10 pr-3 text-xs font-semibold text-slate-900 outline-none transition-colors focus:ring-2 focus:ring-toast-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                {/* Selector 1: Convenio */}
+                <div className="space-y-1 text-left">
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Aseguradora / Convenio</label>
+                  <select
+                    value={selectedAgreement}
+                    onChange={(e) => setSelectedAgreement(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                  >
+                    <option value="todos">Todos los Convenios</option>
+                    {agreementOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Selector 2: Profesional */}
+                <div className="space-y-1 text-left">
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Psicólogo Clínico</label>
+                  <select
+                    value={selectedProfessional}
+                    onChange={(e) => setSelectedProfessional(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                  >
+                    <option value="todos">Todos los Profesionales</option>
+                    {professionalOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Selector 3: Especialidades */}
+                <div className="space-y-1 text-left">
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Línea de Especialidad</label>
+                  <select
+                    value={selectedSpecialty}
+                    onChange={(e) => setSelectedSpecialty(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                  >
+                    <option value="todos">Todas las Especialidades</option>
+                    {specialtyOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Selector 4: Día */}
+                <div className="space-y-1 text-left">
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Día de la Semana</label>
+                  <select
+                    value={selectedDay}
+                    onChange={(e) => setSelectedDay(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                  >
+                    <option value="todos">Todos los Días</option>
+                    {dayOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Selector 5: Mes */}
+                <div className="space-y-1 text-left">
+                  <label className="block text-[10px] uppercase font-extrabold text-slate-500">Periodo Histórico (Mes)</label>
+                  <select
+                    value={selectedMonth}
+                    onChange={(e) => setSelectedMonth(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                  >
+                    <option value="todos">Todos los Meses</option>
+                    {monthOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
             {/* COMPARATIVA DE ESTADOS: ATENDIDOS VS. NO ATENDIDOS / REPROGRAMADOS */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-left">
               {/* ESTADO: PACIENTES ATENDIDOS CARD */}
@@ -1507,9 +1915,9 @@ export default function AdminPortal() {
                     <>
                       {filteredAppointments.filter(app => ['Atendida', 'Atendido', 'ATENDIDO'].includes(app.status)).map(app => (
                         <div key={app.id} className="p-3 bg-toast-50/50 border border-toast-200 rounded-xl text-xs space-y-1">
-                          <div className="flex justify-between items-center">
-                            <strong className="text-slate-900">{app.patientName}</strong>
-                            <div className="flex items-center gap-2">
+                          <div className="flex justify-between items-center gap-2">
+                            <strong className="text-slate-900 truncate">{app.patientName}</strong>
+                            <div className="flex items-center gap-1 shrink-0">
                               <button
                                 onClick={() => {
                                   const realAppt = realAppointments?.find((r: any) => r.id === app.id);
@@ -1518,9 +1926,10 @@ export default function AdminPortal() {
                                     setShowDelegatedModal(true);
                                   }
                                 }}
-                                className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold underline cursor-pointer"
+                                title="Reprogramar / Editar"
+                                className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 cursor-pointer"
                               >
-                                ✏️ Reprogramar / Editar
+                                <Pencil className="h-3.5 w-3.5" />
                               </button>
                               <button
                                 onClick={async () => {
@@ -1533,11 +1942,12 @@ export default function AdminPortal() {
                                     } catch(e: any) { toast.error(e.message); }
                                   }
                                 }}
-                                className="text-red-500 hover:text-red-700 text-[10px] font-bold underline cursor-pointer"
+                                title="Eliminar cita"
+                                className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 cursor-pointer"
                               >
-                                🗑️ Eliminar
+                                <Trash2 className="h-3.5 w-3.5" />
                               </button>
-                              <span className="text-[9px] font-mono font-bold uppercase tracking-wider bg-charcoal-900 text-white px-1.5 py-0.5 rounded">
+                              <span className="ml-1 text-[9px] font-mono font-bold uppercase tracking-wider bg-charcoal-900 text-white px-1.5 py-0.5 rounded">
                                 {app.status}
                               </span>
                             </div>
@@ -1591,9 +2001,9 @@ export default function AdminPortal() {
                         <div key={app.id} className={`p-3 border rounded-xl text-xs space-y-1 ${
                           app.status === 'Reprogramada' ? 'bg-toast-50/40 border-toast-200' : app.status === 'Pendiente' ? 'bg-indigo-50/40 border-indigo-200' : 'bg-slate-50 border-slate-200'
                         }`}>
-                          <div className="flex justify-between items-center">
-                            <strong className="text-slate-900">{app.patientName}</strong>
-                            <div className="flex items-center gap-2">
+                          <div className="flex justify-between items-center gap-2">
+                            <strong className="text-slate-900 truncate">{app.patientName}</strong>
+                            <div className="flex items-center gap-1 shrink-0">
                               <button
                                 onClick={() => {
                                   const realAppt = realAppointments?.find((r: any) => r.id === app.id);
@@ -1602,9 +2012,10 @@ export default function AdminPortal() {
                                     setShowDelegatedModal(true);
                                   }
                                 }}
-                                className="text-indigo-600 hover:text-indigo-800 text-[10px] font-bold underline cursor-pointer"
+                                title="Reprogramar / Editar"
+                                className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600 cursor-pointer"
                               >
-                                ✏️ Reprogramar / Editar
+                                <Pencil className="h-3.5 w-3.5" />
                               </button>
                               <button
                                 onClick={async () => {
@@ -1617,11 +2028,12 @@ export default function AdminPortal() {
                                     } catch(e: any) { toast.error(e.message); }
                                   }
                                 }}
-                                className="text-red-500 hover:text-red-700 text-[10px] font-bold underline cursor-pointer"
+                                title="Eliminar cita"
+                                className="flex h-6 w-6 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 cursor-pointer"
                               >
-                                🗑️ Eliminar
+                                <Trash2 className="h-3.5 w-3.5" />
                               </button>
-                              <span className={`text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                              <span className={`ml-1 text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
                                 app.status === 'Reprogramada' ? 'bg-toast-200 text-toast-500' : app.status === 'Pendiente' ? 'bg-indigo-200 text-indigo-700' : 'bg-slate-200 text-slate-800'
                               }`}>
                                 {app.status === 'Reprogramada' ? 'Reprogramada' : app.status === 'Pendiente' ? 'Pendiente' : 'No asistió'}
@@ -1655,140 +2067,12 @@ export default function AdminPortal() {
               </div>
             </div>
 
-            {/* PANEL DE CONTROL POR RIPS — mismo panel de AdminCenter, acá
-                acotado al tenant propio (sin selector de empresa). */}
-            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4 text-left">
-              <div className="border-b border-slate-100 pb-3">
-                <h2 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
-                  <FileCode className="w-4 h-4 mr-1.5 text-toast-500" />
-                  Panel de Control por RIPS
-                </h2>
-                <p className="text-[11px] text-slate-400">Resumen de diagnósticos RIPS (CIE-10) asignados por fecha y categoría, filtrable por convenio.</p>
-              </div>
+            {ripsControlPanel}
 
-              {currentUser.role !== 'CEO' && currentUser.role !== 'DIRECTIVO' ? (
-                <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
-                  Tu rol no tiene permisos para ver el panel de control por RIPS (solo CEO/DIRECTIVO).
-                </div>
-              ) : (
-              <>
-              <div className="flex flex-wrap items-end gap-3 bg-slate-50 p-4 rounded-xl border border-slate-150">
-                <div className="space-y-1 text-xs">
-                  <label className="block text-[10px] uppercase font-bold text-slate-600">Desde</label>
-                  <input
-                    type="date"
-                    value={dashRipsStartDate}
-                    max={dashRipsEndDate}
-                    onChange={(e) => setDashRipsStartDate(e.target.value)}
-                    className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
-                  />
-                </div>
-                <div className="space-y-1 text-xs">
-                  <label className="block text-[10px] uppercase font-bold text-slate-600">Hasta</label>
-                  <input
-                    type="date"
-                    value={dashRipsEndDate}
-                    min={dashRipsStartDate}
-                    onChange={(e) => setDashRipsEndDate(e.target.value)}
-                    className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
-                  />
-                </div>
-                <div className="flex-1 min-w-[160px] space-y-1 text-xs">
-                  <label className="block text-[10px] uppercase font-bold text-slate-600">Convenio</label>
-                  <select
-                    value={dashRipsCompanyId}
-                    onChange={(e) => setDashRipsCompanyId(e.target.value)}
-                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
-                  >
-                    <option value="all">Todos los convenios</option>
-                    {companies.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  onClick={fetchDashRipsSummary}
-                  disabled={dashRipsLoading}
-                  className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${dashRipsLoading ? 'animate-spin' : ''}`} /> Actualizar
-                </button>
-                <button
-                  onClick={handleExportDashRipsExcel}
-                  disabled={dashRipsLoading || !dashRipsSummary || dashRipsSummary.grandTotal === 0}
-                  className="bg-charcoal-900 hover:bg-slate-950 text-white font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                >
-                  <Download className="w-3.5 h-3.5" /> Exportar Excel
-                </button>
-              </div>
-
-              {dashRipsLoading ? (
-                <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
-                  Cargando resumen de RIPS...
-                </div>
-              ) : !dashRipsSummary || dashRipsSummary.grandTotal === 0 ? (
-                <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
-                  No se encontraron diagnósticos RIPS en el rango/filtro seleccionado.
-                </div>
-              ) : (
-                <>
-                  <div className="flex flex-wrap gap-3">
-                    <div className="border border-slate-200 rounded-lg px-4 py-2">
-                      <span className="text-[9px] text-slate-400 font-mono font-bold uppercase block">Total Diagnosticados</span>
-                      <span className="text-xl font-black text-slate-900 font-mono">{dashRipsSummary.grandTotal}</span>
-                    </div>
-                    <div className="border border-slate-200 rounded-lg px-4 py-2">
-                      <span className="text-[9px] text-slate-400 font-mono font-bold uppercase block">Categorías CIE-10 distintas</span>
-                      <span className="text-xl font-black text-slate-900 font-mono">{dashRipsSummary.categories.length}</span>
-                    </div>
-                    <div className="border border-slate-200 rounded-lg px-4 py-2">
-                      <span className="text-[9px] text-slate-400 font-mono font-bold uppercase block">Días con registros</span>
-                      <span className="text-xl font-black text-slate-900 font-mono">{dashRipsSummary.dates.length}</span>
-                    </div>
-                  </div>
-
-                  <div className="border border-slate-200 rounded-lg overflow-x-auto bg-white">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[9px] font-mono tracking-widest">
-                          <th className="p-3 sticky left-0 bg-slate-50">Fecha</th>
-                          {dashRipsSummary.categories.map((cat) => (
-                            <th key={cat} className="p-3 text-center whitespace-nowrap">{cat}</th>
-                          ))}
-                          <th className="p-3 text-center bg-slate-100">Total</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dashRipsSummary.dates.map((date) => (
-                          <tr key={date} className="border-b border-slate-100 hover:bg-slate-50">
-                            <td className="p-3 font-mono font-bold text-slate-800 sticky left-0 bg-white">{date}</td>
-                            {dashRipsSummary.categories.map((cat) => (
-                              <td key={cat} className="p-3 text-center font-mono text-slate-600">
-                                {dashRipsCellMap.get(`${date}|${cat}`) || 0}
-                              </td>
-                            ))}
-                            <td className="p-3 text-center font-mono font-bold text-slate-800 bg-slate-50">{dashRipsSummary.totalsByDate[date] || 0}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                      <tfoot>
-                        <tr className="bg-slate-100 font-mono font-black text-slate-900">
-                          <td className="p-3 sticky left-0 bg-slate-100">Total</td>
-                          {dashRipsSummary.categories.map((cat) => (
-                            <td key={cat} className="p-3 text-center">{dashRipsSummary.totalsByCategory[cat] || 0}</td>
-                          ))}
-                          <td className="p-3 text-center">{dashRipsSummary.grandTotal}</td>
-                        </tr>
-                      </tfoot>
-                    </table>
-                  </div>
-                </>
-              )}
-              </>
-              )}
-            </div>
-
-            {/* PERFORMANCE ANALYSIS: DESEMPEÑO CLÍNICO INDIVIDUAL */}
+            {/* PERFORMANCE ANALYSIS: DESEMPEÑO CLÍNICO INDIVIDUAL — oculto a
+                pedido del usuario hasta implementar la funcionalidad real
+                (hoy "performances" nunca se puebla con datos reales). */}
+            {false && (
             <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 space-y-4">
               <div className="border-b border-slate-100 pb-3 text-left">
                 <h2 className="font-extrabold text-sm text-slate-900 tracking-tight flex items-center">
@@ -1824,6 +2108,7 @@ export default function AdminPortal() {
                 </table>
               </div>
             </div>
+            )}
           </div>
         )}
 
@@ -1969,7 +2254,15 @@ export default function AdminPortal() {
 
         {/* VIEW: PACIENTES */}
         {activeTab === 'patients' && (
-          <PacientesPanel token={token} />
+          <PacientesPanel
+            token={token}
+            onSelectPatient={(id) => {
+              window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
+              setSelectedPatientId(id);
+              setClinicalHistoryReturnTab('patients');
+              setActiveTab('clinical_history');
+            }}
+          />
         )}
 
         {/* VIEW: HISTORIAS CLÍNICAS — mismo componente que usa PsychologistPortal,
@@ -1979,12 +2272,12 @@ export default function AdminPortal() {
             {!selectedPatientId ? (
               <ClinicalRecordsList
                 patients={realPatients}
-                onSelect={(id) => setSelectedPatientId(id)}
+                onSelect={(id) => { setSelectedPatientId(id); setClinicalHistoryReturnTab(null); }}
               />
             ) : (
               <ClinicalPatientChart
                 patientId={selectedPatientId}
-                onBack={() => setSelectedPatientId(null)}
+                onBack={handleBackFromPatientChart}
               />
             )}
           </div>
@@ -1992,54 +2285,162 @@ export default function AdminPortal() {
 
         {/* VIEW: EQUIPO Y ACCESOS — Aprovisionamiento RBAC de Usuarios (Migrado) */}
         {activeTab === 'equipo' && (
-          <div className="max-w-3xl mx-auto space-y-6 text-left">
+          <div className="max-w-5xl mx-auto space-y-6 text-left">
             <div className="border-b border-slate-200 pb-4">
               <span className="bg-toast-100 text-charcoal-900 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-toast-300 font-mono">
                 Gestión de Accesos Clínicos
               </span>
               <h1 className="text-2xl font-black text-slate-900 tracking-tight mt-1">
-                Equipo y Aprovisionamiento de Usuarios
+                Equipo y Aprovisionamiento de Profesionales
               </h1>
               <p className="text-xs text-slate-400 mt-1">
-                Crea psicólogos y personal de soporte para tu organización — quedan asociados automáticamente a tu propio tenant, dentro de las licencias contratadas.
+                Registra psicólogos y personal de soporte con su información profesional — quedan asociados automáticamente a tu propio tenant, dentro de las licencias contratadas.
               </p>
             </div>
 
             <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-6 space-y-5">
+              <p className="text-[10px] text-slate-400">Los campos marcados con * son obligatorios.</p>
               <form onSubmit={handleCreateStaff} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Nombre completo</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Nombres *</label>
+                    <input
+                      type="text" required
+                      value={newStaffForm.firstName}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, firstName: e.target.value })}
+                      placeholder="Ej. María Camila"
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Apellidos *</label>
+                    <input
+                      type="text" required
+                      value={newStaffForm.lastName}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, lastName: e.target.value })}
+                      placeholder="Ej. Torres Gómez"
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Correo electrónico *</label>
+                    <input
+                      type="email" required
+                      value={newStaffForm.email}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, email: e.target.value })}
+                      placeholder="correo@empresa.com"
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Rol en la plataforma *</label>
+                    <select
+                      value={newStaffForm.role}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, role: e.target.value as 'ESPECIALISTA_B2B' | 'OPERATIVO' })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    >
+                      <option value="ESPECIALISTA_B2B">Psicólogo / Especialista Clínico</option>
+                      <option value="OPERATIVO">Soporte Operativo / Auxiliar</option>
+                    </select>
+                  </div>
+                </div>
+
+                {newStaffForm.role === 'ESPECIALISTA_B2B' && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Número de tarjeta profesional</label>
+                      <input
+                        type="text"
+                        value={newStaffForm.professionalCard}
+                        onChange={e => setNewStaffForm({ ...newStaffForm, professionalCard: e.target.value })}
+                        placeholder="Ej. PS-118432"
+                        className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white font-mono"
+                      />
+                      <p className="text-[10px] text-slate-400 mt-1">Debe ser único dentro de la organización.</p>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Especialidad</label>
+                      <select
+                        value={newStaffForm.specialtyId}
+                        onChange={e => setNewStaffForm({ ...newStaffForm, specialtyId: e.target.value })}
+                        className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      >
+                        <option value="">Selecciona la especialidad</option>
+                        {staffSpecialties.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Nivel académico</label>
+                    <select
+                      value={newStaffForm.academicLevel}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, academicLevel: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    >
+                      <option value="">Selecciona el nivel</option>
+                      {ACADEMIC_LEVEL_OPTIONS.map(l => <option key={l} value={l}>{l}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Experiencia (años)</label>
+                    <input
+                      type="number" min={0}
+                      value={newStaffForm.experienceYears}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, experienceYears: e.target.value })}
+                      placeholder="0"
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="relative">
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">EPS / IPS asociada</label>
                   <input
                     type="text"
-                    value={newStaffName}
-                    onChange={e => setNewStaffName(e.target.value)}
-                    placeholder="Ej. María Camila Torres"
-                    required
+                    value={newStaffForm.epsCode ? newStaffForm.epsLabel : newStaffEpsSearch.query}
+                    onChange={e => {
+                      setNewStaffForm({ ...newStaffForm, epsCode: '', epsLabel: '' });
+                      newStaffEpsSearch.setQuery(e.target.value);
+                    }}
+                    placeholder="Opcional — busca por nombre, ej. Sura EPS"
                     className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
                   />
+                  {newStaffEpsSearch.results.length > 0 && !newStaffForm.epsCode && (
+                    <ul className="absolute z-10 mt-1 w-full max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+                      {newStaffEpsSearch.results.map(eps => (
+                        <li key={eps.code}>
+                          <button
+                            type="button"
+                            onClick={() => { setNewStaffForm({ ...newStaffForm, epsCode: eps.code, epsLabel: eps.nombre }); newStaffEpsSearch.setResults([]); }}
+                            className="w-full text-left px-3 py-2 text-xs hover:bg-toast-50 cursor-pointer"
+                          >
+                            {eps.nombre}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Correo electrónico</label>
+
+                <label className="flex items-start gap-2.5 bg-slate-50 border border-slate-200 rounded-lg p-3 cursor-pointer">
                   <input
-                    type="email"
-                    value={newStaffEmail}
-                    onChange={e => setNewStaffEmail(e.target.value)}
-                    placeholder="correo@empresa.com"
-                    required
-                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    type="checkbox"
+                    checked={newStaffForm.dataConsentAccepted}
+                    onChange={e => setNewStaffForm({ ...newStaffForm, dataConsentAccepted: e.target.checked })}
+                    className="mt-0.5 accent-charcoal-900"
                   />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Rol</label>
-                  <select
-                    value={newStaffRole}
-                    onChange={e => setNewStaffRole(e.target.value as 'ESPECIALISTA_B2B' | 'OPERATIVO')}
-                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                  >
-                    <option value="ESPECIALISTA_B2B">Psicólogo / Especialista Clínico</option>
-                    <option value="OPERATIVO">Soporte Operativo / Auxiliar</option>
-                  </select>
-                </div>
+                  <span className="text-xs text-slate-600">
+                    <span className="font-bold text-slate-800 inline-flex items-center gap-1"><ShieldCheck className="w-3.5 h-3.5 text-emerald-500" /> Autorización de tratamiento de datos personales *</span>
+                    <br />
+                    El titular autoriza el tratamiento de sus datos personales y sensibles conforme a la Ley 1581 de 2012 y el Decreto 1074 de 2015, con las finalidades descritas en la política de privacidad del responsable.
+                  </span>
+                </label>
 
                 {staffError && (
                   <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700">
@@ -2052,7 +2453,7 @@ export default function AdminPortal() {
                   disabled={isCreatingStaff}
                   className="w-full bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-sm py-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {isCreatingStaff ? 'Creando...' : 'Crear Colaborador'}
+                  {isCreatingStaff ? 'Creando...' : 'Crear profesional'}
                 </button>
               </form>
             </div>
@@ -2060,7 +2461,7 @@ export default function AdminPortal() {
             {staffSuccess && (
               <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 space-y-2">
                 <p className="text-sm font-bold text-emerald-800">✅ {staffSuccess.name} fue creado exitosamente.</p>
-                <p className="text-xs text-emerald-700">Comunícale estas credenciales temporales de forma segura (deberá cambiarla en su primer ingreso):</p>
+                <p className="text-xs text-emerald-700">Sus credenciales ya fueron enviadas por correo, con aviso de que debe cambiar la contraseña en su primer ingreso. Referencia por si necesitas confirmarlas:</p>
                 <div className="bg-white border border-emerald-200 rounded-lg p-3 font-mono text-xs space-y-1">
                   <p>Correo: <strong>{staffSuccess.email}</strong></p>
                   <p>Contraseña temporal: <strong>{staffSuccess.tempPassword}</strong></p>
@@ -2068,58 +2469,282 @@ export default function AdminPortal() {
               </div>
             )}
 
-            {/* Panel: Usuarios de mi organización */}
+            {/* Panel: Profesionales de mi organización */}
             <div className="bg-white rounded-xl border border-slate-100 shadow-xs overflow-hidden">
-              <div className="p-5 border-b border-slate-100 flex items-center justify-between">
-                <h3 className="font-bold text-sm text-slate-900">Usuarios de mi Organización</h3>
-                <button
-                  onClick={() => fetchTeamUsers()}
-                  className="text-xs text-slate-400 hover:text-slate-700 font-semibold"
-                >
-                  Recargar
+              <div className="p-5 border-b border-slate-100 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-bold text-sm text-slate-900">Profesionales de mi organización</h3>
+                  <p className="text-[10.5px] text-slate-400 mt-0.5">Datos sensibles enmascarados por defecto (principio de acceso mínimo).</p>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    onClick={() => setStaffDataRevealed(v => !v)}
+                    className="flex items-center gap-1.5 text-xs font-bold text-slate-600 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-50 cursor-pointer"
+                  >
+                    {staffDataRevealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    {staffDataRevealed ? 'Ocultar datos' : 'Revelar datos'}
+                  </button>
+                  <button
+                    onClick={() => fetchTeamUsers()}
+                    className="text-xs text-slate-400 hover:text-slate-700 font-semibold"
+                  >
+                    Recargar
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 font-bold uppercase text-[10px]">
+                      <th className="p-4">Profesional</th>
+                      <th className="p-4">Tarjeta</th>
+                      <th className="p-4">Perfil</th>
+                      <th className="p-4 w-28">Estado</th>
+                      <th className="p-4 text-right w-36">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {teamUsersLoading ? (
+                      <tr><td colSpan={5} className="p-8 text-center text-slate-400">Cargando equipo...</td></tr>
+                    ) : teamUsersError ? (
+                      <tr><td colSpan={5} className="p-8 text-center text-red-600">⚠️ {teamUsersError}</td></tr>
+                    ) : teamUsers.length === 0 ? (
+                      <tr><td colSpan={5} className="p-8 text-center text-slate-400">Todavía no has creado colaboradores.</td></tr>
+                    ) : (
+                      teamUsers.map((member) => (
+                        <tr key={member.id} className="hover:bg-slate-50 align-top">
+                          <td className="p-4">
+                            <p className="font-bold text-slate-900">{member.name}</p>
+                            <p className="font-mono text-[11px] text-slate-500">{staffDataRevealed ? member.email : maskEmail(member.email)}</p>
+                          </td>
+                          <td className="p-4 font-mono text-[11px] text-slate-600">
+                            {member.professionalCard ? (staffDataRevealed ? member.professionalCard : maskCard(member.professionalCard)) : '—'}
+                          </td>
+                          <td className="p-4 text-slate-600">
+                            {member.specialtyName && <p className="font-semibold text-slate-800">{member.specialtyName}</p>}
+                            <p className="text-[10.5px] text-slate-400">
+                              {[member.academicLevel, member.experienceYears != null ? `${member.experienceYears} años` : null].filter(Boolean).join(' · ')}
+                            </p>
+                            <span className="inline-flex items-center mt-1 px-2 py-0.5 rounded font-mono font-bold text-[9px] bg-slate-100 border border-slate-200 text-slate-600 uppercase">
+                              {member.role === 'ESPECIALISTA_B2B' ? 'Psicólogo / Especialista Clínico' : member.role === 'OPERATIVO' ? 'Soporte Operativo' : member.role}
+                            </span>
+                            {member.epsName && <p className="text-[10.5px] text-slate-400 mt-1">EPS/IPS: {member.epsName}</p>}
+                          </td>
+                          <td className="p-4">
+                            <button
+                              onClick={() => handleToggleStaffActive(member)}
+                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer ${member.status === 'active' ? 'bg-charcoal-900' : 'bg-slate-300'}`}
+                              title="Click para activar/desactivar el acceso"
+                            >
+                              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${member.status === 'active' ? 'translate-x-[18px]' : 'translate-x-1'}`} />
+                            </button>
+                            <p className="text-[10px] font-semibold mt-1 text-slate-500">{member.status === 'active' ? 'Activo' : 'Inactivo'}</p>
+                          </td>
+                          <td className="p-4 text-right whitespace-nowrap">
+                            <button
+                              onClick={() => openEditStaffModal(member)}
+                              className="p-2 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                              title={`Editar a ${member.name}`}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => openStaffHistoryModal(member)}
+                              className="p-2 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                              title="Historial de cambios"
+                            >
+                              <History className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteTeamUser(member)}
+                              disabled={deletingStaffId === member.id}
+                              className="p-2 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                              title={`Eliminar a ${member.name}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-start gap-2.5">
+              <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-500 mt-0.5" />
+              <p className="text-[10.5px] text-slate-500 leading-relaxed">
+                <span className="font-bold text-slate-700">Protección de datos personales.</span> Los datos recolectados se tratan bajo la Ley Estatutaria 1581 de 2012 y el Decreto 1074 de 2015. El titular puede conocer, actualizar, rectificar o suprimir su información y revocar la autorización otorgada. La información profesional se considera dato sensible y se almacena con controles de acceso, enmascaramiento y trazabilidad de cambios.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL: Editar profesional */}
+        {showEditStaffModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden bg-white rounded-2xl shadow-xl p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-black text-slate-900">Editar profesional</h3>
+                <button onClick={() => setShowEditStaffModal(false)} className="text-slate-400 hover:text-slate-700">
+                  <X className="w-5 h-5" />
                 </button>
               </div>
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100 text-slate-400 font-bold uppercase text-[10px]">
-                    <th className="p-4">Nombre</th>
-                    <th className="p-4">Correo</th>
-                    <th className="p-4 w-32">Rol</th>
-                    <th className="p-4 text-right w-24">Acciones</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {teamUsersLoading ? (
-                    <tr><td colSpan={4} className="p-8 text-center text-slate-400">Cargando equipo...</td></tr>
-                  ) : teamUsersError ? (
-                    <tr><td colSpan={4} className="p-8 text-center text-red-600">⚠️ {teamUsersError}</td></tr>
-                  ) : teamUsers.length === 0 ? (
-                    <tr><td colSpan={4} className="p-8 text-center text-slate-400">Todavía no has creado colaboradores.</td></tr>
-                  ) : (
-                    teamUsers.map((member) => (
-                      <tr key={member.id} className="hover:bg-slate-50">
-                        <td className="p-4 font-bold text-slate-900">{member.name}</td>
-                        <td className="p-4 font-mono text-[11px] text-slate-500">{member.email}</td>
-                        <td className="p-4">
-                          <span className="inline-flex items-center px-2 py-0.5 rounded font-mono font-bold text-[9px] bg-slate-100 border border-slate-200 text-slate-600 uppercase">
-                            {member.role}
-                          </span>
-                        </td>
-                        <td className="p-4 text-right">
+
+              <form onSubmit={handleSaveStaff} className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Nombres *</label>
+                    <input
+                      type="text" required value={editStaffForm.firstName}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, firstName: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Apellidos *</label>
+                    <input
+                      type="text" required value={editStaffForm.lastName}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, lastName: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Número de tarjeta profesional</label>
+                    <input
+                      type="text" value={editStaffForm.professionalCard}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, professionalCard: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Especialidad</label>
+                    <select
+                      value={editStaffForm.specialtyId}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, specialtyId: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    >
+                      <option value="">Sin especialidad</option>
+                      {staffSpecialties.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Nivel académico</label>
+                    <select
+                      value={editStaffForm.academicLevel}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, academicLevel: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    >
+                      <option value="">Selecciona el nivel</option>
+                      {ACADEMIC_LEVEL_OPTIONS.map(l => <option key={l} value={l}>{l}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Experiencia (años)</label>
+                    <input
+                      type="number" min={0} value={editStaffForm.experienceYears}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, experienceYears: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="relative">
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">EPS / IPS asociada</label>
+                  <input
+                    type="text"
+                    value={editStaffForm.epsCode ? editStaffForm.epsLabel : editStaffEpsSearch.query}
+                    onChange={e => {
+                      setEditStaffForm({ ...editStaffForm, epsCode: '', epsLabel: '' });
+                      editStaffEpsSearch.setQuery(e.target.value);
+                    }}
+                    placeholder="Opcional — busca por nombre"
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  />
+                  {editStaffEpsSearch.results.length > 0 && !editStaffForm.epsCode && (
+                    <ul className="absolute z-10 mt-1 w-full max-h-48 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg">
+                      {editStaffEpsSearch.results.map(eps => (
+                        <li key={eps.code}>
                           <button
-                            onClick={() => handleDeleteTeamUser(member)}
-                            disabled={deletingStaffId === member.id}
-                            className="p-2 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                            title={`Eliminar a ${member.name}`}
+                            type="button"
+                            onClick={() => { setEditStaffForm({ ...editStaffForm, epsCode: eps.code, epsLabel: eps.nombre }); editStaffEpsSearch.setResults([]); }}
+                            className="w-full text-left px-3 py-2 text-xs hover:bg-toast-50 cursor-pointer"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            {eps.nombre}
                           </button>
-                        </td>
-                      </tr>
-                    ))
+                        </li>
+                      ))}
+                    </ul>
                   )}
-                </tbody>
-              </table>
+                </div>
+
+                {editStaffError && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700">⚠️ {editStaffError}</div>
+                )}
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowEditStaffModal(false)}
+                    className="flex-1 border border-slate-200 text-slate-600 font-bold text-sm py-2.5 rounded-lg hover:bg-slate-50 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingStaff}
+                    className="flex-1 bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-sm py-2.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {savingStaff ? 'Guardando...' : 'Guardar cambios'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL: Historial de cambios de ficha profesional */}
+        {showStaffHistoryModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-lg max-h-[80vh] overflow-y-auto bg-white rounded-2xl shadow-xl p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-black text-slate-900">Historial — {staffHistoryName}</h3>
+                <button onClick={() => setShowStaffHistoryModal(false)} className="text-slate-400 hover:text-slate-700">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {staffHistoryLoading ? (
+                <p className="text-center text-xs text-slate-400 py-8">Cargando historial...</p>
+              ) : staffHistory.length === 0 ? (
+                <p className="text-center text-xs text-slate-400 py-8">Sin cambios registrados todavía.</p>
+              ) : (
+                <ul className="space-y-3">
+                  {staffHistory.map(entry => (
+                    <li key={entry.id} className="border border-slate-200 rounded-lg p-3">
+                      <p className="text-[10px] text-slate-400 mb-1.5">
+                        {new Date(entry.createdAt).toLocaleString('es-CO')} · {entry.changedByName}
+                      </p>
+                      <ul className="space-y-1">
+                        {Object.entries(entry.changes).map(([field, { from, to }]) => (
+                          <li key={field} className="text-xs text-slate-700">
+                            <span className="font-bold">{STAFF_HISTORY_FIELD_LABELS[field] || field}:</span>{' '}
+                            <span className="text-slate-400 line-through">{from === null || from === undefined || from === '' ? '—' : String(from)}</span>{' → '}
+                            <span className="font-semibold">{to === null || to === undefined || to === '' ? '—' : String(to)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         )}
@@ -2462,141 +3087,137 @@ export default function AdminPortal() {
                 Servicios de Facturación, Convenios &amp; RIPS
               </h1>
               <p className="text-xs text-slate-400">
-                Gestión unificada de convenios con aseguradoras, registro de cobradores clínicos, y generación asíncrona de archivos RIPS 4.0.
+                Gestión unificada de convenios con aseguradoras y generación asíncrona de archivos RIPS 4.0.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-              <div className="lg:col-span-3 bg-white rounded-xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
+            <div className="bg-white rounded-xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
                 <div className="border-b border-slate-100 pb-2.5">
                   <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
                     <Receipt className="w-4.5 h-4.5 mr-1.5 text-toast-500 font-bold" />
                     Distribución de Pacientes por Convenio Clínico
                   </h3>
-                  <p className="text-[11px] text-slate-400">Padrón de afiliados vinculados a aseguradoras integradas.</p>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div className="p-4 bg-charcoal-900 rounded-xl border border-charcoal-950 flex items-center justify-between text-white">
-                    <div>
-                      <span className="text-[10px] uppercase font-mono text-toast-300 block">MindHealth Global (Corp)</span>
-                      <span className="font-extrabold text-lg text-white font-mono">0 Pacientes</span>
-                    </div>
-                    <span className="text-[10px] bg-charcoal-950 text-toast-300 font-bold p-1 px-2 rounded">Activo 100%</span>
-                  </div>
+                {(() => {
+                  const externalCompanies = companies.filter((c) => !c.isDefault);
+                  const countFor = (name: string) => corporateDistribution.find((d) => d.name === name)?.value ?? 0;
+                  const particularCount = corporateDistribution.find((d) => d.name === 'Particular')?.value ?? 0;
+                  return (
+                    <>
+                      {companiesLoading ? (
+                        <p className="py-6 text-center text-xs text-slate-400">Cargando convenios...</p>
+                      ) : externalCompanies.length === 0 ? (
+                        <p className="py-6 text-center text-xs text-slate-400">Todavía no has registrado convenios/aseguradoras.</p>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {externalCompanies.map((c, idx) => {
+                            const isActive = c.status === 'activo';
+                            const isFirst = idx === 0;
+                            return (
+                              <div
+                                key={c.id}
+                                className={`p-4 rounded-xl border flex items-center justify-between ${
+                                  isFirst
+                                    ? 'bg-charcoal-900 border-charcoal-950 text-white'
+                                    : 'bg-toast-50/50 border-toast-200'
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <span className={`text-[10px] uppercase font-mono block truncate ${isFirst ? 'text-toast-300' : 'text-charcoal-700'}`}>
+                                    {c.name}
+                                  </span>
+                                  <span className={`font-extrabold text-lg font-mono ${isFirst ? 'text-white' : 'text-slate-900'}`}>
+                                    {countFor(c.name).toLocaleString('es-CO')} Pacientes
+                                  </span>
+                                </div>
+                                <span className={`text-[10px] font-bold p-1 px-2 rounded shrink-0 ml-2 ${
+                                  isActive
+                                    ? (isFirst ? 'bg-charcoal-950 text-toast-300' : 'bg-toast-100 text-toast-500')
+                                    : 'bg-slate-100 text-slate-500'
+                                }`}>
+                                  {isActive ? 'Activo' : 'Inactivo'}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
 
-                  <div className="p-4 bg-toast-50/50 rounded-xl border border-toast-200 flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] uppercase font-mono text-charcoal-700 block">Sura Medicina Prepagada</span>
-                      <span className="font-extrabold text-lg text-slate-900 font-mono">0 Pacientes</span>
-                    </div>
-                    <span className="text-[10px] bg-toast-100 text-toast-500 font-bold p-1 px-2 rounded">Activo 100%</span>
-                  </div>
-
-                  <div className="p-4 bg-toast-50/50 rounded-xl border border-toast-200 flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] uppercase font-mono text-charcoal-700 block">Colmédica Prepagada</span>
-                      <span className="font-extrabold text-lg text-slate-900 font-mono">0 Pacientes</span>
-                    </div>
-                    <span className="text-[10px] bg-toast-100 text-toast-500 font-bold p-1 px-2 rounded">Activo 100%</span>
-                  </div>
-
-                  <div className="p-4 bg-toast-50/50 rounded-xl border border-toast-200 flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] uppercase font-mono text-charcoal-700 block">Coomeva Medicina Prepagada</span>
-                      <span className="font-extrabold text-lg text-slate-900 font-mono">0 Pacientes</span>
-                    </div>
-                    <span className="text-[10px] bg-toast-100 text-toast-500 font-bold p-1 px-2 rounded">Activo 100%</span>
-                  </div>
-                </div>
-
-                <div className="p-4 bg-slate-50 border border-slate-150 rounded-xl flex items-center justify-between text-xs text-slate-600">
-                  <div className="space-y-0.5">
-                    <p className="font-bold text-slate-900">Particular (Directo Privado)</p>
-                    <p className="text-[11px] text-slate-400">Pacientes con facturación autónoma por PSE o Tarjeta.</p>
-                  </div>
-                  <strong className="text-slate-900 font-extrabold font-mono text-xs">0 Pacientes</strong>
-                </div>
-
-                <p className="text-[10.5px] text-slate-400 leading-relaxed italic block pt-1 bg-slate-50/40 p-2.5 rounded border border-slate-200/50">
-                  * Los conteos por convenios se actualizan asíncronamente con el validador regional de cada aseguradora al guardar la firma digital de las notas progresivas.
-                </p>
+                      <div className="p-4 bg-slate-50 border border-slate-150 rounded-xl flex items-center justify-between text-xs text-slate-600">
+                        <div className="space-y-0.5">
+                          <p className="font-bold text-slate-900">Particular (Directo Privado)</p>
+                          <p className="text-[11px] text-slate-400">Pacientes sin convenio asociado.</p>
+                        </div>
+                        <strong className="text-slate-900 font-extrabold font-mono text-xs">{particularCount.toLocaleString('es-CO')} Pacientes</strong>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
 
-              <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 p-5 md:p-6 shadow-xs space-y-4">
-                <div className="border-b border-slate-100 pb-2.5">
-                  <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
-                    <PlusCircle className="w-4.5 h-4.5 mr-1.5 text-toast-500" />
-                    Registrar Facturador Clínico o Auditor
-                  </h3>
-                  <p className="text-[11px] text-slate-400">Asigna permisos de recaudo para un dominio EPS.</p>
+            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4">
+              <div className="border-b border-slate-100 pb-2.5">
+                <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
+                  <Users className="w-4.5 h-4.5 mr-1.5 text-toast-500" />
+                  Generar reporte de Directorio Clínico de Pacientes
+                </h3>
+              </div>
+
+              <div className="flex flex-wrap items-end gap-3 bg-slate-50 p-4 rounded-xl border border-slate-150">
+                <div className="flex-1 min-w-[130px] space-y-1 text-xs">
+                  <label className="block text-[10px] uppercase font-bold text-slate-600">Desde</label>
+                  <input
+                    type="date" value={reportDateFrom} onChange={(e) => setReportDateFrom(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                  />
                 </div>
-
-                <form onSubmit={handleCreateBillingUser} className="space-y-3.5">
-                  <div>
-                    <label className="block text-[10px] uppercase font-extrabold text-slate-600 mb-1">Nombre Completo</label>
-                    <input
-                      type="text"
-                      required
-                      value={newBillingUser.name}
-                      onChange={(e) => setNewBillingUser(prev => ({ ...prev, name: e.target.value }))}
-                      placeholder="e.g. Juan Carlos Restrepo"
-                      className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500 focus:bg-white"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[10px] uppercase font-extrabold text-slate-600 mb-1">Rol Administrativo</label>
-                      <select
-                        value={newBillingUser.role}
-                        onChange={(e) => setNewBillingUser(prev => ({ ...prev, role: e.target.value }))}
-                        className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500 focus:bg-white text-slate-900"
-                      >
-                        <option value="Facturador Clínico">Facturador Clínico</option>
-                        <option value="Auditor Financiero EPS">Auditor Financiero EPS</option>
-                        <option value="Administrador Financiero">Administrador Financiero</option>
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] uppercase font-extrabold text-slate-600 mb-1">Aseguradora Bound</label>
-                      <select
-                        value={newBillingUser.agreement}
-                        onChange={(e) => setNewBillingUser(prev => ({ ...prev, agreement: e.target.value }))}
-                        className="block w-full text-xs p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-toast-500 focus:bg-white text-slate-900"
-                      >
-                        <option value="Sura Medicina Prepagada">Sura</option>
-                        <option value="Colmédica Prepagada">Colmédica</option>
-                        <option value="Coomeva Medicina Prepagada">Coomeva</option>
-                        <option value="MindHealth Global">Particular / Global</option>
-                        <option value="Todos">Todos</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="w-full bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold p-2.5 rounded-xl text-xs transition-all shadow-xs cursor-pointer border border-charcoal-950 text-center"
+                <div className="flex-1 min-w-[130px] space-y-1 text-xs">
+                  <label className="block text-[10px] uppercase font-bold text-slate-600">Hasta</label>
+                  <input
+                    type="date" value={reportDateTo} onChange={(e) => setReportDateTo(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                  />
+                </div>
+                <div className="flex-1 min-w-[150px] space-y-1 text-xs">
+                  <label className="block text-[10px] uppercase font-bold text-slate-600">Convenio</label>
+                  <select
+                    value={reportCompanyId} onChange={(e) => setReportCompanyId(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
                   >
-                    Vincular Operador de Facturas
-                  </button>
-                </form>
-
-                <div className="pt-2 border-t border-slate-100">
-                  <span className="block text-[10px] uppercase font-mono font-bold text-slate-400 mb-2">Operadores Registrados</span>
-                  <div className="space-y-1.5 max-h-[16vh] overflow-y-auto pr-1">
-                    {billingUsers.map(bu => (
-                      <div key={bu.id} className="p-2 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs flex items-center justify-between">
-                        <div>
-                          <p className="font-bold text-slate-800">{bu.name}</p>
-                          <p className="text-[10px] text-slate-400 font-mono">{bu.role} • Bound: {bu.agreement}</p>
-                        </div>
-                        <span className="w-2 h-2 rounded-full bg-toast-500" />
-                      </div>
-                    ))}
-                  </div>
+                    <option value="all">Todos</option>
+                    {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
                 </div>
+                <div className="flex-1 min-w-[150px] space-y-1 text-xs">
+                  <label className="block text-[10px] uppercase font-bold text-slate-600">Estado de cita</label>
+                  <select
+                    value={reportStatus} onChange={(e) => setReportStatus(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                  >
+                    <option value="all">Todos</option>
+                    {APPOINTMENT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="flex-1 min-w-[150px] space-y-1 text-xs">
+                  <label className="block text-[10px] uppercase font-bold text-slate-600">Psicólogo</label>
+                  <select
+                    value={reportPsychologistId} onChange={(e) => setReportPsychologistId(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                  >
+                    <option value="all">Todos</option>
+                    {teamUsers.filter((u) => u.role === 'ESPECIALISTA_B2B').map((u) => (
+                      <option key={u.id} value={u.id}>{u.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  onClick={handleExportPatientsExcel}
+                  disabled={isExportingReport}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs p-2.5 px-5 rounded-lg transition-all cursor-pointer shadow-xs self-stretch sm:self-auto flex items-center justify-center gap-1.5 border border-emerald-700 disabled:opacity-50"
+                >
+                  <Download className="h-3.5 w-3.5" /> {isExportingReport ? 'Generando...' : 'Descargar Excel'}
+                </button>
               </div>
             </div>
 
@@ -2604,9 +3225,9 @@ export default function AdminPortal() {
               <div className="border-b border-slate-100 pb-2.5">
                 <h2 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
                   <FileCode className="w-4.5 h-4.5 mr-1.5 text-toast-500" />
-                  Módulo de Sincronización RIPS 4.0 (SGCCC - MinSalud)
+                  Módulo RIPS 4.0 (SGCCC - MinSalud) para Facturación
                 </h2>
-                <p className="text-[11px] text-slate-400">Genera transacciones de cobros clínicos para auditoría pública y reembolsos estatales.</p>
+                <p className="text-[11px] text-slate-400">Genera los archivos RIPS oficiales de tus consultas, listos para soportar la facturación ante las EPS.</p>
               </div>
 
               <div className="flex flex-col sm:flex-row items-end gap-3 bg-slate-50 p-4 rounded-xl border border-slate-150">
@@ -2727,164 +3348,119 @@ export default function AdminPortal() {
               )}
             </div>
 
-            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-3">
-                <div className="text-left">
-                  <h3 className="font-bold text-sm text-slate-900 tracking-tight flex items-center">
-                    <Users className="w-5 h-5 mr-1.5 text-toast-500" />
-                    Directorio Clínico Global de Pacientes y Contactos
-                  </h3>
-                  <p className="text-xs text-slate-400">Acceso a coordenadas de correspondencia física, digital y telefónica de afiliados registrados.</p>
-                </div>
+            {ripsControlPanel}
 
-                <div className="relative max-w-sm w-full shrink-0">
-                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-                    <Search className="w-4 h-4 text-slate-400" />
-                  </span>
-                  <input
-                    type="text"
-                    value={patientSearchTerm}
-                    onChange={(e) => setPatientSearchTerm(e.target.value)}
-                    placeholder="Filtrar por nombre o identificación..."
-                    className="block w-full text-xs pl-9 pr-3 py-2 bg-slate-50 border border-slate-250 rounded-lg focus:ring-2 focus:ring-toast-500 focus:bg-white"
-                  />
-                </div>
+            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-5 md:p-6 space-y-4 text-left">
+              <div className="border-b border-slate-100 pb-3">
+                <h2 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center">
+                  <ClipboardX className="w-4 h-4 mr-1.5 text-toast-500" />
+                  Ver pacientes sin Diagnósticos RIPS
+                </h2>
+                <p className="text-[11px] text-slate-400">Pacientes atendidos en el periodo que todavía no tienen diagnóstico RIPS asignado — agrupados por psicólogo para poder recordárselo.</p>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 rounded-xl border border-slate-100 bg-slate-50/60 p-4 sm:grid-cols-3 lg:grid-cols-6">
-                <div>
-                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Desde</label>
-                  <input
-                    type="date" value={reportDateFrom} onChange={(e) => setReportDateFrom(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
-                  />
+              {currentUser.role !== 'CEO' && currentUser.role !== 'DIRECTIVO' ? (
+                <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
+                  Tu rol no tiene permisos para ver este panel (solo CEO/DIRECTIVO).
                 </div>
-                <div>
-                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Hasta</label>
-                  <input
-                    type="date" value={reportDateTo} onChange={(e) => setReportDateTo(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Convenio</label>
-                  <select
-                    value={reportCompanyId} onChange={(e) => setReportCompanyId(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
-                  >
-                    <option value="all">Todos</option>
-                    {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Estado de cita</label>
-                  <select
-                    value={reportStatus} onChange={(e) => setReportStatus(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
-                  >
-                    <option value="all">Todos</option>
-                    {APPOINTMENT_STATUS_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="mb-1 block text-[10px] font-bold uppercase text-slate-500">Psicólogo</label>
-                  <select
-                    value={reportPsychologistId} onChange={(e) => setReportPsychologistId(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:ring-2 focus:ring-toast-500"
-                  >
-                    <option value="all">Todos</option>
-                    {teamUsers.filter((u) => u.role === 'ESPECIALISTA_B2B').map((u) => (
-                      <option key={u.id} value={u.id}>{u.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex items-end">
-                  <button
-                    onClick={handleExportPatientsExcel}
-                    disabled={isExportingReport}
-                    className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
-                  >
-                    <Download className="h-3.5 w-3.5" /> {isExportingReport ? 'Generando...' : 'Descargar Excel'}
-                  </button>
-                </div>
-              </div>
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-end gap-3 bg-slate-50 p-4 rounded-xl border border-slate-150">
+                    <div className="space-y-1 text-xs">
+                      <label className="block text-[10px] uppercase font-bold text-slate-600">Año</label>
+                      <select
+                        value={pendingRipsYear}
+                        onChange={(e) => setPendingRipsYear(Number(e.target.value))}
+                        className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                      >
+                        {[now.getFullYear(), now.getFullYear() - 1].map((y) => <option key={y} value={y}>Año {y}</option>)}
+                      </select>
+                    </div>
+                    <div className="space-y-1 text-xs">
+                      <label className="block text-[10px] uppercase font-bold text-slate-600">Mes</label>
+                      <select
+                        value={pendingRipsMonth}
+                        onChange={(e) => setPendingRipsMonth(Number(e.target.value))}
+                        className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                          <option key={m} value={m}>{MONTH_LABELS[m]}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex-1 min-w-[160px] space-y-1 text-xs">
+                      <label className="block text-[10px] uppercase font-bold text-slate-600">Convenio</label>
+                      <select
+                        value={pendingRipsCompanyId}
+                        onChange={(e) => setPendingRipsCompanyId(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
+                      >
+                        <option value="all">Todos los convenios</option>
+                        {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                      </select>
+                    </div>
+                    <button
+                      onClick={fetchPendingRipsList}
+                      disabled={pendingRipsLoading}
+                      className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${pendingRipsLoading ? 'animate-spin' : ''}`} /> Actualizar
+                    </button>
+                    <button
+                      onClick={handleNotifyPendingRips}
+                      disabled={pendingRipsNotifying || pendingRipsLoading || pendingRipsList.length === 0}
+                      className="bg-charcoal-900 hover:bg-slate-950 text-white font-bold text-xs px-4 py-2 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50 ml-auto"
+                      title={pendingRipsList.length === 0 ? 'No hay pacientes pendientes en este periodo' : undefined}
+                    >
+                      <Bell className="w-3.5 h-3.5" />
+                      {pendingRipsNotifying ? 'Enviando...' : `Notificar diagnóstico RIPS de ${MONTH_LABELS[pendingRipsMonth]}`}
+                    </button>
+                  </div>
 
-              <div className="border border-slate-100 rounded-xl overflow-hidden">
-                <table className="w-full text-xs text-left">
-                  <thead className="bg-slate-50 text-slate-500 font-mono uppercase text-[9px] tracking-wider border-b border-slate-200">
-                    <tr>
-                      <th className="p-3 pl-4">Identificación</th>
-                      <th className="p-3">Nombre Completo</th>
-                      <th className="p-3">Convenio Activo</th>
-                      <th className="p-3">Datos de Contacto</th>
-                      <th className="p-3">Dirección Residencial Registrada</th>
-                      <th className="p-3 text-right pr-4">Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {patientsLoading ? (
-                      <tr>
-                        <td colSpan={6} className="p-8 text-center text-slate-500 animate-pulse font-semibold">
-                          Cargando directorio de pacientes...
-                        </td>
-                      </tr>
-                    ) : (
-                      <>
-                        {patients
-                          .filter(p => {
-                            if (!patientSearchTerm) return true;
-                            return p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
-                                   p.id.toLowerCase().includes(patientSearchTerm.toLowerCase());
-                          })
-                          .map((p) => (
-                            <tr key={p.id} className="hover:bg-slate-50/50">
-                              <td className="p-3 pl-4 font-mono font-bold text-slate-700">
-                                {p.id}
-                              </td>
-                              <td className="p-3 font-semibold text-slate-900 text-xs">
-                                {p.name}
-                              </td>
+                  {pendingRipsLoading ? (
+                    <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
+                      Cargando pacientes...
+                    </div>
+                  ) : pendingRipsList.length === 0 ? (
+                    <div className="p-10 text-center text-slate-400 text-xs italic border border-dashed border-slate-200 rounded-xl">
+                      Ningún paciente pendiente — todos los atendidos en este periodo ya tienen diagnóstico RIPS.
+                    </div>
+                  ) : (
+                    <div className="border border-slate-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase text-[9px] font-mono tracking-widest">
+                            <th className="p-3">Paciente</th>
+                            <th className="p-3">Convenio</th>
+                            <th className="p-3">Psicólogo</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {pendingRipsList.map((p) => (
+                            <tr key={p.id} className="hover:bg-slate-50">
+                              <td className="p-3 font-semibold text-slate-900">{p.firstName} {p.lastName}</td>
+                              <td className="p-3 text-slate-600">{p.corporateClient || 'Particular'}</td>
                               <td className="p-3">
-                                <span className="p-1 px-2 rounded-md bg-toast-50 text-charcoal-900 text-[10px] font-medium border border-toast-300">
-                                  {p.agreement}
-                                </span>
-                              </td>
-                              <td className="p-3 text-xs leading-relaxed space-y-0.5">
-                                <p className="font-mono text-slate-900">{p.phone}</p>
-                                <p className="text-slate-400 text-[10.5px] font-mono">{p.email}</p>
-                              </td>
-                              <td className="p-3 font-mono text-slate-600 text-[10.5px]">
-                                Calle 100 #8A-34, Bogotá D.C., COL
-                              </td>
-                              <td className="p-3 text-right pr-4">
-                                <button
-                                  onClick={() => {
-                                    toast.success(`Enviando notificación electrónica de cobro y recordatorio a: ${p.email}`);
-                                  }}
-                                  className="p-1 px-2 bg-toast-100 hover:bg-toast-200 text-charcoal-900 text-[10.5px] border border-toast-300 rounded-md cursor-pointer font-bold"
-                                >
-                                  Notificar Cobro
-                                </button>
+                                {p.psychologist ? (
+                                  <span className="text-slate-700">{p.psychologist.name}</span>
+                                ) : (
+                                  <span className="text-amber-600 font-semibold">Sin asignar</span>
+                                )}
                               </td>
                             </tr>
                           ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
 
-                        {patients.filter(p => {
-                          if (!patientSearchTerm) return true;
-                          return p.name.toLowerCase().includes(patientSearchTerm.toLowerCase()) || 
-                                 p.id.toLowerCase().includes(patientSearchTerm.toLowerCase());
-                        }).length === 0 && (
-                          <tr>
-                            <td colSpan={6} className="p-8 text-center text-slate-400">
-                              No se encontraron pacientes que coincidan con la búsqueda.
-                            </td>
-                          </tr>
-                        )}
-                      </>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                  {pendingRipsUnassignedCount > 0 && (
+                    <p className="text-[11px] text-amber-600">
+                      ⚠️ {pendingRipsUnassignedCount} paciente(s) sin psicólogo asignado — no recibirán recordatorio.
+                    </p>
+                  )}
+                </>
+              )}
             </div>
           </div>
         )}
