@@ -17,6 +17,7 @@ import { useAppointments } from '../hooks/useAppointments';
 import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
 import { toast } from 'react-hot-toast';
+import { NEW_APPOINTMENT_EVENT } from '../lib/apiClient';
 import {
   User,
   Patient,
@@ -79,6 +80,7 @@ import {
   X,
   Users,
   Stethoscope,
+  Filter,
 } from 'lucide-react';
 import CalendarPanel, { normalizeStatus, type CalendarAppointment } from '../components/EHR/CalendarPanel';
 import { legalDisclosureSpanish } from '../data/mockData';
@@ -164,58 +166,19 @@ export default function PsychologistPortal({
 
   // ---------------------------------------------------------------
   // Notificaciones de Citas Delegadas
+  //
+  // El polling en sí (GET /api/notifications/unread cada 45s) se movió a
+  // App.tsx — vivía solo aquí y por eso ningún rol de AdminPortal se
+  // enteraba de nada (ver historial). Este componente solo escucha el
+  // evento que App.tsx dispara cuando ve una NEW_APPOINTMENT, para refrescar
+  // su propia lista de citas.
   // ---------------------------------------------------------------
   useEffect(() => {
-    if (authLoading || !currentUser) return;
-
-    const checkNotifications = async () => {
-      try {
-        const token = localStorage.getItem('mind_token');
-        if (!token) return;
-
-        const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
-        const res = await fetch(`${apiBase}/api/notifications/unread`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        
-        if (!res.ok) return;
-        const unread = await res.json();
-        
-        let shouldRefetch = false;
-
-        unread.forEach((notif: any) => {
-          if (notif.type === 'NEW_APPOINTMENT') {
-            toast.success(notif.message, { duration: 6000, position: 'top-right' });
-            shouldRefetch = true;
-          }
-        });
-
-        if (shouldRefetch) {
-          refetchAppointments();
-        }
-        
-        if (unread.length > 0) {
-          const ids = unread.map((n: any) => n.id);
-          await fetch(`${apiBase}/api/notifications/mark-read`, {
-             method: 'POST', 
-             body: JSON.stringify({ ids }),
-             headers: { 
-               'Content-Type': 'application/json',
-               'Authorization': `Bearer ${token}`
-             }
-          });
-        }
-      } catch (error) {
-        // Fallo silencioso en frontend
-      }
-    };
-
-    checkNotifications(); // Chequeo inicial
-    const intervalId = setInterval(checkNotifications, 45000); // Polling cada 45 segundos
-    
-    return () => clearInterval(intervalId);
+    const handleNewAppointment = () => refetchAppointments();
+    window.addEventListener(NEW_APPOINTMENT_EVENT, handleNewAppointment);
+    return () => window.removeEventListener(NEW_APPOINTMENT_EVENT, handleNewAppointment);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, currentUser]);
+  }, []);
 
   // ---------------------------------------------------------------
   // 1. Verificación de sesión al montar el componente
@@ -296,6 +259,36 @@ export default function PsychologistPortal({
   // ---------------------------------------------------------------
   const [currentView, setCurrentView] = useState<'dashboard' | 'history'>('dashboard');
   const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  // Recuerda desde qué tab se entró a la ficha de un paciente (p. ej. desde
+  // "Pacientes") para que "Volver" regrese ahí — antes siempre volvía al
+  // listado de "Historias Clínicas", sin importar de dónde venías.
+  const [clinicalHistoryReturnTab, setClinicalHistoryReturnTab] = useState<ActiveTab | null>(null);
+
+  // Soporte real para el botón "atrás" del navegador al entrar a la ficha de
+  // un paciente: como esta SPA no usa una URL distinta por paciente, el back
+  // nativo no tenía nada que deshacer. Al abrir la ficha empujamos una entrada
+  // de historial (misma URL, solo como "punto de retorno"); si el usuario usa
+  // el back del navegador, el evento popstate dispara la misma transición que
+  // ya hace el botón "Volver a la bandeja de pacientes".
+  const handleBackFromPatientChart = () => {
+    if (clinicalHistoryReturnTab) {
+      window.history.back();
+    } else {
+      setSelectedPatientId(null);
+    }
+  };
+  useEffect(() => {
+    const handlePopState = () => {
+      if (selectedPatientId && clinicalHistoryReturnTab) {
+        setSelectedPatientId(null);
+        setActiveTab(clinicalHistoryReturnTab);
+        setClinicalHistoryReturnTab(null);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [selectedPatientId, clinicalHistoryReturnTab]);
+
   const [selectedSessionForModal, setSelectedSessionForModal] = useState<any>(null);
   // Cupo/sesión real del lote activo del paciente — no viene en el objeto
   // liviano del calendario, se trae vía la misma ficha del paciente que ya
@@ -386,7 +379,18 @@ export default function PsychologistPortal({
     }
   };
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  // Recuerda la última tab visitada entre recargas — mismo fix aplicado en
+  // AdminPortal: sin esto, un refresh de página remonta el componente y
+  // activeTab vuelve a 'dashboard' sin importar dónde estaba el usuario.
+  const PSYCHOLOGIST_TABS: ActiveTab[] = ['dashboard', 'video', 'evaluations', 'patients', 'clinical_history', 'chat', 'research', 'screening', 'drive'];
+  const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+    const saved = localStorage.getItem('mind_psych_active_tab');
+    return (saved && (PSYCHOLOGIST_TABS as string[]).includes(saved)) ? (saved as ActiveTab) : 'dashboard';
+  });
+  useEffect(() => {
+    localStorage.setItem('mind_psych_active_tab', activeTab);
+  }, [activeTab]);
+
   const [patients, setPatients] = useState<Patient[]>(initialPatients);
   const [progressNotes, setProgressNotes] = useState<ProgressNote[]>(initialProgressNotes);
   const [clinicalFiles, setClinicalFiles] = useState<ClinicalFile[]>(initialClinicalFiles);
@@ -409,6 +413,7 @@ export default function PsychologistPortal({
   const [noteAlert, setNoteAlert] = useState<string | null>(null);
   const [view, setView] = useState<'month' | 'week' | 'day'>('month');
   const [currentDate, setCurrentDate] = useState(new Date());
+  const [calendarPatientFilter, setCalendarPatientFilter] = useState('todos');
 
   useEffect(() => {
     refetchAppointments();
@@ -435,6 +440,16 @@ export default function PsychologistPortal({
       startMinute: parseInt(appt.timeSlot ? appt.timeSlot.split(':')[1] : appDate.getMinutes().toString())
     };
   });
+
+  // Filtro por paciente en el calendario — mismo patrón que el filtro por
+  // psicólogo del calendario general de AdminPortal.
+  const calendarPatientOptions = Array.from(
+    new Set(weeklyAppointments.map((a) => a.patientName))
+  ).sort((a, b) => a.localeCompare(b));
+
+  const filteredWeeklyAppointments = calendarPatientFilter === 'todos'
+    ? weeklyAppointments
+    : weeklyAppointments.filter((a) => a.patientName === calendarPatientFilter);
 
   const calendarKpis = (() => {
     const todayStr = new Date().toDateString();
@@ -906,13 +921,28 @@ export default function PsychologistPortal({
 
             {/* PANEL DE AGENDAMIENTO */}
             <CalendarPanel
-              appointments={weeklyAppointments as CalendarAppointment[]}
+              appointments={filteredWeeklyAppointments as CalendarAppointment[]}
               view={view}
               setView={setView}
               currentDate={currentDate}
               setCurrentDate={setCurrentDate}
               onSelectAppointment={(app) => setSelectedSessionForModal(app)}
               onNewAppointment={() => setShowNewAppointmentModal(true)}
+              filterSlot={
+                <div className="flex items-center gap-1.5">
+                  <Filter className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                  <select
+                    value={calendarPatientFilter}
+                    onChange={(e) => setCalendarPatientFilter(e.target.value)}
+                    className="rounded-lg border border-slate-200 bg-toast-50 px-2.5 py-1.5 text-sm font-medium text-charcoal-900 focus:ring-2 focus:ring-toast-500 outline-none cursor-pointer"
+                  >
+                    <option value="todos">Todos los pacientes</option>
+                    {calendarPatientOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+              }
             />
 
             <DelegatedAppointmentModal
@@ -974,7 +1004,15 @@ export default function PsychologistPortal({
 
         {/* VIEW: PATIENTS */}
         {activeTab === 'patients' && (
-          <PacientesPanel token={token} />
+          <PacientesPanel
+            token={token}
+            onSelectPatient={(id) => {
+              window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
+              setSelectedPatientId(id);
+              setClinicalHistoryReturnTab('patients');
+              setActiveTab('clinical_history');
+            }}
+          />
         )}
 
         {/* VIEW: CLINICAL HISTORY */}
@@ -983,12 +1021,12 @@ export default function PsychologistPortal({
             {!selectedPatientId ? (
               <ClinicalRecordsList
                 patients={realPatients}
-                onSelect={(id) => setSelectedPatientId(id)}
+                onSelect={(id) => { setSelectedPatientId(id); setClinicalHistoryReturnTab(null); }}
               />
             ) : (
               <ClinicalPatientChart
                 patientId={selectedPatientId}
-                onBack={() => setSelectedPatientId(null)}
+                onBack={handleBackFromPatientChart}
               />
             )}
           </div>

@@ -7,17 +7,38 @@ import { useState, useEffect } from 'react';
 import { User, Patient, resolveRole } from './types';
 import { WorkspaceContext } from './components/ContextSwitcher';
 import Login from './pages/Login';
+import SignConsent from './pages/SignConsent';
 import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
 import ForcePasswordChange from './pages/ForcePasswordChange';
 import Navbar from './components/Navbar';
 import DrMindChat from './components/DrMindChat';
 import { Bot, ShieldAlert, AlertTriangle } from 'lucide-react';
-import { FORBIDDEN_ACCESS_EVENT } from './lib/apiClient';
-import { Toaster } from 'react-hot-toast';
+import { FORBIDDEN_ACCESS_EVENT, NEW_APPOINTMENT_EVENT } from './lib/apiClient';
+import { Toaster, toast } from 'react-hot-toast';
+
+// Restaura la sesión guardada de forma SÍNCRONA, en la inicialización del
+// estado — no dentro de un useEffect. Si currentUser arrancara en null y se
+// poblara recién en un efecto (como pasaba antes), el primer render del
+// router (`if (!currentUser) return <Login/>`) siempre alcanza a pintar el
+// Login antes de que el efecto corra, produciendo un parpadeo hacia Login en
+// cada recarga de página aunque la sesión siga siendo válida.
+function restoreUserFromStorage(): User | null {
+  const token = localStorage.getItem('mind_token');
+  const userStr = localStorage.getItem('mind_user');
+  if (!token || !userStr) return null;
+  try {
+    const storedUser: User = JSON.parse(userStr);
+    return { ...storedUser, role: resolveRole(storedUser.role) };
+  } catch {
+    localStorage.removeItem('mind_token');
+    localStorage.removeItem('mind_user');
+    return null;
+  }
+}
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(restoreUserFromStorage);
 
   // Workspace Context State — Hybrid Clinical + Research
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>('clinical');
@@ -104,27 +125,13 @@ export default function App() {
       });
   };
 
-  // Al montar la app:
-  //  1. Restauramos el usuario desde localStorage para evitar pantalla de Login en refresh.
-  //  2. Sincronizamos con Prisma para obtener los datos canónicos (incluye avatarUrl).
+  // Al montar la app: el usuario ya quedó restaurado de forma síncrona (ver
+  // restoreUserFromStorage arriba) — acá solo sincronizamos con Prisma para
+  // obtener los datos canónicos reales (incluye avatarUrl).
   useEffect(() => {
     const token = localStorage.getItem('mind_token');
-    const userStr = localStorage.getItem('mind_user');
-
-    // Paso 1: Restaurar usuario desde localStorage (evita parpadeo hacia Login)
-    if (token && userStr) {
-      try {
-        const storedUser: User = JSON.parse(userStr);
-        const canonicalRole = resolveRole(storedUser.role);
-        setCurrentUser({ ...storedUser, role: canonicalRole });
-
-        // Paso 2: Sincronizar con Prisma para obtener los datos canónicos reales
-        syncUserFromBackend(token);
-      } catch {
-        // Datos corruptos en localStorage → limpiar
-        localStorage.removeItem('mind_token');
-        localStorage.removeItem('mind_user');
-      }
+    if (token && currentUser) {
+      syncUserFromBackend(token);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -184,6 +191,56 @@ export default function App() {
     window.addEventListener(FORBIDDEN_ACCESS_EVENT, handleForbiddenAccess);
     return () => window.removeEventListener(FORBIDDEN_ACCESS_EVENT, handleForbiddenAccess);
   }, []);
+
+  // ── Polling de notificaciones de staff — 45s ────────────────────────────
+  // Vive AQUÍ, en el nivel más alto del shell autenticado, a propósito: antes
+  // vivía solo dentro de PsychologistPortal.tsx, así que cualquier rol que
+  // usara AdminPortal (CEO, DIRECTIVO, OPERATIVO — que también puede enviar
+  // el enlace de firma desde InitialAssessmentWizard) nunca se enteraba de
+  // nada, aunque el backend creara la notificación correctamente. Puesto
+  // aquí, cubre a todos los roles con un solo poller.
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const checkStaffNotifications = async () => {
+      try {
+        const token = localStorage.getItem('mind_token');
+        if (!token) return;
+
+        const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+        const res = await fetch(`${apiBase}/api/notifications/unread`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const unread = await res.json();
+
+        unread.forEach((notif: any) => {
+          if (notif.type === 'NEW_APPOINTMENT') {
+            toast.success(notif.message, { duration: 6000, position: 'top-right' });
+            window.dispatchEvent(new CustomEvent(NEW_APPOINTMENT_EVENT));
+          }
+          if (notif.type === 'CONSENT_SIGNED') {
+            toast.success(notif.message, { duration: 8000, position: 'top-right', icon: '✅' });
+          }
+        });
+
+        if (unread.length > 0) {
+          const ids = unread.map((n: any) => n.id);
+          await fetch(`${apiBase}/api/notifications/mark-read`, {
+            method: 'POST',
+            body: JSON.stringify({ ids }),
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          });
+        }
+      } catch {
+        // Fallo silencioso — un poll perdido no debe interrumpir la sesión
+      }
+    };
+
+    checkStaffNotifications();
+    const intervalId = setInterval(checkStaffNotifications, 45000);
+    return () => clearInterval(intervalId);
+  }, [currentUser]);
 
   const handleOpenDrMindWithPatient = (patient: Patient) => {
     setDrMindContextPatient(patient);
@@ -324,6 +381,19 @@ export default function App() {
         return null;
     }
   };
+
+  // ============================================================================
+  // PANTALLA PÚBLICA DE FIRMA — /firmar/:token
+  //
+  // El paciente (o su representante legal) nunca ha tenido cuenta en esta
+  // plataforma (ver "RBAC ROUTER" arriba: USUARIO_B2C usa "portal externo").
+  // Se resuelve ANTES del shell autenticado (Navbar, RBAC router, Login) — no
+  // es una ruta más del portal, es una superficie aparte que comparte dominio
+  // y marca por conveniencia. El token de la URL es la única credencial.
+  // ============================================================================
+  if (window.location.pathname.startsWith('/firmar/')) {
+    return <SignConsent />;
+  }
 
   return (
     <div className="h-screen overflow-hidden bg-slate-50 flex flex-col text-slate-800 antialiased selection:bg-toast-200 selection:text-charcoal-900">
