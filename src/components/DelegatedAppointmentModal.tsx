@@ -19,6 +19,7 @@ import { useState, useEffect, useRef, FormEvent } from 'react';
 import { toast } from 'react-hot-toast';
 import { X, Plus, Pencil, Video, Building2, Link2, CalendarClock, User } from 'lucide-react';
 import { apiFetch } from '../lib/apiClient';
+import { getCompaniesCached, type CompanyRecord } from '../hooks/useCompanies';
 import PsychologistAvailabilityGrid from './PsychologistAvailabilityGrid';
 
 // ── Tipos locales (alineados con Prisma pero desacoplados) ────────────────
@@ -38,20 +39,6 @@ interface PatientOption {
   email?: string | null;
 }
 
-interface ServiceLocationOption {
-  id: string;
-  name: string;
-  address?: string | null;
-}
-
-interface CompanyOption {
-  id: string;
-  name: string;
-  domain?: string | null;
-  clientType: 'EMPRESA' | 'PARTICULAR';
-  status: string;
-  locations: ServiceLocationOption[];
-}
 
 interface SpecialtyOption {
   id: string;
@@ -166,7 +153,7 @@ const SELECTORES_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
 
 interface SelectoresData {
   specialists: Specialist[];
-  companies: CompanyOption[];
+  companies: CompanyRecord[];
   specialties: SpecialtyOption[];
 }
 
@@ -189,9 +176,13 @@ async function cargarSelectores(): Promise<SelectoresData> {
   if (cargaEnVuelo) return cargaEnVuelo;
 
   cargaEnVuelo = (async () => {
-    const [specRes, compRes, specialtyRes] = await Promise.all([
+    const [specialists, companies, specialtyRes] = await Promise.all([
       apiFetch('/api/users/specialists'),
-      apiFetch('/api/companies'),
+      // Reutiliza la misma caché compartida que PacientesPanel/CreatePatientModal/
+      // el panel de Convenios de AdminPortal (ver src/hooks/useCompanies.ts) — así
+      // este modal no dispara su propia petición a /api/companies si alguno de
+      // esos consumidores ya la trajo recientemente.
+      getCompaniesCached(),
       apiFetch('/api/specialties/options'),
     ]);
 
@@ -202,8 +193,8 @@ async function cargarSelectores(): Promise<SelectoresData> {
     };
 
     const frescos: SelectoresData = {
-      specialists:  await leer<Specialist>(specRes),
-      companies:    await leer<CompanyOption>(compRes),
+      specialists:  await leer<Specialist>(specialists),
+      companies,
       specialties:  await leer<SpecialtyOption>(specialtyRes),
     };
 
@@ -256,7 +247,7 @@ export default function DelegatedAppointmentModal({
 }: DelegatedAppointmentModalProps) {
   // ── Data state ──────────────────────────────────────────────────────────
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
-  const [companies, setCompanies] = useState<CompanyOption[]>([]);
+  const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [specialties, setSpecialties] = useState<SpecialtyOption[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -611,9 +602,18 @@ export default function DelegatedAppointmentModal({
           return;
         }
 
+        // form.timeSlot solo se llena una vez al abrir el modal (desde
+        // initialData.timeSlot) y ningún selector de fecha/hora lo vuelve a
+        // tocar cuando el usuario elige un horario nuevo — por eso, al
+        // reprogramar, hay que derivar el timeSlot del dateTime recién
+        // editado (fuente de verdad real), no confiar en el valor viejo de
+        // form.timeSlot. Si no se hace así, la cita queda con la hora nueva
+        // en `date` pero la hora VIEJA en `timeSlot`, y como el correo/
+        // WhatsApp de confirmación usa `timeSlot`, el paciente recibe una
+        // hora distinta a la que realmente quedó agendada.
         const payload: Record<string, unknown> = {
           date:            form.dateTime,
-          timeSlot:        form.timeSlot || form.dateTime?.split('T')[1]?.slice(0, 5) || '08:00',
+          timeSlot:        form.dateTime?.split('T')[1]?.slice(0, 5) || form.timeSlot || '08:00',
           specialistId:    form.userId,
           userId:          form.userId,
           specialtyId:     form.specialtyId || null,
@@ -945,7 +945,7 @@ export default function DelegatedAppointmentModal({
   const footerHint = (() => {
     if (!form.patientId) return 'Sin paciente seleccionado.';
     if (isEditingAppointment) return 'Se reprogramará la cita seleccionada.';
-    const start = (scheduleSummary?.appointments.length || 0) + 1;
+    const start = (scheduleSummary?.appointments?.length || 0) + 1;
     const end = start + slotDates.length - 1;
     if (slotDates.length <= 1) return `Se registrará como sesión #${start}.`;
     return `Se registrará como sesiones #${start} a #${end}.`;
@@ -1436,7 +1436,7 @@ export default function DelegatedAppointmentModal({
                       <div key={i}>
                         <div className="flex items-center gap-2">
                           <span className="w-14 shrink-0 text-[10.5px] font-semibold text-slate-400">
-                            Sesión {(scheduleSummary?.appointments.length || 0) + i + 1}
+                            Sesión {(scheduleSummary?.appointments?.length || 0) + i + 1}
                           </span>
                           <input
                             type="datetime-local"

@@ -279,9 +279,12 @@ export interface BackendPatient {
   firstName: string;
   lastName: string;
   documentId: string;
+  documentType?: string | null;
   email?: string;
   phone?: string;
   corporateClient?: string;
+  companyId?: string | null;
+  birthDate?: string | null;
   tenantId?: string;
   recordNumber?: string;
   status?: string;

@@ -24,6 +24,15 @@ const API_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9
 // ────────────────────────────────────────────────────────────────────────────
 export const FORBIDDEN_ACCESS_EVENT = 'forbidden-access';
 
+// ────────────────────────────────────────────────────────────────────────────
+// EVENTO GLOBAL — nueva cita asignada
+// El polling de notificaciones vive una sola vez en App.tsx (para llegarle a
+// cualquier rol, no solo a PsychologistPortal — ver historial de por qué se
+// movió). PsychologistPortal.tsx escucha este evento para refrescar su propia
+// lista de citas sin que App.tsx necesite conocer ese hook.
+// ────────────────────────────────────────────────────────────────────────────
+export const NEW_APPOINTMENT_EVENT = 'staff-new-appointment';
+
 function dispatchForbiddenAccess(): void {
   const event = new CustomEvent(FORBIDDEN_ACCESS_EVENT, {
     bubbles: true,
