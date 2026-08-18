@@ -37,7 +37,6 @@ import {
   initialPatients,
   initialProgressNotes,
   initialClinicalFiles,
-  psychometricTestsCatalogue,
   initialPatientTests,
   initialVideoSessions,
   researchProjects,
@@ -86,6 +85,7 @@ import CalendarPanel, { normalizeStatus, type CalendarAppointment } from '../com
 import { legalDisclosureSpanish } from '../data/mockData';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
+import AssessmentsPanel from '../components/EHR/AssessmentsPanel';
 
 const CALENDAR_KPI_TONES: Record<string, string> = {
   charcoal: 'bg-charcoal-100 text-charcoal-900',
@@ -397,7 +397,6 @@ export default function PsychologistPortal({
   const [patientTests, setPatientTests] = useState<PatientTestState[]>(initialPatientTests);
   const [videoSessions, setVideoSessions] = useState<VideoSession[]>(initialVideoSessions);
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(patients[0]);
-  const [testSearchQuery, setTestSearchQuery] = useState('');
   const [fileSearchQuery, setFileSearchQuery] = useState('');
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(patients[0].id);
   const [activeVideoCall, setActiveVideoCall] = useState<VideoSession | null>(null);
@@ -655,11 +654,6 @@ export default function PsychologistPortal({
       evolution: 'Evolución moderadamente favorable, ha logrado reducir sus autojuicios severos.',
     }));
   };
-
-  const filteredTests = psychometricTestsCatalogue.filter(t =>
-    t.name.toLowerCase().includes(testSearchQuery.toLowerCase()) ||
-    t.category.toLowerCase().includes(testSearchQuery.toLowerCase())
-  );
 
   // ---------------------------------------------------------------
   // Render principal con información dinámica del usuario
@@ -983,24 +977,7 @@ export default function PsychologistPortal({
         )}
 
         {/* VIEW: EVALUATIONS */}
-        {activeTab === 'evaluations' && (
-          <div className="max-w-7xl mx-auto space-y-6 text-left">
-            <div className="bg-white rounded-xl border border-slate-100 p-5">
-              <h2 className="text-sm font-bold text-slate-900 mb-4">Catálogo de Pruebas Psicotécnicas</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {filteredTests.map(test => (
-                  <div key={test.id} className="p-3 border rounded-lg flex justify-between items-center">
-                    <div>
-                      <p className="font-semibold">{test.name}</p>
-                      <p className="text-xs text-slate-500">{test.category}</p>
-                    </div>
-                    <button className="text-toast-500 text-xs font-bold">Aplicar</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
+        {activeTab === 'evaluations' && <AssessmentsPanel />}
 
         {/* VIEW: PATIENTS */}
         {activeTab === 'patients' && (
