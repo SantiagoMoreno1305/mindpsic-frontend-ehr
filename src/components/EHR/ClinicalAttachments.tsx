@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'react-hot-toast';
-import { UploadCloud, FileText, Loader2 } from 'lucide-react';
+import { UploadCloud, FileText, Loader2, Eye, Download } from 'lucide-react';
 
 interface ClinicalDocumentEntry {
   id: string;
   fileName: string;
+  fileType?: string;
+  downloadUrl?: string;
   createdAt: string;
 }
 
@@ -23,12 +25,15 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
     try {
       const token = localStorage.getItem('mind_token');
       const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
-      const res = await fetch(`${apiBase}/api/clinical-history/${patientId}`, {
+      // Este endpoint (a diferencia de GET /api/clinical-history/:patientId)
+      // devuelve cada documento con una downloadUrl pre-firmada de S3 lista
+      // para ver/descargar — sin ella los anexos quedaban listados pero inertes.
+      const res = await fetch(`${apiBase}/api/documents/patient/${patientId}`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data.documents)) setDocuments(data.documents);
+        if (Array.isArray(data)) setDocuments(data);
       }
     } catch (error) {
       console.error('Error fetching documents:', error);
@@ -68,6 +73,59 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
       toast.error('Error al subir el archivo');
     } finally {
       setUploading(false);
+    }
+  };
+
+  // "Ver" y "Descargar" traen el archivo como blob y trabajan sobre una URL
+  // local (blob:) en vez de navegar directo a la URL firmada de S3 — así la
+  // firma (X-Amz-Signature, vigente 5 min) nunca queda expuesta en la barra
+  // de direcciones ni en el historial del navegador. El atributo `download`
+  // de un <a> tampoco funciona en URLs cross-origin como S3, así que el blob
+  // local es necesario de todas formas para forzar la descarga real.
+  const handleView = async (doc: ClinicalDocumentEntry) => {
+    if (!doc.downloadUrl) return;
+    try {
+      const res = await fetch(doc.downloadUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      // Ancla + clic programático en vez de window.open(): con `noopener` esta
+      // API siempre devuelve null (perdiendo la referencia a la pestaña), y
+      // una pestaña con el opener cortado a menudo no puede resolver un blob:
+      // creado en el documento original — ambas cosas producían pestañas
+      // "about:blank" vacías. El clic de ancla sí abre la pestaña ya apuntando
+      // al blob real.
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.target = '_blank';
+      link.rel = 'noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch (error) {
+      console.error('Error abriendo documento:', error);
+      window.open(doc.downloadUrl, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  const handleDownload = async (doc: ClinicalDocumentEntry) => {
+    if (!doc.downloadUrl) return;
+    try {
+      const res = await fetch(doc.downloadUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = doc.fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      console.error('Error descargando documento:', error);
+      window.open(doc.downloadUrl, '_blank', 'noopener,noreferrer');
     }
   };
 
@@ -128,6 +186,26 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
                     <p className="text-[10px] text-slate-400">{new Date(doc.createdAt).toLocaleDateString()}</p>
                   </div>
                 </div>
+                {doc.downloadUrl && (
+                  <div className="ml-3 flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleView(doc)}
+                      title="Ver documento"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(doc)}
+                      title="Descargar documento"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-900"
+                    >
+                      <Download className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
               </div>
             ))
           )}
