@@ -8,6 +8,7 @@ import { User, Patient, resolveRole } from './types';
 import { WorkspaceContext } from './components/ContextSwitcher';
 import Login from './pages/Login';
 import SignConsent from './pages/SignConsent';
+import AnswerAssessment from './pages/AnswerAssessment';
 import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
 import ForcePasswordChange from './pages/ForcePasswordChange';
@@ -393,6 +394,18 @@ export default function App() {
   // ============================================================================
   if (window.location.pathname.startsWith('/firmar/')) {
     return <SignConsent />;
+  }
+
+  // ============================================================================
+  // PANTALLA PÚBLICA DE AUTOAPLICACIÓN — /evaluacion/:token
+  //
+  // Misma superficie y mismo modelo de confianza que /firmar/: el paciente no
+  // tiene cuenta, y el token opaco del enlace es la credencial de entrada. La
+  // diferencia es que aquí, además, se pide el número de documento antes de
+  // mostrar el cuestionario (ver assessment-link.service.js).
+  // ============================================================================
+  if (window.location.pathname.startsWith('/evaluacion/')) {
+    return <AnswerAssessment />;
   }
 
   return (
