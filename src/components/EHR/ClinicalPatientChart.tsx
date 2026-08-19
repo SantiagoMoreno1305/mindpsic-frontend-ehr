@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, CalendarClock, ClipboardList,
-  Plus, Trash2, Loader2,
+  Plus, Trash2, Loader2, Pencil, X,
 } from 'lucide-react';
 import ClinicalHistoryEditor from './ClinicalHistoryEditor';
 import ClinicalAttachments from './ClinicalAttachments';
@@ -32,6 +32,27 @@ interface PatientChart {
   recordNumber?: string | null;
   status: string;
   riskLevel: string;
+  // ── Datos de contacto/sociodemográficos ACTUALES — editables aunque la
+  // Valoración Individual ya esté firmada (ver PUT /:id/chart). El backend ya
+  // resuelve el respaldo al snapshot de la valoración firmada cuando el
+  // paciente todavía no tiene su propio valor — acá siempre viene el valor
+  // vigente a mostrar, sin necesidad de mirar initialAssessment aparte.
+  epsCodigo?: string | null;
+  epsNombre?: string | null;
+  regimenSalud?: string | null;
+  estadoCivil?: string | null;
+  orientacionSexual?: string | null;
+  orientacionSexualOtro?: string | null;
+  escolaridad?: string | null;
+  estudiaActualmente?: boolean | null;
+  semestreGradoTrimestre?: string | null;
+  carrera?: string | null;
+  ocupacion?: string | null;
+  direccionResidencia?: string | null;
+  departamentoResidencia?: string | null;
+  ciudadResidencia?: string | null;
+  barrio?: string | null;
+  estrato?: number | null;
 }
 
 interface InitialAssessmentGate {
@@ -197,6 +218,18 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
     patchChart({ riskLevel });
   };
 
+  // A diferencia de patchChart (fire-and-forget, usado para status/riskLevel),
+  // esto sí propaga el éxito/fallo al modal — para que EditContactModal pueda
+  // mostrar su propio toast y no cerrar si el guardado falló.
+  const handleSaveContact = async (payload: Record<string, unknown>) => {
+    const res = await fetch(`${apiBase()}/api/patients/${patientId}/chart`, {
+      method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error('failed');
+    const { patient: updated } = await res.json();
+    updateLocalPatient(updated);
+  };
+
   if (loading || !data) {
     return (
       <div className="flex min-h-[400px] items-center justify-center">
@@ -315,7 +348,7 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
             patientId={patientId}
           />
         )}
-        {tab === 'historia' && <HistoriaTab initialAssessment={initialAssessment} />}
+        {tab === 'historia' && <HistoriaTab initialAssessment={initialAssessment} patient={patient} onSaveContact={handleSaveContact} />}
         {tab === 'evoluciones' && <ClinicalHistoryEditor patientId={patientId} />}
         {tab === 'evaluaciones' && (
           <EvaluacionesTab
@@ -512,7 +545,21 @@ function InfoRow({ label, value }: { label: string; value?: string | number | nu
 
 // Anamnesis / Historia se alimenta por completo de la Valoración Individual
 // firmada — ya no existen los 3 campos de texto libre por separado.
-function HistoriaTab({ initialAssessment }: { initialAssessment: InitialAssessmentData | null }) {
+//
+// Los campos de contacto/sociodemográficos (EPS, régimen, estado civil,
+// orientación, escolaridad, ocupación, correo, teléfono, dirección, estrato)
+// SÍ se pueden editar aunque la valoración ya esté firmada — vienen de
+// `patient` (estado actual, con respaldo automático al snapshot firmado si
+// el paciente aún no tiene su propio valor), no de `initialAssessment` (que
+// queda congelado para siempre). El resto de la valoración (motivo, conducta,
+// contexto familiar, cierre profesional) sigue viniendo de `a` y no se toca.
+function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
+  initialAssessment: InitialAssessmentData | null;
+  patient: PatientChart;
+  onSaveContact: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const [editingContact, setEditingContact] = useState(false);
+
   if (!initialAssessment) {
     return (
       <Card>
@@ -528,13 +575,15 @@ function HistoriaTab({ initialAssessment }: { initialAssessment: InitialAssessme
   return (
     <div className="flex flex-col gap-4">
       <Card>
-        <SectionTitle>Datos personales</SectionTitle>
+        <div className="mb-3 flex items-center justify-between">
+          <SectionTitle>Datos personales</SectionTitle>
+        </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <InfoRow label="Nombres y apellidos" value={a.nombresApellidos} />
           <InfoRow label="Tipo y número de documento" value={a.tipoDocumento ? `${a.tipoDocumento} ${a.numeroDocumento}` : a.numeroDocumento} />
-          <InfoRow label="EPS" value={a.epsNombre} />
-          <InfoRow label="Régimen de salud" value={a.regimenSalud} />
-          <InfoRow label="Estado civil" value={a.estadoCivil} />
+          <InfoRow label="EPS" value={patient.epsNombre} />
+          <InfoRow label="Régimen de salud" value={patient.regimenSalud} />
+          <InfoRow label="Estado civil" value={patient.estadoCivil} />
           <InfoRow label="Sexo biológico / Género" value={[a.sexoBiologico, a.genero].filter(Boolean).join(' / ')} />
           <InfoRow label="Fecha de nacimiento" value={formatDate(a.fechaNacimiento)} />
           <InfoRow label="Lugar de nacimiento" value={a.lugarNacimiento} />
@@ -542,17 +591,26 @@ function HistoriaTab({ initialAssessment }: { initialAssessment: InitialAssessme
       </Card>
 
       <Card>
-        <SectionTitle>Información sociodemográfica</SectionTitle>
+        <div className="mb-3 flex items-center justify-between">
+          <SectionTitle>Información sociodemográfica</SectionTitle>
+          <button
+            type="button" onClick={() => setEditingContact(true)}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-toast-500 hover:text-toast-500"
+          >
+            <Pencil className="h-3.5 w-3.5" /> Editar
+          </button>
+        </div>
+        <p className="mb-3 -mt-1 text-xs text-slate-400">Estos datos reflejan la situación actual del paciente — se pueden actualizar en cualquier momento, a diferencia del resto de la valoración, que queda fija tras la firma.</p>
         <div className="grid gap-4 sm:grid-cols-3">
-          <InfoRow label="Orientación sexual" value={a.orientacionSexual === 'Otro' ? a.orientacionSexualOtro : a.orientacionSexual} />
-          <InfoRow label="Escolaridad" value={a.escolaridad} />
-          <InfoRow label="Ocupación" value={a.ocupacion} />
-          <InfoRow label="Estudia actualmente" value={a.estudiaActualmente ? `Sí — ${[a.semestreGradoTrimestre, a.carrera].filter(Boolean).join(', ')}` : 'No'} />
-          <InfoRow label="Correo electrónico" value={a.correoElectronico} />
-          <InfoRow label="Teléfono" value={a.telefono} />
+          <InfoRow label="Orientación sexual" value={patient.orientacionSexual === 'Otro' ? patient.orientacionSexualOtro : patient.orientacionSexual} />
+          <InfoRow label="Escolaridad" value={patient.escolaridad} />
+          <InfoRow label="Ocupación" value={patient.ocupacion} />
+          <InfoRow label="Estudia actualmente" value={patient.estudiaActualmente ? `Sí — ${[patient.semestreGradoTrimestre, patient.carrera].filter(Boolean).join(', ')}` : 'No'} />
+          <InfoRow label="Correo electrónico" value={patient.email} />
+          <InfoRow label="Teléfono" value={patient.phone} />
           <InfoRow label="Contacto de emergencia" value={a.telefonoEmergencia} />
-          <InfoRow label="Dirección" value={[a.direccionResidencia, a.barrio].filter(Boolean).join(', ')} />
-          <InfoRow label="Estrato" value={a.estrato} />
+          <InfoRow label="Dirección" value={[patient.direccionResidencia, patient.barrio].filter(Boolean).join(', ')} />
+          <InfoRow label="Estrato" value={patient.estrato} />
         </div>
         {a.poblacionDiferencial?.length > 0 && (
           <div className="mt-3 border-t border-slate-100 pt-3">
@@ -565,6 +623,14 @@ function HistoriaTab({ initialAssessment }: { initialAssessment: InitialAssessme
           </div>
         )}
       </Card>
+
+      {editingContact && (
+        <EditContactModal
+          patient={patient}
+          onClose={() => setEditingContact(false)}
+          onSave={async (payload) => { await onSaveContact(payload); setEditingContact(false); }}
+        />
+      )}
 
       {a.requiereRepresentanteLegal && (
         <Card>
@@ -640,6 +706,245 @@ function HistoriaTab({ initialAssessment }: { initialAssessment: InitialAssessme
           </p>
         )}
       </Card>
+    </div>
+  );
+}
+
+// ── Catálogos — mismas opciones que usa InitialAssessmentWizard, para que un
+// valor editado aquí sea idéntico (no un texto libre parecido pero distinto)
+// al que ya existe en valoraciones firmadas anteriores. ──
+const REGIMEN_OPTIONS = ['Contributivo', 'Subsidiado', 'Especial — Fuerzas Militares, Policía Nacional, entre otros', 'Excepcional — PPL, entre otros'];
+const ESTADO_CIVIL_OPTIONS = ['Soltero/a', 'Casado/a', 'Unión libre', 'Viudo/a', 'Divorciado/a'];
+const ORIENTACION_OPTIONS = ['Heterosexual', 'Homosexual', 'Bisexual', 'Otro'];
+const ESCOLARIDAD_OPTIONS = [
+  'Primaria incompleta', 'Primaria completa', 'Bachillerato incompleto', 'Bachillerato completo',
+  'Técnico / Tecnólogo incompleto', 'Técnico / Tecnólogo completo', 'Universitario incompleto',
+  'Universitario completo', 'Posgrado',
+];
+const OCUPACION_OPTIONS = ['Empleado', 'Estudiante', 'Independiente', 'Pensionado', 'Desempleado', 'Hogar'];
+
+function Select({ value, options, onChange }: { value: string; options: string[]; onChange: (v: string) => void }) {
+  return (
+    <select
+      value={value} onChange={(e) => onChange(e.target.value)}
+      className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500"
+    >
+      <option value="">Seleccionar…</option>
+      {options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+    </select>
+  );
+}
+
+interface EpsOption { code: string; nombre: string }
+
+function EpsSelect({ codigo, nombre, onChange }: { codigo: string; nombre: string; onChange: (codigo: string, nombre: string) => void }) {
+  const [query, setQuery] = useState('');
+  const [options, setOptions] = useState<EpsOption[]>([]);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${apiBase()}/api/eps?q=${encodeURIComponent(query.trim())}`, { headers: authHeaders() });
+        if (res.ok) setOptions(await res.json());
+      } catch {
+        // silencioso — el usuario simplemente no ve resultados
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  if (codigo && nombre && !open) {
+    return (
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 text-sm">
+        <span><span className="font-mono font-semibold text-slate-700">{codigo}</span> — {nombre}</span>
+        <button type="button" onClick={() => { setOpen(true); setQuery(''); }} className="text-xs font-semibold text-toast-500 hover:underline">Cambiar</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <input
+        type="text" value={query} onChange={(e) => { setQuery(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)}
+        placeholder="Buscar por código o nombre de EPS…"
+        className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500"
+      />
+      {open && options.length > 0 && (
+        <div className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+          {options.map((opt) => (
+            <button
+              key={opt.code} type="button"
+              onClick={() => { onChange(opt.code, opt.nombre); setOpen(false); setQuery(''); }}
+              className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
+            >
+              <span className="font-mono font-semibold text-slate-700">{opt.code}</span> — {opt.nombre}
+            </button>
+          ))}
+        </div>
+      )}
+      {open && query.trim().length >= 2 && options.length === 0 && (
+        <p className="mt-1 text-xs text-slate-400">Sin resultados — si la EPS no está en el catálogo, pide a un CEO/DIRECTIVO que la agregue desde AdminCenter.</p>
+      )}
+    </div>
+  );
+}
+
+// Modal de edición de datos de contacto/sociodemográficos ACTUALES — la única
+// parte de la ficha que se puede corregir después de firmada la Valoración
+// Individual, ya que refleja la vida real del paciente (cambia de EPS, se
+// muda, cambia de ocupación) y no un juicio clínico congelado en el tiempo.
+function EditContactModal({ patient, onClose, onSave }: {
+  patient: PatientChart;
+  onClose: () => void;
+  onSave: (payload: Record<string, unknown>) => Promise<void>;
+}) {
+  const [form, setForm] = useState({
+    epsCodigo: patient.epsCodigo || '',
+    epsNombre: patient.epsNombre || '',
+    regimenSalud: patient.regimenSalud || '',
+    estadoCivil: patient.estadoCivil || '',
+    orientacionSexual: patient.orientacionSexual || '',
+    orientacionSexualOtro: patient.orientacionSexualOtro || '',
+    escolaridad: patient.escolaridad || '',
+    ocupacion: patient.ocupacion || '',
+    estudiaActualmente: patient.estudiaActualmente ?? false,
+    semestreGradoTrimestre: patient.semestreGradoTrimestre || '',
+    carrera: patient.carrera || '',
+    email: patient.email || '',
+    phone: patient.phone || '',
+    direccionResidencia: patient.direccionResidencia || '',
+    barrio: patient.barrio || '',
+    estrato: patient.estrato != null ? String(patient.estrato) : '',
+  });
+  const [saving, setSaving] = useState(false);
+  const update = (patch: Partial<typeof form>) => setForm((prev) => ({ ...prev, ...patch }));
+
+  const handleSubmit = async () => {
+    setSaving(true);
+    try {
+      await onSave({
+        ...form,
+        estrato: form.estrato === '' ? null : Number(form.estrato),
+      });
+      toast.success('Datos actualizados.');
+    } catch {
+      toast.error('Error al guardar los cambios.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">Editar datos actuales del paciente</h3>
+            <p className="text-xs text-slate-400">No modifica la Valoración Individual firmada — solo el estado vigente del paciente.</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-xs font-semibold text-slate-500">EPS</label>
+              <EpsSelect codigo={form.epsCodigo} nombre={form.epsNombre} onChange={(codigo, nombre) => update({ epsCodigo: codigo, epsNombre: nombre })} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Régimen de salud</label>
+              <Select value={form.regimenSalud} options={REGIMEN_OPTIONS} onChange={(v) => update({ regimenSalud: v })} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Estado civil</label>
+              <Select value={form.estadoCivil} options={ESTADO_CIVIL_OPTIONS} onChange={(v) => update({ estadoCivil: v })} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Orientación sexual</label>
+              <Select value={form.orientacionSexual} options={ORIENTACION_OPTIONS} onChange={(v) => update({ orientacionSexual: v })} />
+            </div>
+            {form.orientacionSexual === 'Otro' && (
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-500">¿Cuál?</label>
+                <input type="text" value={form.orientacionSexualOtro} onChange={(e) => update({ orientacionSexualOtro: e.target.value })}
+                  className="w-full rounded-lg border border-slate-200 p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500" />
+              </div>
+            )}
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Escolaridad</label>
+              <Select value={form.escolaridad} options={ESCOLARIDAD_OPTIONS} onChange={(v) => update({ escolaridad: v })} />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Ocupación</label>
+              <Select value={form.ocupacion} options={OCUPACION_OPTIONS} onChange={(v) => update({ ocupacion: v })} />
+            </div>
+
+            <div className="flex items-center gap-2 pt-6">
+              <input
+                type="checkbox" id="estudia-actualmente" checked={form.estudiaActualmente}
+                onChange={(e) => update({ estudiaActualmente: e.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-toast-500 focus:ring-toast-500"
+              />
+              <label htmlFor="estudia-actualmente" className="text-sm text-slate-700">Estudia actualmente</label>
+            </div>
+            {form.estudiaActualmente && (
+              <>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">Semestre / Grado / Trimestre</label>
+                  <input type="text" value={form.semestreGradoTrimestre} onChange={(e) => update({ semestreGradoTrimestre: e.target.value })}
+                    className="w-full rounded-lg border border-slate-200 p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-500">Carrera / Programa</label>
+                  <input type="text" value={form.carrera} onChange={(e) => update({ carrera: e.target.value })}
+                    className="w-full rounded-lg border border-slate-200 p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500" />
+                </div>
+              </>
+            )}
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Correo electrónico</label>
+              <input type="email" value={form.email} onChange={(e) => update({ email: e.target.value })}
+                className="w-full rounded-lg border border-slate-200 p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Teléfono</label>
+              <input type="tel" value={form.phone} onChange={(e) => update({ phone: e.target.value })}
+                className="w-full rounded-lg border border-slate-200 p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500" />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Dirección</label>
+              <input type="text" value={form.direccionResidencia} onChange={(e) => update({ direccionResidencia: e.target.value })}
+                className="w-full rounded-lg border border-slate-200 p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Barrio</label>
+              <input type="text" value={form.barrio} onChange={(e) => update({ barrio: e.target.value })}
+                className="w-full rounded-lg border border-slate-200 p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">Estrato</label>
+              <input type="number" min="1" max="6" value={form.estrato} onChange={(e) => update({ estrato: e.target.value })}
+                className="w-full rounded-lg border border-slate-200 p-2.5 text-sm outline-none focus:ring-2 focus:ring-toast-500" />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-6 py-4">
+          <button type="button" onClick={onClose} disabled={saving} className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100">
+            Cancelar
+          </button>
+          <button
+            type="button" onClick={handleSubmit} disabled={saving}
+            className="flex items-center gap-1.5 rounded-lg bg-toast-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-toast-600 disabled:opacity-50"
+          >
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />} Guardar cambios
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
