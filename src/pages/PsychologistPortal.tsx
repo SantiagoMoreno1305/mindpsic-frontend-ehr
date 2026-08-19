@@ -80,12 +80,14 @@ import {
   Users,
   Stethoscope,
   Filter,
+  BarChart3,
 } from 'lucide-react';
 import CalendarPanel, { normalizeStatus, type CalendarAppointment } from '../components/EHR/CalendarPanel';
 import { legalDisclosureSpanish } from '../data/mockData';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
 import AssessmentsPanel from '../components/EHR/AssessmentsPanel';
+import ReportsPanel from '../components/EHR/ReportsPanel';
 
 const CALENDAR_KPI_TONES: Record<string, string> = {
   charcoal: 'bg-charcoal-100 text-charcoal-900',
@@ -125,7 +127,7 @@ interface PsychologistPortalProps {
   onContextChange: (context: WorkspaceContext) => void;
 }
 
-type ActiveTab = 'dashboard' | 'video' | 'evaluations' | 'patients' | 'clinical_history' | 'chat' | 'research' | 'screening' | 'drive';
+type ActiveTab = 'dashboard' | 'video' | 'evaluations' | 'patients' | 'clinical_history' | 'chat' | 'reports' | 'research' | 'screening' | 'drive';
 
 export default function PsychologistPortal({
   onOpenDrMindWithPatient,
@@ -382,7 +384,7 @@ export default function PsychologistPortal({
   // Recuerda la última tab visitada entre recargas — mismo fix aplicado en
   // AdminPortal: sin esto, un refresh de página remonta el componente y
   // activeTab vuelve a 'dashboard' sin importar dónde estaba el usuario.
-  const PSYCHOLOGIST_TABS: ActiveTab[] = ['dashboard', 'video', 'evaluations', 'patients', 'clinical_history', 'chat', 'research', 'screening', 'drive'];
+  const PSYCHOLOGIST_TABS: ActiveTab[] = ['dashboard', 'video', 'evaluations', 'patients', 'clinical_history', 'chat', 'reports', 'research', 'screening', 'drive'];
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
     const saved = localStorage.getItem('mind_psych_active_tab');
     return (saved && (PSYCHOLOGIST_TABS as string[]).includes(saved)) ? (saved as ActiveTab) : 'dashboard';
@@ -748,6 +750,17 @@ export default function PsychologistPortal({
             {activeTab === 'chat' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
+          <button
+            onClick={() => setActiveTab('reports')}
+            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+              activeTab === 'reports' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
+            }`}
+          >
+            <BarChart3 className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Reportes</span>
+            {activeTab === 'reports' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+          </button>
+
           {workspaceContext === 'research' && (
             <>
               <div className="my-2 mx-3 border-t border-charcoal-700" />
@@ -1007,6 +1020,19 @@ export default function PsychologistPortal({
               />
             )}
           </div>
+        )}
+
+        {/* VIEW: REPORTS */}
+        {activeTab === 'reports' && (
+          <ReportsPanel
+            token={token}
+            onSelectPatient={(id) => {
+              window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
+              setSelectedPatientId(id);
+              setClinicalHistoryReturnTab('reports');
+              setActiveTab('clinical_history');
+            }}
+          />
         )}
 
         {/* VIEW: RESEARCH (solo si workspaceContext === 'research') */}

@@ -13,7 +13,7 @@
  * busca del lado del servidor — GET /api/patients?q=&page=&limit=20 — nunca
  * se trae todo de una vez.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal from './CreatePatientModal';
@@ -41,15 +41,42 @@ const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: 'alta', label: 'De alta' },
 ];
 
+// Búsqueda/filtros/página — se guardan en sessionStorage (dura mientras la
+// pestaña siga abierta, no para siempre como localStorage) porque este panel
+// se DESMONTA por completo al entrar a la ficha de un paciente (activeTab
+// cambia a 'clinical_history') y se remonta desde cero al volver — sin esto,
+// el buscador y los filtros quedaban en blanco cada vez que regresabas,
+// aunque hubieras estado buscando algo específico.
+interface PacientesSearchState {
+  query: string;
+  companyId: string;
+  psychologistId: string;
+  status: string;
+  page: number;
+}
+const SEARCH_STATE_KEY = 'mind_pacientes_search_state';
+
+function readSearchState(): PacientesSearchState {
+  const empty: PacientesSearchState = { query: '', companyId: '', psychologistId: '', status: '', page: 1 };
+  try {
+    const raw = sessionStorage.getItem(SEARCH_STATE_KEY);
+    if (!raw) return empty;
+    return { ...empty, ...JSON.parse(raw) };
+  } catch {
+    return empty;
+  }
+}
+
 export default function PacientesPanel({ token, onSelectPatient }: PacientesPanelProps) {
+  const initialSearchState = readSearchState();
   const [patients, setPatients] = useState<BackendPatient[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(initialSearchState.page);
   const [loading, setLoading] = useState(true);
-  const [query, setQuery] = useState('');
-  const [companyId, setCompanyId] = useState('');
-  const [psychologistId, setPsychologistId] = useState('');
-  const [status, setStatus] = useState('');
+  const [query, setQuery] = useState(initialSearchState.query);
+  const [companyId, setCompanyId] = useState(initialSearchState.companyId);
+  const [psychologistId, setPsychologistId] = useState(initialSearchState.psychologistId);
+  const [status, setStatus] = useState(initialSearchState.status);
   const { companies } = useCompanies();
   const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
 
@@ -112,10 +139,25 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, page, query, companyId, psychologistId, status]);
 
+  // Se salta el primer disparo (montaje) para no pisar la página restaurada
+  // de sessionStorage — solo debe volver a la página 1 cuando el USUARIO
+  // cambia un filtro, no cuando el filtro llega ya restaurado al volver.
+  const isFirstFilterRun = useRef(true);
   useEffect(() => {
+    if (isFirstFilterRun.current) {
+      isFirstFilterRun.current = false;
+      return;
+    }
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, companyId, psychologistId, status]);
+
+  // Persiste búsqueda/filtros/página para que sobrevivan al desmontar este
+  // panel (ver comentario en readSearchState más arriba).
+  useEffect(() => {
+    const state: PacientesSearchState = { query, companyId, psychologistId, status, page };
+    sessionStorage.setItem(SEARCH_STATE_KEY, JSON.stringify(state));
+  }, [query, companyId, psychologistId, status, page]);
 
   const hasActiveFilters = !!(companyId || psychologistId || status);
   function clearFilters() {
@@ -190,8 +232,18 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Buscar por nombre o documento..."
-            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-9 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
           />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              title="Limpiar búsqueda"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-200 hover:text-charcoal-900 cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
 
         <div className="mb-4 flex flex-wrap items-center gap-2">

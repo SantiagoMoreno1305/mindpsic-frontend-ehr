@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, FileText, Users, ChevronRight, ClipboardX } from 'lucide-react';
+import { Search, FileText, Users, ChevronRight, ClipboardX, X } from 'lucide-react';
 
 interface RealPatient {
   id: string;
@@ -23,6 +23,20 @@ interface PendingRipsPatient {
   recordNumber?: string | null;
 }
 
+// Igual que en PacientesPanel: este componente se desmonta por completo al
+// entrar a la ficha de un paciente y se remonta desde cero al volver — sin
+// esto, la búsqueda quedaba en blanco cada vez. sessionStorage (no
+// localStorage) porque solo debe durar mientras la pestaña siga abierta.
+const SEARCH_STATE_KEY = 'mind_clinical_records_search_state';
+
+function readSearchQuery(): string {
+  try {
+    return sessionStorage.getItem(SEARCH_STATE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
 export default function ClinicalRecordsList({
   patients,
   onSelect,
@@ -30,7 +44,7 @@ export default function ClinicalRecordsList({
   patients: RealPatient[];
   onSelect: (patientId: string) => void;
 }) {
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(readSearchQuery());
   const [summary, setSummary] = useState<Summary | null>(null);
   const [pendingRips, setPendingRips] = useState<PendingRipsPatient[]>([]);
   const [showPendingRips, setShowPendingRips] = useState(false);
@@ -64,6 +78,10 @@ export default function ClinicalRecordsList({
     fetchSummary();
     fetchPendingRips();
   }, []);
+
+  useEffect(() => {
+    sessionStorage.setItem(SEARCH_STATE_KEY, query);
+  }, [query]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -126,14 +144,24 @@ export default function ClinicalRecordsList({
       )}
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-        <div className="relative mb-4">
+        <div className="relative mb-4 max-w-md">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Buscar por nombre o documento..."
-            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-3 text-sm text-slate-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-500 focus:ring-2 focus:ring-toast-500/20"
+            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-9 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
           />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              title="Limpiar búsqueda"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-200 hover:text-charcoal-900 cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
 
         <ul className="flex flex-col divide-y divide-slate-200">

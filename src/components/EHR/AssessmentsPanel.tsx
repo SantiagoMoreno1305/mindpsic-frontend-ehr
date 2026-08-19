@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
   ClipboardList, Search, X, Loader2, CheckCircle2, AlertTriangle,
-  ShieldAlert, Lock,
+  ShieldAlert, Lock, Send,
 } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
@@ -90,6 +90,7 @@ export default function AssessmentsPanel() {
   const [query, setQuery] = useState('');
   const [runnerId, setRunnerId] = useState<string | null>(null);
   const [assignTarget, setAssignTarget] = useState<CatalogItem | null>(null);
+  const [linkTarget, setLinkTarget] = useState<AdministrationRow | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -145,24 +146,35 @@ export default function AssessmentsPanel() {
           </h2>
           <div className="space-y-2">
             {pending.map((a) => (
-              <button
+              <div
                 key={a.id}
-                onClick={() => setRunnerId(a.id)}
-                className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-left transition-colors hover:border-toast-500 hover:bg-toast-50"
+                className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 p-3"
               >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-slate-900">
+                <button
+                  onClick={() => setRunnerId(a.id)}
+                  className="min-w-0 flex-1 text-left"
+                >
+                  <p className="truncate text-sm font-semibold text-slate-900 hover:text-toast-500">
                     {a.instrument.code} · {a.patient.firstName} {a.patient.lastName}
                   </p>
                   <p className="truncate text-xs text-slate-500">
                     Asignada {formatDate(a.assignedAt)}
                     {a.companyName && ` · ${a.companyName}`}
                   </p>
+                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    onClick={() => setLinkTarget(a)}
+                    title="Enviar enlace al paciente"
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold uppercase text-slate-600 hover:border-toast-500 hover:text-toast-500"
+                  >
+                    <Send className="h-3 w-3" /> Enlace
+                  </button>
+                  <span className={`rounded-md px-2 py-1 text-[10px] font-bold uppercase ${STATUS_STYLE[a.status]}`}>
+                    {STATUS_LABEL[a.status]}
+                  </span>
                 </div>
-                <span className={`shrink-0 rounded-md px-2 py-1 text-[10px] font-bold uppercase ${STATUS_STYLE[a.status]}`}>
-                  {STATUS_LABEL[a.status]}
-                </span>
-              </button>
+              </div>
             ))}
           </div>
         </section>
@@ -268,14 +280,24 @@ export default function AssessmentsPanel() {
         </section>
       )}
 
+      {linkTarget && (
+        <SendLinkModal
+          administration={linkTarget}
+          onClose={() => setLinkTarget(null)}
+          onSent={() => { setLinkTarget(null); load(); }}
+        />
+      )}
+
       {assignTarget && (
         <AssignModal
           instrument={assignTarget}
           onClose={() => setAssignTarget(null)}
-          onAssigned={(administrationId) => {
+          onAssigned={(administrationId, sentToPatient) => {
             setAssignTarget(null);
             load();
-            setRunnerId(administrationId);
+            // Si la responde el paciente por enlace, el profesional no abre el
+            // runner: quedaría respondiendo la prueba de su propio paciente.
+            if (!sentToPatient) setRunnerId(administrationId);
           }}
         />
       )}
@@ -291,7 +313,7 @@ function AssignModal({
 }: {
   instrument: CatalogItem;
   onClose: () => void;
-  onAssigned: (administrationId: string) => void;
+  onAssigned: (administrationId: string, sentToPatient: boolean) => void;
 }) {
   const { companies } = useCompanies();
   const [query, setQuery] = useState('');
@@ -302,6 +324,10 @@ function AssignModal({
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  // Autoaplicación por enlace. El vencimiento es obligatorio para poder
+  // enviarlo — depende de la situación clínica, así que no se asume.
+  const [sendLink, setSendLink] = useState(false);
+  const [expiresInHours, setExpiresInHours] = useState('72');
 
   useEffect(() => {
     const handle = setTimeout(async () => {
@@ -342,8 +368,30 @@ function AssignModal({
         toast.error(data?.error || 'No se pudo asignar la prueba.');
         return;
       }
-      toast.success(`${instrument.code} asignada a ${selected.firstName} ${selected.lastName}.`);
-      onAssigned(data.administration.id);
+      const administrationId = data.administration.id;
+
+      if (sendLink) {
+        const linkRes = await apiFetch(
+          `/api/assessments/administrations/${administrationId}/link`,
+          { method: 'POST', body: JSON.stringify({ expiresInHours: Number(expiresInHours) }) }
+        );
+        const linkData = await linkRes.json();
+        if (!linkRes.ok) {
+          // La aplicación ya quedó creada; solo falló el envío. Se informa sin
+          // perder el trabajo — el profesional puede reenviar desde la lista.
+          toast.error(linkData?.error || 'Se asignó, pero no se pudo enviar el enlace.');
+          onAssigned(administrationId, true);
+          return;
+        }
+        const destino = linkData.sentTo?.email || linkData.sentTo?.phone;
+        toast.success(destino
+          ? `Enlace enviado a ${destino}.`
+          : 'Enlace generado (el paciente no tiene correo ni teléfono registrado).');
+      } else {
+        toast.success(`${instrument.code} asignada a ${selected.firstName} ${selected.lastName}.`);
+      }
+
+      onAssigned(administrationId, sendLink);
     } catch (err) {
       console.error('[AssignModal] Error asignando:', err);
       toast.error('No se pudo asignar la prueba.');
@@ -459,6 +507,45 @@ function AssignModal({
           </label>
         </div>
 
+        {/* Autoaplicación por enlace */}
+        <div className="mb-4 rounded-lg border border-slate-200 p-3">
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={sendLink}
+              onChange={(e) => setSendLink(e.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-toast-500"
+            />
+            <span>
+              <span className="font-semibold text-slate-900">Enviar enlace al paciente</span>
+              <span className="block text-xs text-slate-500">
+                Lo responde por su cuenta. Abre el enlace con su número de documento.
+              </span>
+            </span>
+          </label>
+
+          {sendLink && (
+            <div className="mt-3 border-t border-slate-100 pt-3">
+              <label className="text-xs font-semibold text-slate-600">
+                Vence en (horas) <span className="text-red-600">*</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={720}
+                  value={expiresInHours}
+                  onChange={(e) => setExpiresInHours(e.target.value)}
+                  className="mt-1 w-32 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-toast-500"
+                />
+              </label>
+              <p className="mt-1.5 text-xs text-slate-400">
+                Por defecto 72 h. Ten en cuenta el periodo que evalúa la prueba
+                {instrument.durationMin ? '' : ''}: si el paciente responde muy tarde, el
+                resultado ya no refleja el momento en que la asignaste.
+              </p>
+            </div>
+          )}
+        </div>
+
         <div className="flex justify-end gap-2">
           <button
             onClick={onClose}
@@ -468,12 +555,107 @@ function AssignModal({
           </button>
           <button
             onClick={assign}
-            disabled={!selected || assigning}
+            disabled={!selected || assigning || (sendLink && !Number(expiresInHours))}
             className="inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2 text-xs font-bold text-white hover:opacity-90 disabled:opacity-40"
           >
             {assigning
               ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Asignando…</>
-              : <><ClipboardList className="h-3.5 w-3.5" /> Asignar prueba</>}
+              : <><ClipboardList className="h-3.5 w-3.5" /> {sendLink ? 'Asignar y enviar' : 'Asignar prueba'}</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reenvío del enlace de autoaplicación — para cuando el anterior venció o el
+// paciente lo perdió. Generar uno nuevo revoca el anterior, así que nunca hay
+// dos enlaces válidos para la misma prueba.
+// ─────────────────────────────────────────────────────────────────────────────
+function SendLinkModal({
+  administration, onClose, onSent,
+}: {
+  administration: AdministrationRow;
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const [expiresInHours, setExpiresInHours] = useState('72');
+  const [sending, setSending] = useState(false);
+
+  const send = async () => {
+    setSending(true);
+    try {
+      const res = await apiFetch(
+        `/api/assessments/administrations/${administration.id}/link`,
+        { method: 'POST', body: JSON.stringify({ expiresInHours: Number(expiresInHours) }) }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data?.error || 'No se pudo enviar el enlace.');
+        return;
+      }
+      const destino = data.sentTo?.email || data.sentTo?.phone;
+      toast.success(destino
+        ? `Enlace enviado a ${destino}.`
+        : 'Enlace generado (el paciente no tiene correo ni teléfono registrado).');
+      onSent();
+    } catch (err) {
+      console.error('[SendLinkModal] Error enviando enlace:', err);
+      toast.error('No se pudo enviar el enlace.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+        <div className="mb-4 flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-bold text-slate-900">Enviar enlace al paciente</h3>
+            <p className="text-xs text-slate-500">
+              {administration.instrument.code} · {administration.patient.firstName}{' '}
+              {administration.patient.lastName}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-900">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <label className="text-xs font-semibold text-slate-600">
+          Vence en (horas) <span className="text-red-600">*</span>
+          <input
+            autoFocus
+            type="number"
+            min={1}
+            max={720}
+            value={expiresInHours}
+            onChange={(e) => setExpiresInHours(e.target.value)}
+            className="mt-1 w-32 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-toast-500"
+          />
+        </label>
+        <p className="mt-2 text-xs text-slate-400">
+          El paciente abrirá el enlace con su número de documento. Si ya existía un enlace
+          para esta prueba, quedará anulado.
+        </p>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={send}
+            disabled={sending || !Number(expiresInHours)}
+            className="inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2 text-xs font-bold text-white hover:opacity-90 disabled:opacity-40"
+          >
+            {sending
+              ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Enviando…</>
+              : <><Send className="h-3.5 w-3.5" /> Enviar enlace</>}
           </button>
         </div>
       </div>
