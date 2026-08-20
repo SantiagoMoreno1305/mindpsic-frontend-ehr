@@ -7,6 +7,7 @@ import {
 import ClinicalHistoryEditor from './ClinicalHistoryEditor';
 import ClinicalAttachments from './ClinicalAttachments';
 import InitialAssessmentWizard from './InitialAssessmentWizard';
+import PatientInvitationCard from './PatientInvitationCard';
 
 interface RipsDiagnosis {
   id: string;
@@ -317,6 +318,16 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
           )}
         </div>
       </div>
+
+      {/* ═══ App móvil ═══
+          Va fuera de las pestañas a propósito: saber si el paciente tiene la
+          app condiciona lo que el especialista puede pedirle desde cualquiera
+          de ellas. */}
+      <PatientInvitationCard
+        patientId={patient.id}
+        patientName={`${patient.firstName} ${patient.lastName}`}
+        tieneDocumento={Boolean(patient.documentId)}
+      />
 
       {/* ═══ Tabs ═══ */}
       <div className="flex gap-1 overflow-x-auto border-b border-slate-200">
