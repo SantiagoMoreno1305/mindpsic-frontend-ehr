@@ -8,6 +8,7 @@ import { User, Patient, resolveRole } from './types';
 import { WorkspaceContext } from './components/ContextSwitcher';
 import Login from './pages/Login';
 import SignConsent from './pages/SignConsent';
+import InvitationLanding from './pages/InvitationLanding';
 import AnswerAssessment from './pages/AnswerAssessment';
 import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
@@ -406,6 +407,18 @@ export default function App() {
   // ============================================================================
   if (window.location.pathname.startsWith('/evaluacion/')) {
     return <AnswerAssessment />;
+  }
+
+  // ============================================================================
+  // PANTALLA PÚBLICA DE INVITACIÓN A LA APP — /invitacion/:code
+  //
+  // Mismo modelo que las dos anteriores: sin cuenta, el código opaco de la URL
+  // es la credencial. La diferencia es que esta página no es el destino sino un
+  // puente — el flujo termina dentro de la app móvil. Por eso intenta abrirla y
+  // muestra el código como salida cuando el enlace profundo no funciona.
+  // ============================================================================
+  if (window.location.pathname.startsWith('/invitacion/')) {
+    return <InvitationLanding />;
   }
 
   return (
