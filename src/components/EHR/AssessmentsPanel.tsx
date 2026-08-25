@@ -49,7 +49,10 @@ interface AdministrationRow {
   companyName: string | null;
   instrument: { code: string; name: string; version: string; tier: string };
   patient: { id: string; firstName: string; lastName: string; recordNumber: string | null };
-  results: { scaleId: string; rawScore: number; maxTheoretical: number; label: string | null }[];
+  results: {
+    scaleId: string; rawScore: number; maxTheoretical: number;
+    label: string | null; isPrimary: boolean;
+  }[];
   firedAlerts: { alertId: string; severity: string }[];
 }
 
@@ -81,6 +84,74 @@ function formatDate(iso?: string | null) {
   return new Date(iso).toLocaleDateString('es-CO', {
     day: '2-digit', month: 'short', year: 'numeric',
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Vencimiento del enlace de autoaplicación
+//
+// La unidad que viaja al backend es el MINUTO. La casilla "Una semana" cubre el
+// caso normal sin hacer pensar al profesional; al desmarcarla se pide el valor
+// exacto, y en minutos se puede fijar un vencimiento corto para comprobar de
+// verdad que el enlace caduca.
+// ─────────────────────────────────────────────────────────────────────────────
+const WEEK_IN_MINUTES = 7 * 24 * 60;
+const MAX_MINUTES = 30 * 24 * 60;
+
+function useLinkExpiry() {
+  const [useWeek, setUseWeek] = useState(true);
+  const [customMinutes, setCustomMinutes] = useState('10');
+
+  const minutes = useWeek ? WEEK_IN_MINUTES : Number(customMinutes);
+  const valid = Number.isInteger(minutes) && minutes >= 1 && minutes <= MAX_MINUTES;
+
+  return { useWeek, setUseWeek, customMinutes, setCustomMinutes, minutes, valid };
+}
+
+function describeExpiry(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes <= 0) return '—';
+  const when = new Date(Date.now() + minutes * 60 * 1000);
+  return when.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function LinkExpiryFields({ expiry, autoFocus }: {
+  expiry: ReturnType<typeof useLinkExpiry>;
+  autoFocus?: boolean;
+}) {
+  return (
+    <div>
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={expiry.useWeek}
+          onChange={(e) => expiry.setUseWeek(e.target.checked)}
+          className="h-4 w-4 accent-toast-500"
+        />
+        <span className="font-semibold text-slate-900">Semana</span>
+        <span className="text-xs text-slate-500">— el enlace vence en 7 días</span>
+      </label>
+
+      {!expiry.useWeek && (
+        <label className="mt-3 block text-xs font-semibold text-slate-600">
+          Vence en (minutos) <span className="text-red-600">*</span>
+          <input
+            autoFocus={autoFocus}
+            type="number"
+            min={1}
+            max={MAX_MINUTES}
+            value={expiry.customMinutes}
+            onChange={(e) => expiry.setCustomMinutes(e.target.value)}
+            className="mt-1 w-32 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-toast-500"
+          />
+        </label>
+      )}
+
+      <p className="mt-2 text-xs text-slate-400">
+        {expiry.valid
+          ? <>Vence el <span className="font-semibold text-slate-600">{describeExpiry(expiry.minutes)}</span>.</>
+          : <span className="text-red-600">Indica un número de minutos entre 1 y {MAX_MINUTES}.</span>}
+      </p>
+    </div>
+  );
 }
 
 export default function AssessmentsPanel() {
@@ -246,7 +317,10 @@ export default function AssessmentsPanel() {
           </h2>
           <div className="space-y-2">
             {completed.map((a) => {
-              const primary = a.results[0];
+              // La escala principal, no la primera por orden alfabético: para
+              // el BDI-II eso mostraba la dimensión cognitiva (x/39) en lugar
+              // de la puntuación total (x/63).
+              const primary = a.results.find((r) => r.isPrimary) || a.results[0];
               const critical = a.firedAlerts.some((x) => x.severity === 'CRITICA');
               return (
                 <button
@@ -327,7 +401,7 @@ function AssignModal({
   // Autoaplicación por enlace. El vencimiento es obligatorio para poder
   // enviarlo — depende de la situación clínica, así que no se asume.
   const [sendLink, setSendLink] = useState(false);
-  const [expiresInHours, setExpiresInHours] = useState('72');
+  const expiry = useLinkExpiry();
 
   useEffect(() => {
     const handle = setTimeout(async () => {
@@ -373,7 +447,7 @@ function AssignModal({
       if (sendLink) {
         const linkRes = await apiFetch(
           `/api/assessments/administrations/${administrationId}/link`,
-          { method: 'POST', body: JSON.stringify({ expiresInHours: Number(expiresInHours) }) }
+          { method: 'POST', body: JSON.stringify({ expiresInMinutes: expiry.minutes }) }
         );
         const linkData = await linkRes.json();
         if (!linkRes.ok) {
@@ -526,21 +600,10 @@ function AssignModal({
 
           {sendLink && (
             <div className="mt-3 border-t border-slate-100 pt-3">
-              <label className="text-xs font-semibold text-slate-600">
-                Vence en (horas) <span className="text-red-600">*</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={720}
-                  value={expiresInHours}
-                  onChange={(e) => setExpiresInHours(e.target.value)}
-                  className="mt-1 w-32 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-toast-500"
-                />
-              </label>
+              <LinkExpiryFields expiry={expiry} />
               <p className="mt-1.5 text-xs text-slate-400">
-                Por defecto 72 h. Ten en cuenta el periodo que evalúa la prueba
-                {instrument.durationMin ? '' : ''}: si el paciente responde muy tarde, el
-                resultado ya no refleja el momento en que la asignaste.
+                Ten en cuenta el periodo que evalúa la prueba: si el paciente responde muy
+                tarde, el resultado ya no refleja el momento en que la asignaste.
               </p>
             </div>
           )}
@@ -555,7 +618,7 @@ function AssignModal({
           </button>
           <button
             onClick={assign}
-            disabled={!selected || assigning || (sendLink && !Number(expiresInHours))}
+            disabled={!selected || assigning || (sendLink && !expiry.valid)}
             className="inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2 text-xs font-bold text-white hover:opacity-90 disabled:opacity-40"
           >
             {assigning
@@ -580,7 +643,7 @@ function SendLinkModal({
   onClose: () => void;
   onSent: () => void;
 }) {
-  const [expiresInHours, setExpiresInHours] = useState('72');
+  const expiry = useLinkExpiry();
   const [sending, setSending] = useState(false);
 
   const send = async () => {
@@ -588,7 +651,7 @@ function SendLinkModal({
     try {
       const res = await apiFetch(
         `/api/assessments/administrations/${administration.id}/link`,
-        { method: 'POST', body: JSON.stringify({ expiresInHours: Number(expiresInHours) }) }
+        { method: 'POST', body: JSON.stringify({ expiresInMinutes: expiry.minutes }) }
       );
       const data = await res.json();
       if (!res.ok) {
@@ -624,18 +687,7 @@ function SendLinkModal({
           </button>
         </div>
 
-        <label className="text-xs font-semibold text-slate-600">
-          Vence en (horas) <span className="text-red-600">*</span>
-          <input
-            autoFocus
-            type="number"
-            min={1}
-            max={720}
-            value={expiresInHours}
-            onChange={(e) => setExpiresInHours(e.target.value)}
-            className="mt-1 w-32 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-toast-500"
-          />
-        </label>
+        <LinkExpiryFields expiry={expiry} autoFocus />
         <p className="mt-2 text-xs text-slate-400">
           El paciente abrirá el enlace con su número de documento. Si ya existía un enlace
           para esta prueba, quedará anulado.
@@ -650,7 +702,7 @@ function SendLinkModal({
           </button>
           <button
             onClick={send}
-            disabled={sending || !Number(expiresInHours)}
+            disabled={sending || !expiry.valid}
             className="inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2 text-xs font-bold text-white hover:opacity-90 disabled:opacity-40"
           >
             {sending
