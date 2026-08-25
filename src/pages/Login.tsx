@@ -24,6 +24,7 @@ import {
   LockKeyhole,
   FileText
 } from 'lucide-react';
+import ForgotPasswordModal from '../components/ForgotPasswordModal';
 
 // ---------------------------------------------------------------------------
 // Configuración del backend
@@ -57,6 +58,7 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
   const [showPassword, setShowPassword] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   // ── Manejo del envío ──
   const handleSubmit = async (e: React.FormEvent) => {
@@ -423,6 +425,15 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
                     )}
                   </button>
                 </div>
+                <div className="mt-1.5 text-right">
+                  <button
+                    type="button"
+                    onClick={() => setShowForgotPassword(true)}
+                    className="text-[11px] text-stone-500 hover:text-stone-800 transition-colors cursor-pointer"
+                  >
+                    ¿Olvidaste tu contraseña?
+                  </button>
+                </div>
               </div>
 
               {/* Error */}
@@ -500,6 +511,16 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
           </p>
         </div>
       </div>
+
+      <ForgotPasswordModal
+        isOpen={showForgotPassword}
+        onClose={() => setShowForgotPassword(false)}
+        onSuccess={(recoveredEmail) => {
+          setEmail(recoveredEmail);
+          setPassword('');
+          setErrorMessage('');
+        }}
+      />
     </div>
   );
 }
