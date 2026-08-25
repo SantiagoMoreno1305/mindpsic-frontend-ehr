@@ -21,6 +21,7 @@ import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
+import AssessmentsPanel from '../components/EHR/AssessmentsPanel';
 import CalendarPanel, { type CalendarAppointment } from '../components/EHR/CalendarPanel';
 import { apiFetch } from '../lib/apiClient';
 import { 
@@ -61,10 +62,11 @@ import {
   EyeOff,
   History,
   ClipboardX,
+  ClipboardList,
   Bell
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
 
 export default function AdminPortal() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -646,7 +648,7 @@ export default function AdminPortal() {
   // Recuerda la última tab visitada entre recargas — sin esto, cualquier
   // refresh de página remonta el componente y activeTab vuelve a su default
   // ('metrics' / "Tablero Gerencial"), sin importar dónde estaba el usuario.
-  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'equipo', 'convenios', 'billing_rips', 'chat'];
+  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'billing_rips', 'chat'];
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     const saved = localStorage.getItem('mind_admin_active_tab');
     return (saved && (ADMIN_TABS as string[]).includes(saved)) ? (saved as AdminTab) : 'metrics';
@@ -1581,6 +1583,22 @@ export default function AdminPortal() {
             {activeTab === 'clinical_history' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
+          {/* Pruebas y Evaluaciones — el administrativo asigna y hace seguimiento;
+              la lectura clínica del resultado sigue siendo del profesional. */}
+          <button
+            onClick={() => setActiveTab('evaluations')}
+            id="tab-adm-evaluaciones"
+            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+              activeTab === 'evaluations'
+                ? 'bg-charcoal-900 text-white font-semibold'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <ClipboardList className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Pruebas y Evaluaciones</span>
+            {activeTab === 'evaluations' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+          </button>
+
           {/* Equipo / Aprovisionamiento RBAC */}
           <button
             onClick={() => setActiveTab('equipo')}
@@ -2282,6 +2300,9 @@ export default function AdminPortal() {
             )}
           </div>
         )}
+
+        {/* VIEW: PRUEBAS Y EVALUACIONES */}
+        {activeTab === 'evaluations' && <AssessmentsPanel />}
 
         {/* VIEW: EQUIPO Y ACCESOS — Aprovisionamiento RBAC de Usuarios (Migrado) */}
         {activeTab === 'equipo' && (

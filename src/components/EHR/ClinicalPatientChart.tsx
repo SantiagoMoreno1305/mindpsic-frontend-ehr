@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, CalendarClock, ClipboardList,
-  Plus, Trash2, Loader2, Pencil, X,
+  Plus, Trash2, Loader2, Pencil, X, AlertTriangle,
 } from 'lucide-react';
 import ClinicalHistoryEditor from './ClinicalHistoryEditor';
 import ClinicalAttachments from './ClinicalAttachments';
@@ -121,10 +121,23 @@ interface InitialAssessmentData {
   householdMembers: HouseholdMember[];
 }
 
+interface RiskEvent {
+  id: string;
+  previousLevel: string;
+  newLevel: string;
+  severity: string;
+  instrumentCode: string | null;
+  alertIds: string[];
+  reason: string;
+  acknowledgedAt: string | null;
+  createdAt: string;
+}
+
 interface ChartResponse {
   patient: PatientChart;
   ripsDiagnosis: RipsDiagnosis | null;
   assessments: Assessment[];
+  riskEvents: RiskEvent[];
   firstSession: string | null;
   lastSession: string | null;
   nextAppointment: string | null;
@@ -239,7 +252,7 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
     );
   }
 
-  const { patient, ripsDiagnosis, assessments, firstSession, lastSession, nextAppointment, initialAssessment, initialAssessmentGate } = data;
+  const { patient, ripsDiagnosis, assessments, riskEvents, firstSession, lastSession, nextAppointment, initialAssessment, initialAssessmentGate } = data;
   const age = calcAge(patient.birthDate);
   const initials = `${patient.firstName?.[0] ?? ''}${patient.lastName?.[0] ?? ''}`.toUpperCase();
 
@@ -364,6 +377,7 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
         {tab === 'evaluaciones' && (
           <EvaluacionesTab
             patientId={patientId}
+            riskEvents={riskEvents || []}
             assessments={assessments}
             onChange={(next) => setData((prev) => (prev ? { ...prev, assessments: next } : prev))}
           />
@@ -960,7 +974,12 @@ function EditContactModal({ patient, onClose, onSave }: {
   );
 }
 
-function EvaluacionesTab({ patientId, assessments, onChange }: { patientId: string; assessments: Assessment[]; onChange: (next: Assessment[]) => void }) {
+function EvaluacionesTab({ patientId, assessments, riskEvents, onChange }: {
+  patientId: string;
+  assessments: Assessment[];
+  riskEvents: RiskEvent[];
+  onChange: (next: Assessment[]) => void;
+}) {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('');
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -999,6 +1018,35 @@ function EvaluacionesTab({ patientId, assessments, onChange }: { patientId: stri
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Escaladas automáticas de riesgo. Van primero y con peso visual: el
+          badge de la cabecera cambió solo, y esto explica por qué. */}
+      {riskEvents.map((ev) => (
+        <div
+          key={ev.id}
+          className={`rounded-xl border-2 p-4 ${
+            ev.newLevel === 'alto'
+              ? 'border-red-300 bg-red-50'
+              : 'border-amber-200 bg-amber-50'
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <AlertTriangle className={`mt-0.5 h-5 w-5 shrink-0 ${
+              ev.newLevel === 'alto' ? 'text-red-600' : 'text-amber-600'
+            }`} />
+            <div className="flex-1">
+              <p className={`text-xs font-bold uppercase tracking-wide ${
+                ev.newLevel === 'alto' ? 'text-red-700' : 'text-amber-700'
+              }`}>
+                Riesgo {ev.previousLevel} → {ev.newLevel}
+                {ev.instrumentCode && ` · ${ev.instrumentCode}`}
+              </p>
+              <p className="mt-1 text-sm leading-relaxed text-slate-800">{ev.reason}</p>
+              <p className="mt-1.5 text-xs text-slate-500">{formatDate(ev.createdAt)}</p>
+            </div>
+          </div>
+        </div>
+      ))}
+
       <button
         onClick={() => setShowForm((v) => !v)}
         className="inline-flex w-fit items-center gap-2 rounded-lg bg-toast-500 px-4 py-2.5 text-sm font-semibold text-white transition-opacity hover:opacity-90"
