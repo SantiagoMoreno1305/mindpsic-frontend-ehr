@@ -30,17 +30,19 @@ export interface CalendarAppointment {
   [key: string]: any;
 }
 
-export type ApptStatusKey = 'pendiente' | 'atendida' | 'no_atendido' | 'reprogramada';
+export type ApptStatusKey = 'pendiente' | 'atendida' | 'no_atendido' | 'reprogramada' | 'cancelada';
 
 const STATUS_STYLES: Record<ApptStatusKey, { chip: string; dot: string; label: string }> = {
   pendiente:    { chip: 'border-toast-300 bg-toast-100 text-toast-500',      dot: 'bg-toast-500',   label: 'Pendiente' },
   atendida:     { chip: 'border-emerald-300 bg-emerald-50 text-emerald-700', dot: 'bg-emerald-500', label: 'Atendida' },
   no_atendido:  { chip: 'border-rose-300 bg-rose-50 text-rose-700',          dot: 'bg-rose-500',    label: 'No Atendido' },
   reprogramada: { chip: 'border-indigo-300 bg-indigo-50 text-indigo-700',    dot: 'bg-indigo-500',  label: 'Reprogramada' },
+  cancelada:    { chip: 'border-slate-300 bg-slate-100 text-slate-500',      dot: 'bg-slate-400',   label: 'Cancelada' },
 };
 
 export function normalizeStatus(status: string): ApptStatusKey {
   const s = (status || '').toLowerCase();
+  if (s.includes('cancel')) return 'cancelada';
   if (s.includes('no atend')) return 'no_atendido';
   if (s.includes('atend')) return 'atendida';
   if (s.includes('reprogram')) return 'reprogramada';
