@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, FileText, Users, ChevronRight, ClipboardX, X } from 'lucide-react';
+import { Search, FileText, Users, ChevronLeft, ChevronRight, ClipboardX, X } from 'lucide-react';
+
+const PAGE_SIZE = 10;
 
 interface RealPatient {
   id: string;
@@ -48,6 +50,7 @@ export default function ClinicalRecordsList({
   const [summary, setSummary] = useState<Summary | null>(null);
   const [pendingRips, setPendingRips] = useState<PendingRipsPatient[]>([]);
   const [showPendingRips, setShowPendingRips] = useState(false);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     const token = localStorage.getItem('mind_token');
@@ -91,6 +94,19 @@ export default function ClinicalRecordsList({
       return name.includes(q) || p.documentId?.toLowerCase().includes(q);
     });
   }, [patients, query]);
+
+  // La búsqueda cambia el conjunto de resultados — si te quedabas en la
+  // página 3 de la lista completa, un filtro que deja solo 1 resultado no
+  // debe seguir mostrando una página vacía.
+  useEffect(() => {
+    setPage(1);
+  }, [query]);
+
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const rangeEnd = Math.min(page * PAGE_SIZE, total);
+  const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -165,27 +181,27 @@ export default function ClinicalRecordsList({
         </div>
 
         <ul className="flex flex-col divide-y divide-slate-200">
-          {filtered.map((p) => {
+          {paginated.map((p) => {
             const initials = `${p.firstName?.[0] ?? ''}${p.lastName?.[0] ?? ''}`.toUpperCase();
             return (
               <li key={p.id}>
                 <button
                   onClick={() => onSelect(p.id)}
-                  className="group flex w-full items-center gap-4 py-3 text-left transition-colors hover:bg-slate-50 sm:rounded-lg sm:px-3"
+                  className="group flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-slate-50 sm:rounded-lg sm:px-3"
                 >
-                  <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-toast-100 text-sm font-bold text-toast-500">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-toast-100 text-xs font-bold text-toast-500">
                     {initials}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold text-slate-900">
+                    <p className="truncate text-sm font-semibold text-slate-900">
                       {p.firstName} {p.lastName}
                     </p>
-                    <p className="mt-0.5 truncate text-xs text-slate-400">
+                    <p className="mt-0.5 truncate text-[11px] text-slate-400">
                       Documento: {p.documentId}
                       {p.email ? ` · ${p.email}` : ''}
                     </p>
                   </div>
-                  <ChevronRight className="h-5 w-5 shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5" />
+                  <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5" />
                 </button>
               </li>
             );
@@ -196,6 +212,33 @@ export default function ClinicalRecordsList({
             </li>
           )}
         </ul>
+
+        {total > 0 && (
+          <div className="mt-4 flex flex-col items-center justify-between gap-2 border-t border-slate-100 pt-3 sm:flex-row">
+            <span className="text-xs text-slate-400">
+              Mostrando {rangeStart}–{rangeEnd} de {total.toLocaleString('es-CO')}
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-toast-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" /> Anterior
+              </button>
+              <span className="px-2 text-xs text-slate-400">Página {page} de {totalPages}</span>
+              <button
+                type="button"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-toast-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Siguiente <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -218,13 +261,13 @@ function StatCard({
   return (
     <Wrapper
       onClick={onClick}
-      className={`rounded-xl border border-slate-200 bg-white p-4 text-left shadow-sm ${onClick ? 'cursor-pointer transition-colors hover:bg-slate-50' : ''}`}
+      className={`rounded-xl border border-slate-200 bg-white p-3 text-left shadow-sm ${onClick ? 'cursor-pointer transition-colors hover:bg-slate-50' : ''}`}
     >
-      <div className="flex items-center gap-2 text-slate-400">
-        <Icon className="h-4 w-4" />
-        <span className="text-xs font-medium">{label}</span>
+      <div className="flex items-center gap-1.5 text-slate-400">
+        <Icon className="h-3.5 w-3.5" />
+        <span className="text-[11px] font-medium">{label}</span>
       </div>
-      <p className={highlight ? 'mt-1 text-2xl font-bold text-amber-600' : 'mt-1 text-2xl font-bold text-slate-900'}>
+      <p className={highlight ? 'mt-0.5 text-lg font-bold text-amber-600' : 'mt-0.5 text-lg font-bold text-slate-900'}>
         {value}
       </p>
     </Wrapper>

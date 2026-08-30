@@ -123,6 +123,30 @@ const STEPS = [
 function apiBase() {
   return import.meta.env.VITE_API_URL || 'http://localhost:9000';
 }
+
+// Mismo límite y catálogo que valida el backend (ALLOWED_ATTACHMENT_MIME_TYPES
+// en clinical-history.controller.js) — feedback inmediato, no reemplaza la
+// validación del servidor.
+const MAX_ANEXO_FILE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_ANEXO_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+]);
+
+function validateAnexoFile(file: File): string | null {
+  if (!ALLOWED_ANEXO_MIME_TYPES.has(file.type)) {
+    return 'Solo se aceptan documentos Word (.doc/.docx), imágenes o PDF.';
+  }
+  if (file.size > MAX_ANEXO_FILE_BYTES) {
+    return 'El archivo supera el límite de 10MB.';
+  }
+  return null;
+}
 function authHeaders() {
   const token = localStorage.getItem('mind_token');
   return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
@@ -652,7 +676,7 @@ export default function InitialAssessmentWizard({
 
         {step === 5 && (
           <div className="grid gap-4">
-            <Field label="Instrumentos o procedimientos diligenciados">
+            <Field label="Instrumentos o procedimientos diligenciados (opcional)">
               <div className="flex flex-wrap gap-2">
                 {INSTRUMENTOS_OPTIONS.map((opt) => (
                   <Chip key={opt} label={opt} active={form.instrumentosAplicados.includes(opt)} onClick={() => toggleMulti('instrumentosAplicados', opt)} />
@@ -749,14 +773,14 @@ export default function InitialAssessmentWizard({
         ) : (
           <div className="flex flex-col items-end gap-1">
             <button
-              type="button" onClick={handleSign} disabled={signing || !form.anexoInstrumentosDocId || !form.anexoConsentimientoDocId}
+              type="button" onClick={handleSign} disabled={signing || !form.anexoConsentimientoDocId}
               className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white hover:opacity-90 disabled:opacity-50"
             >
               {signing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
               Firmar y completar valoración
             </button>
-            {(!form.anexoInstrumentosDocId || !form.anexoConsentimientoDocId) && (
-              <span className="text-[11px] text-amber-600">Carga los 2 anexos (instrumentos y consentimiento/asentimiento) para poder firmar.</span>
+            {!form.anexoConsentimientoDocId && (
+              <span className="text-[11px] text-amber-600">Carga el anexo de consentimiento/asentimiento para poder firmar. El anexo de instrumentos es opcional.</span>
             )}
           </div>
         )}
@@ -866,11 +890,16 @@ function AnexoUpload({ patientId, docId, onUploaded, label }: { patientId: strin
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = async (file: File) => {
+    const validationError = validateAnexoFile(file);
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
     setUploading(true);
     try {
       const presignedRes = await fetch(`${apiBase()}/api/clinical-history/upload`, {
         method: 'POST', headers: authHeaders(),
-        body: JSON.stringify({ patientId, fileName: file.name, fileType: file.type }),
+        body: JSON.stringify({ patientId, fileName: file.name, fileType: file.type, fileSize: file.size }),
       });
       const presignedData = await presignedRes.json().catch(() => ({}));
       if (!presignedRes.ok || !presignedData.url || !presignedData.document) {
@@ -902,6 +931,7 @@ function AnexoUpload({ patientId, docId, onUploaded, label }: { patientId: strin
     <div className="rounded-lg border border-dashed border-slate-300 p-3">
       <input
         ref={inputRef} type="file" className="hidden"
+        accept=".pdf,.doc,.docx,image/*,application/pdf"
         onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }}
       />
       {docId ? (
