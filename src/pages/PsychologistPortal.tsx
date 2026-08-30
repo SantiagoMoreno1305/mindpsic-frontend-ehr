@@ -17,7 +17,7 @@ import { useAppointments } from '../hooks/useAppointments';
 import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
 import { toast } from 'react-hot-toast';
-import { NEW_APPOINTMENT_EVENT } from '../lib/apiClient';
+import { NEW_APPOINTMENT_EVENT, OPEN_APPOINTMENT_EVENT } from '../lib/apiClient';
 import {
   User,
   Patient,
@@ -182,6 +182,43 @@ export default function PsychologistPortal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Clic en una notificación de cita (campana, Navbar.tsx) — arma el objeto
+  // directo desde el `data` que ya trae la notificación (ver
+  // buildAppointmentNotifyData en appointment.controller.js) en vez de
+  // depender de que `realAppointments` ya haya cargado esa fecha (que puede
+  // estar fuera del rango de la semana/mes actualmente visible). El modal
+  // ya se auto-completa con el detalle real (sessionDetailInfo) al abrirse.
+  useEffect(() => {
+    const handleOpenAppointment = (e: Event) => {
+      const detail = (e as CustomEvent).detail || {};
+      if (!detail.appointmentId) return;
+      const appDate = new Date(detail.date || Date.now());
+      setActiveTab('dashboard');
+      setCurrentView('dashboard');
+      setSelectedSessionForModal({
+        id: detail.appointmentId,
+        patientName: detail.patientName || 'Paciente',
+        patientId: detail.patientId || 'unknown',
+        documentId: '',
+        phone: '',
+        corporateClient: '',
+        notes: '',
+        appDate,
+        dayIndex: appDate.getDay(),
+        timeSlot: detail.timeSlot || `${appDate.getHours().toString().padStart(2, '0')}:${appDate.getMinutes().toString().padStart(2, '0')}`,
+        atencionType: '',
+        estatus: 'Pendiente',
+        modalidad: detail.modality === 'PRESENCIAL' ? 'Presencial' : 'Virtual',
+        roomUrl: detail.roomUrl || 'https://meet.jit.si/mind_psic_default',
+        startHour: appDate.getHours(),
+        startMinute: appDate.getMinutes(),
+      });
+    };
+    window.addEventListener(OPEN_APPOINTMENT_EVENT, handleOpenAppointment);
+    return () => window.removeEventListener(OPEN_APPOINTMENT_EVENT, handleOpenAppointment);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ---------------------------------------------------------------
   // 1. Verificación de sesión al montar el componente
   // ---------------------------------------------------------------
@@ -259,8 +296,26 @@ export default function PsychologistPortal({
   // ---------------------------------------------------------------
   // Estados clínicos y de investigación
   // ---------------------------------------------------------------
-  const [currentView, setCurrentView] = useState<'dashboard' | 'history'>('dashboard');
-  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  // Igual que activeTab: sin persistir currentView/selectedPatientId, un
+  // refresh estando dentro de la ficha de un paciente (p. ej. en Evoluciones)
+  // perdía ambos y volvía al dashboard en vez de quedarse donde estaba.
+  const [currentView, setCurrentView] = useState<'dashboard' | 'history'>(() => {
+    const saved = localStorage.getItem('mind_psych_current_view');
+    return saved === 'history' ? 'history' : 'dashboard';
+  });
+  useEffect(() => {
+    localStorage.setItem('mind_psych_current_view', currentView);
+  }, [currentView]);
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(() => {
+    return localStorage.getItem('mind_psych_selected_patient_id') || null;
+  });
+  useEffect(() => {
+    if (selectedPatientId) {
+      localStorage.setItem('mind_psych_selected_patient_id', selectedPatientId);
+    } else {
+      localStorage.removeItem('mind_psych_selected_patient_id');
+    }
+  }, [selectedPatientId]);
   // Recuerda desde qué tab se entró a la ficha de un paciente (p. ej. desde
   // "Pacientes") para que "Volver" regrese ahí — antes siempre volvía al
   // listado de "Historias Clínicas", sin importar de dónde venías.
@@ -301,6 +356,8 @@ export default function PsychologistPortal({
     sessionsTaken: number;
     sessionsAuthorized: number | null;
     companyName: string | null;
+    cancelledAt: string | null;
+    cancelledByName: string | null;
   } | null>(null);
   const [loadingSessionDetail, setLoadingSessionDetail] = useState(false);
   const [rescheduleTarget, setRescheduleTarget] = useState<any>(null);
@@ -324,6 +381,8 @@ export default function PsychologistPortal({
           sessionsTaken: data.sessionsTaken ?? 0,
           sessionsAuthorized: data.activeAuthorization?.sessionsAuthorized ?? null,
           companyName: data.activeAuthorization?.companyName || data.patient?.companyName || null,
+          cancelledAt: match?.cancelledAt ?? null,
+          cancelledByName: match?.cancelledByName ?? null,
         });
       })
       .catch(() => { if (!cancelled) setSessionDetailInfo(null); })
@@ -1068,9 +1127,13 @@ export default function PsychologistPortal({
         };
         const isVirtual = selectedSessionForModal.modalidad !== 'Presencial';
         const statusLabel = sessionDetailInfo?.statusLabel || 'Programada';
+        // Una cita cancelada es un estado final — bloquea todas las acciones
+        // que la alterarían (unirse, marcar asistencia, cancelar de nuevo),
+        // no solo la reprogramación.
+        const isCancelled = statusLabel === 'Cancelada';
         // Igual que en el modal de edición: una cita ya atendida/cancelada, o
         // cuya fecha ya pasó, no se puede reprogramar.
-        const isLockedForReschedule = statusLabel === 'Atendida' || statusLabel === 'Cancelada' || start.getTime() < Date.now();
+        const isLockedForReschedule = statusLabel === 'Atendida' || isCancelled || start.getTime() < Date.now();
         const STATUS_TONE: Record<string, string> = {
           Programada: 'bg-toast-500/15 text-toast-300 border-toast-500/30',
           Atendida: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
@@ -1105,6 +1168,22 @@ export default function PsychologistPortal({
               </div>
 
               <div className="p-6 space-y-4">
+                {/* Aviso de cancelación — quién y cuándo, para no confundir una
+                    cancelación del paciente (autogestión, enlace de correo) con
+                    una hecha por staff desde este mismo portal. */}
+                {isCancelled && sessionDetailInfo?.cancelledByName && (
+                  <div className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <XCircle className="h-4 w-4 shrink-0 text-slate-400 mt-0.5" />
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                      Cancelada por <strong className="text-slate-800">{sessionDetailInfo.cancelledByName}</strong>
+                      {sessionDetailInfo.cancelledAt && (
+                        <> el {new Date(sessionDetailInfo.cancelledAt).toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' })}</>
+                      )}
+                      .
+                    </p>
+                  </div>
+                )}
+
                 {/* Paciente */}
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-center gap-3">
@@ -1183,7 +1262,7 @@ export default function PsychologistPortal({
                 {/* Acciones primarias */}
                 <div className="grid grid-cols-2 gap-3">
                   <button
-                    disabled={!isVirtual}
+                    disabled={!isVirtual || isCancelled}
                     onClick={() => {
                       startVideoSession({
                         id: selectedSessionForModal.id,
@@ -1201,8 +1280,9 @@ export default function PsychologistPortal({
                     <Video className="h-4 w-4" /> Unirse a videollamada
                   </button>
                   <button
+                    disabled={isCancelled}
                     onClick={() => handleMarkAttendance('Atendida')}
-                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-emerald-700 cursor-pointer"
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white transition-colors hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-emerald-600 cursor-pointer"
                   >
                     <CheckCircle2 className="h-4 w-4" /> Marcar asistencia
                   </button>
@@ -1237,14 +1317,16 @@ export default function PsychologistPortal({
                 </div>
                 <div className="flex items-center gap-4">
                   <button
+                    disabled={isCancelled}
                     onClick={() => handleMarkAttendance('No Atendido')}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 hover:text-rose-800 cursor-pointer"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 hover:text-rose-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-rose-600 cursor-pointer"
                   >
                     <XCircle className="h-3.5 w-3.5" /> No asistió
                   </button>
                   <button
+                    disabled={isCancelled}
                     onClick={handleCancelAppointment}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 hover:text-rose-800 cursor-pointer"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 hover:text-rose-800 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-rose-600 cursor-pointer"
                   >
                     <X className="h-3.5 w-3.5" /> Cancelar cita
                   </button>

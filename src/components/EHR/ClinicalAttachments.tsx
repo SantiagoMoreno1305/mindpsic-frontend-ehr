@@ -8,6 +8,42 @@ interface ClinicalDocumentEntry {
   fileType?: string;
   downloadUrl?: string;
   createdAt: string;
+  uploadedByName?: string | null;
+  sessionType?: string | null;
+  /** Fecha de la sesión (evolución) durante la que se subió — no siempre igual a createdAt. */
+  sessionDate?: string | null;
+}
+
+function formatFechaHora(iso: string) {
+  return new Date(iso).toLocaleString('es-CO', {
+    day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+// Mismo límite y catálogo que valida el backend (clinical-history.controller.js,
+// ALLOWED_ATTACHMENT_MIME_TYPES) — esta copia es solo para dar feedback
+// inmediato sin esperar la respuesta del servidor; la validación que de
+// verdad cuenta es la del backend, no esta.
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+]);
+const ACCEPT_ATTR = '.pdf,.doc,.docx,image/*,application/pdf';
+
+function validateFile(file: File): string | null {
+  if (!ALLOWED_MIME_TYPES.has(file.type)) {
+    return 'Solo se aceptan documentos Word (.doc/.docx), imágenes o PDF.';
+  }
+  if (file.size > MAX_FILE_SIZE_BYTES) {
+    return 'El archivo supera el límite de 10MB.';
+  }
+  return null;
 }
 
 export default function ClinicalAttachments({ patientId }: { patientId: string }) {
@@ -43,6 +79,12 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
   };
 
   const handleFileUpload = async (file: File) => {
+    const validationError = validateFile(file);
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
+
     setUploading(true);
     try {
       const token = localStorage.getItem('mind_token');
@@ -51,9 +93,12 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
       const presignedRes = await fetch(`${apiBase}/api/clinical-history/upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ patientId, fileName: file.name, fileType: file.type }),
+        body: JSON.stringify({ patientId, fileName: file.name, fileType: file.type, fileSize: file.size }),
       });
-      if (!presignedRes.ok) throw new Error('Error getting presigned URL');
+      if (!presignedRes.ok) {
+        const errBody = await presignedRes.json().catch(() => ({}));
+        throw new Error(errBody.error || 'Error getting presigned URL');
+      }
       const { url, document } = await presignedRes.json();
 
       const uploadRes = await fetch(url, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file });
@@ -68,9 +113,9 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
 
       toast.success('Archivo subido exitosamente');
       fetchDocuments();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error uploading file:', error);
-      toast.error('Error al subir el archivo');
+      toast.error(error?.message && error.message !== 'Error uploading to S3' ? error.message : 'Error al subir el archivo');
     } finally {
       setUploading(false);
     }
@@ -148,12 +193,13 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
       >
         <UploadCloud className="mb-4 h-10 w-10 text-slate-400" />
         <p className="mb-1 text-sm font-semibold text-slate-900">Arrastra archivos aquí</p>
-        <p className="mb-4 text-xs text-slate-400">o haz clic para seleccionar</p>
+        <p className="mb-1 text-xs text-slate-400">o haz clic para seleccionar</p>
+        <p className="mb-4 text-[10px] text-slate-400">Word (.doc/.docx), imágenes o PDF — máximo 10MB</p>
         <label className="cursor-pointer">
           <span className="rounded-xl bg-slate-100 px-5 py-2.5 text-xs font-bold text-slate-900 transition-colors hover:bg-slate-50">
             Examinar Archivos
           </span>
-          <input type="file" className="hidden" onChange={handleFileInput} disabled={uploading} />
+          <input type="file" accept={ACCEPT_ATTR} className="hidden" onChange={handleFileInput} disabled={uploading} />
         </label>
         {uploading && (
           <p className="mt-4 flex items-center text-xs font-semibold text-toast-500">
@@ -183,7 +229,11 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
                   </div>
                   <div className="ml-3 overflow-hidden">
                     <p className="truncate text-xs font-semibold text-slate-900" title={doc.fileName}>{doc.fileName}</p>
-                    <p className="text-[10px] text-slate-400">{new Date(doc.createdAt).toLocaleDateString()}</p>
+                    <p className="truncate text-[10px] text-slate-400">
+                      {formatFechaHora(doc.createdAt)}
+                      {doc.uploadedByName && <> · Subido por {doc.uploadedByName}</>}
+                      {doc.sessionType && <> · Sesión: {doc.sessionType}</>}
+                    </p>
                   </div>
                 </div>
                 {doc.downloadUrl && (

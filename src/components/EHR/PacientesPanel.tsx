@@ -14,7 +14,7 @@
  * se trae todo de una vez.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil } from 'lucide-react';
+import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal from './CreatePatientModal';
 import EditPatientModal from './EditPatientModal';
@@ -86,6 +86,7 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
   const [editOpen, setEditOpen] = useState(false);
   const [editPatientTarget, setEditPatientTarget] = useState<BackendPatient | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [sendingLinea247Id, setSendingLinea247Id] = useState<string | null>(null);
 
   // RENDIMIENTO: desde este panel se agenda constantemente, así que se precargan
   // los catálogos al montar para que el modal abra sin espera perceptible.
@@ -106,6 +107,24 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(null), 3500);
+  }
+
+  async function handleSendLinea247Access(patient: BackendPatient) {
+    setSendingLinea247Id(patient.id);
+    try {
+      const res = await apiFetch(`/api/patients/${patient.id}/linea247-access`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data?.error || 'No se pudo enviar el acceso a línea 24/7.');
+        return;
+      }
+      const destino = data.sentTo?.email || data.sentTo?.phone;
+      showToast(destino ? `Acceso a línea 24/7 enviado a ${destino}.` : `Usuario generado: ${data.username} (sin correo/teléfono para enviarlo).`);
+    } catch {
+      showToast('No se pudo contactar el servidor.');
+    } finally {
+      setSendingLinea247Id(null);
+    }
   }
 
   const fetchPatients = async () => {
@@ -186,67 +205,65 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
   }
 
   return (
-    <div className="mx-auto max-w-6xl">
-      {/* Header */}
-      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div className="text-left">
-          <h1 className="text-2xl font-bold tracking-tight text-charcoal-900">Pacientes</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Gestione el registro de pacientes, cree nuevas fichas y agende sus citas con el profesional a cargo.
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={openScheduleGeneral}
-            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 shadow-sm transition-colors hover:bg-toast-50 cursor-pointer"
-          >
-            <CalendarPlus className="h-4 w-4 text-toast-500" />
-            Agendar paciente
-          </button>
-          <button
-            onClick={() => setCreateOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-charcoal-800 cursor-pointer"
-          >
-            <UserPlus className="h-4 w-4" />
-            Crear nuevo paciente
-          </button>
-        </div>
+    <div className="mx-auto max-w-5xl">
+      {/* Header — solo título, sin botones ni stat sueltos flotando arriba. */}
+      <div className="mb-5 text-left">
+        <h1 className="text-2xl font-bold tracking-tight text-charcoal-900">Pacientes</h1>
+        <p className="mt-1 text-sm text-slate-500">
+          Gestione el registro de pacientes, cree nuevas fichas y agende sus citas con el profesional a cargo.
+        </p>
       </div>
 
-      {/* Stats */}
-      <div className="mb-5">
-        <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
-          <Users className="h-4 w-4 text-toast-500" />
-          <span className="text-xs font-medium text-slate-500">
-            {query.trim() ? 'Resultados de la búsqueda:' : 'Pacientes registrados:'}
-          </span>
-          <span className="text-sm font-bold text-charcoal-900">{total.toLocaleString('es-CO')}</span>
-        </div>
-      </div>
-
-      {/* Filters + table */}
+      {/* Filters + table — el stat de conteo y los botones de acción viven
+          adentro, en su propia fila, en vez de flotar sueltos arriba de la
+          caja. */}
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-        <div className="mb-4 relative max-w-md">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar por nombre o documento..."
-            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-9 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
-          />
-          {query && (
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+            <Users className="h-4 w-4 text-toast-500" />
+            <span className="text-xs font-medium text-slate-500">
+              {query.trim() ? 'Resultados de la búsqueda:' : 'Pacientes registrados:'}
+            </span>
+            <span className="text-sm font-bold text-charcoal-900">{total.toLocaleString('es-CO')}</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              type="button"
-              onClick={() => setQuery('')}
-              title="Limpiar búsqueda"
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-200 hover:text-charcoal-900 cursor-pointer"
+              onClick={openScheduleGeneral}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 shadow-sm transition-colors hover:bg-toast-50 cursor-pointer"
             >
-              <X className="h-3.5 w-3.5" />
+              <CalendarPlus className="h-4 w-4 text-toast-500" />
+              Agendar paciente
             </button>
-          )}
+            <button
+              onClick={() => setCreateOpen(true)}
+              className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-charcoal-800 cursor-pointer"
+            >
+              <UserPlus className="h-4 w-4" />
+              Crear nuevo paciente
+            </button>
+          </div>
         </div>
 
         <div className="mb-4 flex flex-wrap items-center gap-2">
+          <div className="relative w-full sm:w-64">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Buscar por nombre o documento..."
+              className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-9 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                title="Limpiar búsqueda"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-slate-400 transition-colors hover:bg-slate-200 hover:text-charcoal-900 cursor-pointer"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
           <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-400">
             <Filter className="h-3.5 w-3.5" />
             Filtros:
@@ -354,6 +371,14 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
                         className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 cursor-pointer"
                       >
                         <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleSendLinea247Access(p); }}
+                        disabled={sendingLinea247Id === p.id}
+                        title="Enviar acceso a línea 24/7"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 cursor-pointer disabled:opacity-40 disabled:cursor-wait"
+                      >
+                        <PhoneCall className="h-3.5 w-3.5" />
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); openScheduleFor(p); }}

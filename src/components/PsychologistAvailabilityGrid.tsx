@@ -97,7 +97,12 @@ export default function PsychologistAvailabilityGrid({
     let cancelled = false;
     setLoading(true);
     const from = weekStart.toISOString();
-    const to = addDays(weekStart, 6).toISOString();
+    // Inicio del lunes SIGUIENTE (no el domingo a medianoche) — el backend
+    // trata `to` como límite EXCLUSIVO (ver listAppointments), así que esto
+    // es lo que incluye el domingo completo. Con `addDays(weekStart, 6)` el
+    // domingo entero (cualquier cita después de las 00:00) quedaba fuera del
+    // rango y el grid lo mostraba siempre vacío aunque sí hubiera citas.
+    const to = addDays(weekStart, 7).toISOString();
     apiFetch(`/api/appointments?psychologistId=${psychologistId}&from=${from}&to=${to}`)
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => { if (!cancelled) setAppointments(Array.isArray(data) ? data : []); })
