@@ -60,6 +60,53 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
   const [isLoading, setIsLoading] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
 
+  // ── Selección de tenant (tercerización) ──────────────────────────────────
+  // Solo se activa si /auth/login responde requiresTenantSelection: true —
+  // es decir, si esta cuenta tiene 2+ TenantMembership. Hoy nadie dispara
+  // esto (todas las cuentas tienen 1 sola membresía), pero el paso queda
+  // listo para el primer psicólogo/administrativo que trabaje con 2+ socios.
+  interface TenantOption { tenantId: string; tenantName: string; role: string; }
+  const [tenantSelection, setTenantSelection] = useState<{ preAuthToken: string; memberships: TenantOption[] } | null>(null);
+
+  // Común a /auth/login (cuando ya trae token directo) y /auth/select-tenant
+  // — mismo shape de respuesta { token, user } en ambos casos.
+  function completeLogin(data: any, plainPassword: string) {
+    if (!data.token || !data.user) {
+      console.error('[Login] ⚠️ Respuesta incompleta — falta token o user:', data);
+      throw new Error('Respuesta inesperada del servidor.');
+    }
+
+    localStorage.setItem('mind_token', data.token);
+    localStorage.setItem('mind_user', JSON.stringify(data.user));
+    console.log('[Login] 💾 Token y usuario guardados en localStorage.');
+    console.log('[Login] 👤 Rol del usuario:', data.user.role);
+
+    // ── Detección de Primer Ingreso (Contraseña Temporal) ────────────────
+    // El backend genera contraseñas temporales con el patrón:
+    //   Mind_<16 hex chars>#  → ej. Mind_a3f2e1b4c9d0e5f8#
+    // Si la contraseña del formulario coincide con este patrón, es un
+    // primer ingreso. También respetamos un campo `mustChangePassword`
+    // que el backend podría añadir en el futuro.
+    const TEMP_PASSWORD_REGEX = /^Mind_[0-9a-f]{16}#$/;
+    const isTempPassword =
+      TEMP_PASSWORD_REGEX.test(plainPassword) ||
+      data.user?.mustChangePassword === true;
+
+    if (isTempPassword) {
+      console.log('[Login] 🔑 Contraseña temporal detectada — primer ingreso requerido.');
+    }
+
+    // Notificamos al componente padre (App.tsx) para actualizar el estado global.
+    // App.tsx usa renderizado condicional (no React Router <Routes>), así que
+    // llamar a onLoginSuccess es suficiente para mostrar el portal correcto.
+    if (onLoginSuccess) {
+      console.log('[Login] 🎯 Llamando onLoginSuccess — el portal se renderizará según el rol.');
+      onLoginSuccess(data.user as User, isTempPassword);
+    } else {
+      console.warn('[Login] ⚠️ onLoginSuccess no fue provisto — revisa App.tsx.');
+    }
+  }
+
   // ── Manejo del envío ──
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -101,45 +148,47 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
       const data = await response.json();
       console.log('[Login] ✅ Datos recibidos del backend:', data);
 
-      // Verificamos que la respuesta contenga token y usuario
-      if (!data.token || !data.user) {
-        console.error('[Login] ⚠️ Respuesta incompleta — falta token o user:', data);
-        throw new Error('Respuesta inesperada del servidor.');
+      // Esta cuenta trabaja con 2+ tenants (ver TenantMembership) — antes de
+      // guardar cualquier sesión, hay que elegir con cuál entra.
+      if (data.requiresTenantSelection) {
+        console.log('[Login] 🏢 Cuenta con múltiples tenants — pidiendo selección.');
+        setTenantSelection({ preAuthToken: data.preAuthToken, memberships: data.memberships || [] });
+        return;
       }
 
-      // Persistencia en localStorage
-      localStorage.setItem('mind_token', data.token);
-      localStorage.setItem('mind_user', JSON.stringify(data.user));
-      console.log('[Login] 💾 Token y usuario guardados en localStorage.');
-      console.log('[Login] 👤 Rol del usuario:', data.user.role);
-
-      // ── Detección de Primer Ingreso (Contraseña Temporal) ────────────────
-      // El backend genera contraseñas temporales con el patrón:
-      //   Mind_<16 hex chars>#  → ej. Mind_a3f2e1b4c9d0e5f8#
-      // Si la contraseña del formulario coincide con este patrón, es un
-      // primer ingreso. También respetamos un campo `mustChangePassword`
-      // que el backend podría añadir en el futuro.
-      const TEMP_PASSWORD_REGEX = /^Mind_[0-9a-f]{16}#$/;
-      const isTempPassword =
-        TEMP_PASSWORD_REGEX.test(password) ||
-        data.user?.mustChangePassword === true;
-
-      if (isTempPassword) {
-        console.log('[Login] 🔑 Contraseña temporal detectada — primer ingreso requerido.');
-      }
-
-      // Notificamos al componente padre (App.tsx) para actualizar el estado global.
-      // App.tsx usa renderizado condicional (no React Router <Routes>), así que
-      // llamar a onLoginSuccess es suficiente para mostrar el portal correcto.
-      if (onLoginSuccess) {
-        console.log('[Login] 🎯 Llamando onLoginSuccess — el portal se renderizará según el rol.');
-        onLoginSuccess(data.user as User, isTempPassword);
-      } else {
-        console.warn('[Login] ⚠️ onLoginSuccess no fue provisto — revisa App.tsx.');
-      }
+      completeLogin(data, password);
     } catch (error: any) {
       console.error('[Login] 💥 Error en handleSubmit:', error);
       setErrorMessage(error.message || 'Error al iniciar sesión. Intenta nuevamente.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // ── Selección de tenant (paso 2, solo si handleSubmit lo activó) ──
+  const handleSelectTenant = async (tenantId: string) => {
+    if (!tenantSelection) return;
+    setErrorMessage('');
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/select-tenant`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tenantSelection.preAuthToken}`,
+        },
+        body: JSON.stringify({ tenantId }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'No se pudo completar el inicio de sesión.');
+      }
+
+      completeLogin(data, password);
+    } catch (error: any) {
+      console.error('[Login] 💥 Error en handleSelectTenant:', error);
+      setErrorMessage(error.message || 'Error al seleccionar el consultorio. Intenta de nuevo.');
     } finally {
       setIsLoading(false);
     }
@@ -359,6 +408,60 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
             </div>
 
             <div className="px-6 py-6 space-y-5">
+            {tenantSelection ? (
+              <>
+                {/* ── Selección de tenant — cuenta con 2+ TenantMembership ── */}
+                <div>
+                  <h2 className="text-stone-900 font-bold mb-1" style={{ fontFamily: 'Georgia, serif', fontSize: '15px' }}>
+                    Elige tu consultorio
+                  </h2>
+                  <p className="text-xs text-stone-500 leading-relaxed">
+                    Tu cuenta trabaja con más de un consultorio. Elige con cuál quieres entrar.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  {tenantSelection.memberships.map((m) => (
+                    <button
+                      key={m.tenantId}
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() => handleSelectTenant(m.tenantId)}
+                      className="w-full flex items-center justify-between gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-left transition-all hover:border-stone-900 hover:bg-white disabled:opacity-60 disabled:pointer-events-none cursor-pointer"
+                    >
+                      <span>
+                        <span className="block text-xs font-semibold text-stone-900">{m.tenantName}</span>
+                        <span className="block text-[10px] text-stone-400 mt-0.5">{m.role}</span>
+                      </span>
+                      {isLoading ? (
+                        <svg className="animate-spin h-4 w-4 text-stone-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                        </svg>
+                      ) : (
+                        <span className="text-stone-300 text-xs">→</span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                {errorMessage && (
+                  <div className="flex items-start gap-2 p-3 rounded-xl bg-stone-950 text-white text-xs">
+                    <LockKeyhole className="w-4 h-4 shrink-0 mt-0.5 text-stone-400" />
+                    <span>{errorMessage}</span>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => { setTenantSelection(null); setErrorMessage(''); }}
+                  className="text-[11px] text-stone-500 hover:text-stone-800 transition-colors cursor-pointer"
+                >
+                  ← Volver
+                </button>
+              </>
+            ) : (
+              <>
               {/* Email */}
               <div>
                 <label htmlFor="email" className="block text-xs font-semibold text-stone-700 mb-1.5">
@@ -502,6 +605,8 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
                   'Iniciar sesión en el Consorcio Clínico'
                 )}
               </button>
+              </>
+            )}
             </div>
           </div>
 
