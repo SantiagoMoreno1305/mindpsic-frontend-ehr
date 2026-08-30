@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, CalendarClock, ClipboardList,
   Plus, Trash2, Loader2, Pencil, X, AlertTriangle,
+  TrendingUp, TrendingDown, Minus, ChevronDown,
 } from 'lucide-react';
 import ClinicalHistoryEditor from './ClinicalHistoryEditor';
 import ClinicalAttachments from './ClinicalAttachments';
@@ -174,6 +175,16 @@ function formatDateTime(iso?: string | null) {
   return new Date(iso).toLocaleString('es-CO', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+// Extrae el puntaje bruto de un score tipo "43 / 63" — null si es texto libre
+// no numérico (una evaluación cargada a mano puede traer cualquier cosa),
+// para que el seguimiento de tendencia simplemente se omita en ese caso en
+// vez de romper.
+function parseScoreValue(score: string): number | null {
+  const match = score.match(/-?\d+(?:[.,]\d+)?/);
+  if (!match) return null;
+  return parseFloat(match[0].replace(',', '.'));
+}
+
 function calcAge(birthDate?: string | null) {
   if (!birthDate) return null;
   const b = new Date(birthDate);
@@ -184,8 +195,19 @@ function calcAge(birthDate?: string | null) {
   return age;
 }
 
+const TAB_KEYS: Tab[] = TABS.map((t) => t.key);
+
 export default function ClinicalPatientChart({ patientId, onBack }: { patientId: string; onBack: () => void }) {
-  const [tab, setTab] = useState<Tab>('resumen');
+  // Recuerda la pestaña activa (Resumen/Evoluciones/...) entre recargas —
+  // junto con selectedPatientId persistido en AdminPortal, un refresh estando
+  // en "Evoluciones" ya no manda de vuelta al listado ni resetea a "Resumen".
+  const [tab, setTab] = useState<Tab>(() => {
+    const saved = localStorage.getItem('mind_clinical_chart_tab');
+    return (saved && TAB_KEYS.includes(saved as Tab)) ? (saved as Tab) : 'resumen';
+  });
+  useEffect(() => {
+    localStorage.setItem('mind_clinical_chart_tab', tab);
+  }, [tab]);
   const [data, setData] = useState<ChartResponse | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -323,24 +345,26 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
               )}
             </div>
           </div>
-          {nextAppointment && (
-            <div className="flex items-center gap-2 rounded-lg bg-toast-100 px-3 py-2 text-sm text-toast-500">
-              <CalendarClock className="h-4 w-4" />
-              <span className="font-medium">Próxima cita: {formatDateTime(nextAppointment)}</span>
-            </div>
-          )}
+          {/* Próxima cita + App móvil apiladas y alineadas a la derecha —
+              ambas viven acá, dentro del encabezado, y no como su propia
+              sección aparte: saber si el paciente tiene la app condiciona lo
+              que el especialista puede pedirle desde cualquier pestaña, igual
+              que la próxima cita, así que comparten el mismo lugar fijo. */}
+          <div className="flex w-full flex-col items-stretch gap-2 sm:w-80 sm:shrink-0">
+            {nextAppointment && (
+              <div className="flex w-full items-center gap-2 rounded-lg bg-toast-100 px-3 py-2.5 text-xs font-semibold text-toast-500">
+                <CalendarClock className="h-4 w-4 shrink-0" />
+                <span>Próxima cita: {formatDateTime(nextAppointment)}</span>
+              </div>
+            )}
+            <PatientInvitationCard
+              patientId={patient.id}
+              patientName={`${patient.firstName} ${patient.lastName}`}
+              tieneDocumento={Boolean(patient.documentId)}
+            />
+          </div>
         </div>
       </div>
-
-      {/* ═══ App móvil ═══
-          Va fuera de las pestañas a propósito: saber si el paciente tiene la
-          app condiciona lo que el especialista puede pedirle desde cualquiera
-          de ellas. */}
-      <PatientInvitationCard
-        patientId={patient.id}
-        patientName={`${patient.firstName} ${patient.lastName}`}
-        tieneDocumento={Boolean(patient.documentId)}
-      />
 
       {/* ═══ Tabs ═══ */}
       <div className="flex gap-1 overflow-x-auto border-b border-slate-200">
@@ -986,6 +1010,7 @@ function EvaluacionesTab({ patientId, assessments, riskEvents, onChange }: {
   const [score, setScore] = useState('');
   const [interpretation, setInterpretation] = useState('');
   const [saving, setSaving] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   const addAssessment = async () => {
     if (!name.trim() || !score.trim()) return;
@@ -1014,6 +1039,52 @@ function EvaluacionesTab({ patientId, assessments, riskEvents, onChange }: {
     } catch {
       toast.error('Error al eliminar la evaluación');
     }
+  };
+
+  // Seguimiento de progreso: para cada evaluación, compara contra la
+  // aplicación INMEDIATAMENTE ANTERIOR del mismo instrumento (mismo `name`).
+  // `assessments` ya viene ordenado por fecha desc, así que la anterior es la
+  // siguiente coincidencia en el array. Convención de color: en los
+  // instrumentos de severidad ya usados en la app (BDI-II, GAD-7...) un
+  // puntaje más alto es peor — igual criterio que la escalada de riesgo de
+  // arriba (bajo→alto = subida de puntaje).
+  const trendByAssessmentId = useMemo(() => {
+    const map = new Map<string, { delta: number; previousDate: string }>();
+    assessments.forEach((a, i) => {
+      const current = parseScoreValue(a.score);
+      if (current === null) return;
+      const previous = assessments.slice(i + 1).find((p) => p.name === a.name);
+      if (!previous) return;
+      const previousValue = parseScoreValue(previous.score);
+      if (previousValue === null) return;
+      map.set(a.id, { delta: current - previousValue, previousDate: previous.date });
+    });
+    return map;
+  }, [assessments]);
+
+  // Un mismo instrumento aplicado varias veces (ej. 3 BDI-II en un mes) queda
+  // disperso si se lista todo junto por fecha global, mezclado con las demás
+  // pruebas — se agrupa por `name` para que cada instrumento tenga su propia
+  // línea de tiempo. `assessments` ya viene ordenado desc, así que dentro de
+  // cada grupo también queda desc (más reciente primero).
+  const groups = useMemo(() => {
+    const map = new Map<string, Assessment[]>();
+    assessments.forEach((a) => {
+      const list = map.get(a.name) || [];
+      list.push(a);
+      map.set(a.name, list);
+    });
+    return Array.from(map.values())
+      .map((items) => ({ name: items[0].name, items }))
+      .sort((a, b) => new Date(b.items[0].date).getTime() - new Date(a.items[0].date).getTime());
+  }, [assessments]);
+
+  const toggleGroup = (name: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
   };
 
   return (
@@ -1083,26 +1154,91 @@ function EvaluacionesTab({ patientId, assessments, riskEvents, onChange }: {
         </Card>
       )}
 
-      {assessments.map((ev) => (
-        <Card key={ev.id}>
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <ClipboardList className="h-5 w-5 text-toast-500" />
-              <div>
-                <p className="font-semibold text-slate-900">{ev.name}</p>
-                <p className="text-xs text-slate-400">{formatDate(ev.date)}</p>
+      {groups.map((group) => {
+        const latest = group.items[0];
+        const latestTrend = trendByAssessmentId.get(latest.id);
+        const hasHistory = group.items.length > 1;
+        const expanded = hasHistory && expandedGroups.has(group.name);
+        return (
+          <Card key={group.name}>
+            <div className="flex items-start justify-between gap-3">
+              <div
+                className={`flex items-center gap-2 ${hasHistory ? 'cursor-pointer' : ''}`}
+                onClick={() => hasHistory && toggleGroup(group.name)}
+              >
+                <ClipboardList className="h-5 w-5 text-toast-500" />
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="font-semibold text-slate-900">{group.name}</p>
+                    {hasHistory && (
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
+                        {group.items.length} aplicaciones
+                      </span>
+                    )}
+                    {hasHistory && (
+                      <ChevronDown className={`h-3.5 w-3.5 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-400">Última: {formatDate(latest.date)}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="rounded-lg bg-toast-100 px-3 py-1 text-sm font-bold text-toast-500">{latest.score}</span>
+                <button onClick={() => removeAssessment(latest.id)} className="text-slate-400 hover:text-red-600">
+                  <Trash2 className="h-4 w-4" />
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="rounded-lg bg-toast-100 px-3 py-1 text-sm font-bold text-toast-500">{ev.score}</span>
-              <button onClick={() => removeAssessment(ev.id)} className="text-slate-400 hover:text-red-600">
-                <Trash2 className="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-          {ev.interpretation && <p className="mt-3 text-sm leading-relaxed text-slate-900">{ev.interpretation}</p>}
-        </Card>
-      ))}
+            {latestTrend && <TrendBadge trend={latestTrend} />}
+            {latest.interpretation && <p className="mt-3 text-sm leading-relaxed text-slate-900">{latest.interpretation}</p>}
+
+            {expanded && (
+              <div className="mt-4 space-y-3 border-t border-slate-100 pt-4">
+                {group.items.slice(1).map((ev) => {
+                  const trend = trendByAssessmentId.get(ev.id);
+                  return (
+                    <div key={ev.id} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-xs font-semibold text-slate-500">{formatDate(ev.date)}</p>
+                        <div className="flex items-center gap-2">
+                          <span className="rounded-lg border border-toast-200 bg-white px-2.5 py-0.5 text-xs font-bold text-toast-500">
+                            {ev.score}
+                          </span>
+                          <button onClick={() => removeAssessment(ev.id)} className="text-slate-400 hover:text-red-600">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      {trend && <TrendBadge trend={trend} compact />}
+                      {ev.interpretation && <p className="mt-1.5 text-xs leading-relaxed text-slate-700">{ev.interpretation}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function TrendBadge({ trend, compact }: { trend: { delta: number; previousDate: string }; compact?: boolean }) {
+  const colorClass = trend.delta > 0
+    ? 'bg-red-50 text-red-600'
+    : trend.delta < 0
+    ? 'bg-emerald-50 text-emerald-600'
+    : 'bg-slate-100 text-slate-500';
+  return (
+    <div className={`mt-2.5 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-semibold ${colorClass} ${compact ? 'text-[11px]' : 'text-xs'}`}>
+      {trend.delta > 0 ? (
+        <TrendingUp className="h-3.5 w-3.5" />
+      ) : trend.delta < 0 ? (
+        <TrendingDown className="h-3.5 w-3.5" />
+      ) : (
+        <Minus className="h-3.5 w-3.5" />
+      )}
+      {trend.delta === 0 ? 'Sin cambio' : `${trend.delta > 0 ? '+' : ''}${trend.delta} pts`} desde el {formatDate(trend.previousDate)}
     </div>
   );
 }
