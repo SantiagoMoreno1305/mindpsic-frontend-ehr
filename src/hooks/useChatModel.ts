@@ -213,9 +213,38 @@ export function useChatModel(currentUser: User | null) {
             };
           });
 
+        // Conversaciones DIRECT cuyo peer NO está en /users/colleagues (ese
+        // directorio excluye a propósito a USUARIO_B2C — es el directorio de
+        // staff). Si un paciente ya escribió desde su canal propio
+        // (/api/patients/me/chat/*), el backend igual devuelve esa
+        // conversación aquí (con el paciente en participants), pero sin este
+        // paso se descartaba en silencio: no había ningún ChatContact al que
+        // pegarle el resumen. Se arma el contacto directo desde
+        // participants[0] — el resto del hook (polling, sendMessage,
+        // historial) ya es genérico y no asume que el peer sea staff.
+        const colleagueIds = new Set(colleagues.map((u) => u.id));
+        const patientContacts: ChatContact[] = [...summaryByPeerId.entries()]
+          .filter(([peerId]) => !colleagueIds.has(peerId))
+          .map(([peerId, summary]) => {
+            const peer = summary.participants[0];
+            return {
+              id:              peerId,
+              name:            peer.name,
+              role:            peer.role,
+              online:          false,
+              specialty:       peer.specialty ?? undefined,
+              conversationId:  summary.id,
+              lastMessage:     summary.lastMessagePreview ?? undefined,
+              lastMessageTime: summary.lastMessageAt
+                ? new Date(summary.lastMessageAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
+                : undefined,
+              unreadCount:     summary.unreadCount ?? 0,
+            };
+          });
+
         // No se auto-selecciona ningún contacto — el usuario elige con quién
         // empezar desde la lista (antes se abría el primero automáticamente).
-        setContacts(mapped);
+        setContacts([...mapped, ...patientContacts]);
         persistUrlCache(AVATAR_URL_CACHE_KEY, avatarUrlCacheRef.current);
       } catch (err) {
         console.error('[useChatModel] Error al cargar colegas/conversaciones:', err);

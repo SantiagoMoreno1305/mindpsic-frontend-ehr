@@ -21,6 +21,7 @@ import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
+import AssessmentsPanel from '../components/EHR/AssessmentsPanel';
 import CalendarPanel, { type CalendarAppointment } from '../components/EHR/CalendarPanel';
 import { apiFetch } from '../lib/apiClient';
 import { 
@@ -61,10 +62,12 @@ import {
   EyeOff,
   History,
   ClipboardX,
-  Bell
+  ClipboardList,
+  Bell,
+  Clock
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
 
 export default function AdminPortal() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -128,10 +131,31 @@ export default function AdminPortal() {
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
     dataConsentAccepted: false,
   };
-  const [newStaffForm, setNewStaffForm] = useState(emptyStaffForm);
+  // El formulario de "Crear profesional" vive en un modal — si alguien lo
+  // cierra sin querer a mitad de llenarlo (o navega y vuelve), no debería
+  // perder lo que ya escribió. sessionStorage porque solo debe durar
+  // mientras la pestaña siga abierta (mismo patrón que la búsqueda de
+  // ClinicalRecordsList).
+  const NEW_STAFF_DRAFT_KEY = 'mind_new_staff_draft';
+  function readStaffDraft(): typeof emptyStaffForm {
+    try {
+      const raw = sessionStorage.getItem(NEW_STAFF_DRAFT_KEY);
+      return raw ? { ...emptyStaffForm, ...JSON.parse(raw) } : emptyStaffForm;
+    } catch {
+      return emptyStaffForm;
+    }
+  }
+  const [showCreateStaffModal, setShowCreateStaffModal] = useState(false);
+  const [newStaffForm, setNewStaffForm] = useState(readStaffDraft);
   const [isCreatingStaff, setIsCreatingStaff] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
   const [staffSuccess, setStaffSuccess] = useState<{ name: string; email: string; tempPassword: string } | null>(null);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(NEW_STAFF_DRAFT_KEY, JSON.stringify(newStaffForm));
+    } catch { /* silencioso — el cache es una comodidad, no algo crítico */ }
+  }, [newStaffForm]);
 
   // ── Catálogos reales para los selectores de la ficha profesional ──
   // Especialidad y roles ya existen en el backend (mismos que usa el
@@ -219,7 +243,11 @@ export default function AdminPortal() {
         tempPassword: data.tempPassword,
       });
       setNewStaffForm(emptyStaffForm);
+      try { sessionStorage.removeItem(NEW_STAFF_DRAFT_KEY); } catch { /* silencioso */ }
       newStaffEpsSearch.setQuery('');
+      setShowCreateStaffModal(false);
+      setStaffRecentFirst(true); // el recién creado debe verse sin buscarlo
+      setStaffPage(1);
       await fetchTeamUsers(); // refresca la lista de abajo con el nuevo colaborador
     } catch (err: any) {
       setStaffError('Error de red o comunicación con el servidor: ' + err.message);
@@ -246,6 +274,8 @@ export default function AdminPortal() {
     specialtyName: string | null;
     epsCode: string | null;
     epsName: string | null;
+    /** "YYYY-MM-DD" — ya viene calculado del backend (users.routes.js GET /). */
+    joinedDate: string;
   }
 
   const [teamUsers, setTeamUsers] = useState<TeamUser[]>([]);
@@ -257,6 +287,25 @@ export default function AdminPortal() {
   // datos". Es un toggle de visualización: los datos ya llegaron completos
   // en la respuesta de /api/users, esto no hace una petición aparte.
   const [staffDataRevealed, setStaffDataRevealed] = useState(false);
+  // Orden por defecto del backend es fecha de alta ascendente (el más
+  // antiguo primero) — "Recientes" invierte para encontrar rápido a alguien
+  // que se acaba de crear, sin tener que ir a la última página.
+  const [staffRecentFirst, setStaffRecentFirst] = useState(false);
+  const STAFF_PAGE_SIZE = 10;
+  const [staffPage, setStaffPage] = useState(1);
+  const sortedTeamUsers = staffRecentFirst
+    ? [...teamUsers].sort((a, b) => b.joinedDate.localeCompare(a.joinedDate))
+    : teamUsers;
+  const staffTotalPages = Math.max(1, Math.ceil(sortedTeamUsers.length / STAFF_PAGE_SIZE));
+  const staffRangeStart = sortedTeamUsers.length === 0 ? 0 : (staffPage - 1) * STAFF_PAGE_SIZE + 1;
+  const staffRangeEnd = Math.min(staffPage * STAFF_PAGE_SIZE, sortedTeamUsers.length);
+  const paginatedTeamUsers = sortedTeamUsers.slice((staffPage - 1) * STAFF_PAGE_SIZE, staffPage * STAFF_PAGE_SIZE);
+
+  // Si se elimina el último colaborador de la página actual (o cambia el
+  // orden), no debe quedar mostrando una página vacía que ya no existe.
+  useEffect(() => {
+    setStaffPage((p) => Math.min(p, staffTotalPages));
+  }, [staffTotalPages]);
 
   const fetchTeamUsers = async () => {
     setTeamUsersLoading(true);
@@ -335,10 +384,15 @@ export default function AdminPortal() {
   const editStaffEpsSearch = useEpsSearch();
 
   const openEditStaffModal = (member: TeamUser) => {
+    // Colaboradores creados por vías que solo guardaron `name` completo
+    // (SSO, autorregistro) nunca tuvieron firstName/lastName por separado —
+    // sin este respaldo el modal se abría con Nombres/Apellidos en blanco
+    // aunque la fila de la tabla sí mostraba el nombre completo.
+    const [fallbackFirstName, ...fallbackLastNameParts] = (member.name || '').trim().split(/\s+/);
     setEditingStaffId(member.id);
     setEditStaffForm({
-      firstName: member.firstName || '',
-      lastName: member.lastName || '',
+      firstName: member.firstName || fallbackFirstName || '',
+      lastName: member.lastName || fallbackLastNameParts.join(' '),
       professionalCard: member.professionalCard || '',
       specialtyId: member.specialtyId || '',
       academicLevel: member.academicLevel || '',
@@ -646,7 +700,7 @@ export default function AdminPortal() {
   // Recuerda la última tab visitada entre recargas — sin esto, cualquier
   // refresh de página remonta el componente y activeTab vuelve a su default
   // ('metrics' / "Tablero Gerencial"), sin importar dónde estaba el usuario.
-  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'equipo', 'convenios', 'billing_rips', 'chat'];
+  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'billing_rips', 'chat'];
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     const saved = localStorage.getItem('mind_admin_active_tab');
     return (saved && (ADMIN_TABS as string[]).includes(saved)) ? (saved as AdminTab) : 'metrics';
@@ -655,7 +709,19 @@ export default function AdminPortal() {
     localStorage.setItem('mind_admin_active_tab', activeTab);
   }, [activeTab]);
 
-  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(null);
+  // Igual que activeTab: sin esto, un refresh estando dentro de la ficha de
+  // un paciente perdía selectedPatientId y volvía al listado de "Historias
+  // Clínicas" en vez de quedarse donde estaba el usuario.
+  const [selectedPatientId, setSelectedPatientId] = useState<string | null>(() => {
+    return localStorage.getItem('mind_admin_selected_patient_id') || null;
+  });
+  useEffect(() => {
+    if (selectedPatientId) {
+      localStorage.setItem('mind_admin_selected_patient_id', selectedPatientId);
+    } else {
+      localStorage.removeItem('mind_admin_selected_patient_id');
+    }
+  }, [selectedPatientId]);
   // Recuerda desde qué tab se entró a la ficha de un paciente (p. ej. desde
   // "Pacientes") para que "Volver" regrese ahí — antes siempre volvía al
   // listado de "Historias Clínicas", sin importar de dónde venías.
@@ -851,9 +917,14 @@ export default function AdminPortal() {
     corporateClient?: string | null;
     psychologist: { id: string; name: string } | null;
   }
-  const now = new Date();
-  const [pendingRipsYear, setPendingRipsYear] = useState(now.getFullYear());
-  const [pendingRipsMonth, setPendingRipsMonth] = useState(now.getMonth() + 1);
+  const MONTH_LABELS = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  // Mismo tipo de filtro (Desde/Hasta) que ya usa "Generar Reporte de
+  // Diagnósticos por RIPS" — antes eran selects de Año/Mes, sin forma de ver
+  // un rango específico. El backend resuelve el rango mes por mes por su
+  // cuenta (RipsDiagnosis está amarrado a un mes calendario exacto), así que
+  // un rango que cruza meses funciona igual de bien que uno de un solo mes.
+  const [pendingRipsStartDate, setPendingRipsStartDate] = useState(dashMonthStartISO);
+  const [pendingRipsEndDate, setPendingRipsEndDate] = useState(dashTodayISO);
   const [pendingRipsCompanyId, setPendingRipsCompanyId] = useState('all');
   const [pendingRipsList, setPendingRipsList] = useState<PendingRipsPatient[]>([]);
   const [pendingRipsLoading, setPendingRipsLoading] = useState(false);
@@ -862,7 +933,7 @@ export default function AdminPortal() {
   const fetchPendingRipsList = async () => {
     setPendingRipsLoading(true);
     try {
-      const params = new URLSearchParams({ year: String(pendingRipsYear), month: String(pendingRipsMonth) });
+      const params = new URLSearchParams({ startDate: pendingRipsStartDate, endDate: pendingRipsEndDate });
       if (pendingRipsCompanyId !== 'all') params.set('companyId', pendingRipsCompanyId);
       const res = await apiFetch(`/api/rips-diagnosis/pending?${params.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -880,7 +951,7 @@ export default function AdminPortal() {
     if (activeTab !== 'billing_rips' || !currentUser || (currentUser.role !== 'CEO' && currentUser.role !== 'DIRECTIVO')) return;
     fetchPendingRipsList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, currentUser, pendingRipsYear, pendingRipsMonth, pendingRipsCompanyId]);
+  }, [activeTab, currentUser, pendingRipsStartDate, pendingRipsEndDate, pendingRipsCompanyId]);
 
   // Agrupado por psicólogo — solo para mostrar en pantalla cuántos mensajes
   // saldrían al notificar (el backend recalcula y agrupa de nuevo por su cuenta).
@@ -893,17 +964,30 @@ export default function AdminPortal() {
     pendingRipsByPsychologist.set(p.psychologist.id, entry);
   });
 
+  // "28/08/2026" o, si Desde y Hasta caen en el mismo mes, "agosto de 2026" —
+  // el rango casi siempre se usa dentro de un solo mes (así es como funciona
+  // el reporte RIPS), así que vale la pena el caso corto y legible.
+  const pendingRipsPeriodLabel = (() => {
+    const start = new Date(`${pendingRipsStartDate}T00:00:00.000Z`);
+    const end = new Date(`${pendingRipsEndDate}T00:00:00.000Z`);
+    if (start.getUTCFullYear() === end.getUTCFullYear() && start.getUTCMonth() === end.getUTCMonth()) {
+      return `${MONTH_LABELS[start.getUTCMonth() + 1]} ${start.getUTCFullYear()}`;
+    }
+    const fmt = (d: Date) => d.toLocaleDateString('es-CO', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC' });
+    return `${fmt(start)} a ${fmt(end)}`;
+  })();
+
   const handleNotifyPendingRips = async () => {
     if (pendingRipsList.length === 0) return;
     const psychCount = pendingRipsByPsychologist.size;
-    if (!(await confirmToast(`¿Enviar recordatorio por Mensajería Clínica a ${psychCount} psicólogo(s) sobre sus pacientes sin diagnóstico RIPS de ${MONTH_LABELS[pendingRipsMonth]} ${pendingRipsYear}?`))) {
+    if (!(await confirmToast(`¿Enviar recordatorio por Mensajería Clínica a ${psychCount} psicólogo(s) sobre sus pacientes sin diagnóstico RIPS de ${pendingRipsPeriodLabel}?`))) {
       return;
     }
     setPendingRipsNotifying(true);
     try {
       const res = await apiFetch('/api/rips-diagnosis/notify', {
         method: 'POST',
-        body: JSON.stringify({ year: pendingRipsYear, month: pendingRipsMonth, companyId: pendingRipsCompanyId }),
+        body: JSON.stringify({ startDate: pendingRipsStartDate, endDate: pendingRipsEndDate, companyId: pendingRipsCompanyId }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -1026,7 +1110,6 @@ export default function AdminPortal() {
     .filter((p) => String(p.year) === ripsYear)
     .map((p) => p.month)
     .sort((a, b) => b - a);
-  const MONTH_LABELS = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
   const [ripsFiles, setRipsFiles] = useState<{ US: string; AT: string; AC: string; CT: string } | null>(null);
   const [ripsWarnings, setRipsWarnings] = useState<string[]>([]);
@@ -1581,6 +1664,22 @@ export default function AdminPortal() {
             {activeTab === 'clinical_history' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
+          {/* Pruebas y Evaluaciones — el administrativo asigna y hace seguimiento;
+              la lectura clínica del resultado sigue siendo del profesional. */}
+          <button
+            onClick={() => setActiveTab('evaluations')}
+            id="tab-adm-evaluaciones"
+            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+              activeTab === 'evaluations'
+                ? 'bg-charcoal-900 text-white font-semibold'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <ClipboardList className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Pruebas y Evaluaciones</span>
+            {activeTab === 'evaluations' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+          </button>
+
           {/* Equipo / Aprovisionamiento RBAC */}
           <button
             onClick={() => setActiveTab('equipo')}
@@ -1788,16 +1887,6 @@ export default function AdminPortal() {
                       Restablecer Filtros
                     </button>
                   )}
-                  <button
-                    onClick={() => {
-                      setEditingAppointment(null);
-                      setShowDelegatedModal(true);
-                    }}
-                    className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-md transition-colors cursor-pointer"
-                  >
-                    <CalendarPlus className="w-4 h-4" />
-                    Agendar Cita Delegada
-                  </button>
                 </div>
               </div>
 
@@ -2116,75 +2205,27 @@ export default function AdminPortal() {
         {activeTab === 'video_admin' && ['CEO', 'DIRECTIVO', 'SUPER ADMIN', 'C-LEVEL', 'ESPECIALISTA_B2B'].includes(currentUser.role) && (
           <div className="max-w-7xl mx-auto space-y-6 text-left">
             <div className="bg-white rounded-2xl border border-slate-100 shadow-xs p-5 md:p-6">
-              <div className="border-b border-slate-100 pb-3 mb-6">
+              <div className="mb-4">
+                <h3 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center">
+                  <Video className="w-4 h-4 mr-1.5 text-toast-500" />
+                  Espejo Clínico (Monitoreo C-Level)
+                </h3>
+                <p className="text-xs text-slate-400">Transmisión en vivo de la sala médica principal. La cámara se inicializa automáticamente para auditoría de calidad.</p>
+              </div>
+              <div className="relative rounded-xl overflow-hidden shadow-xs border border-slate-200 bg-black min-h-[400px]">
+                <VideollamadaVercel
+                  pacienteId="monitoreo_directivo"
+                  salaId="sala_admin_principal"
+                  tokenSesion={localStorage.getItem('mind_token') || ''}
+                />
+              </div>
+
+              <div className="border-t border-slate-100 mt-6 pt-6">
                 <h2 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center">
                   <Video className="w-5 h-5 mr-1.5 text-toast-500" />
                   Consola de Vídeo Administrador (WebRTC Control Hub)
                 </h2>
                 <p className="text-xs text-slate-400">Inspecciona consumo de ancho de banda, pérdida de paquetes y estatus de servidores de señalización en tiempo real.</p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                <div className="p-5 bg-slate-900 text-slate-300 rounded-xl border border-slate-950 flex flex-col justify-between h-44">
-                  <div>
-                    <span className="text-[9px] text-toast-400 font-bold uppercase tracking-widest font-mono">Servidor de Señalización</span>
-                    <h4 className="text-xs font-bold text-white mt-1">TURN-STUN Router US-West</h4>
-                    <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">Encargado de perforar NATs simétricas y enrutar tráficos WebRTC.</p>
-                  </div>
-                  <div className="flex justify-between items-center text-xs border-t border-slate-800 pt-2 font-mono">
-                    <span className="text-toast-400">● OPERATIVO</span>
-                    <span>Lat: 11ms</span>
-                  </div>
-                </div>
-
-                <div className="p-5 bg-slate-900 text-slate-300 rounded-xl border border-slate-950 flex flex-col justify-between h-44">
-                  <div>
-                    <span className="text-[9px] text-toast-400 font-bold uppercase tracking-widest font-mono">Consumo de Tráfico</span>
-                    <h4 className="text-xs font-bold text-white mt-1">Bitrate Consolidado</h4>
-                    <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">Suma ponderada de canales de audio y vídeo 4K en tránsito clínico.</p>
-                  </div>
-                  <div className="flex justify-between items-center text-xs border-t border-slate-800 pt-2 font-mono">
-                    <span className="text-toast-400">14.2 Mbps</span>
-                    <span>Pérdida pack: 0.01%</span>
-                  </div>
-                </div>
-
-                <div className="p-5 bg-slate-900 text-slate-300 rounded-xl border border-slate-950 flex flex-col justify-between h-44">
-                  <div>
-                    <span className="text-[9px] text-toast-400 font-bold uppercase tracking-widest font-mono">Salas Médicas</span>
-                    <h4 className="text-xs font-bold text-white mt-1">Salas en Co-Escucha Activa</h4>
-                    <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">Cuartos virtuales reservados por los psicólogos.</p>
-                  </div>
-                  <div className="flex justify-between items-center text-xs border-t border-slate-800 pt-2 font-mono">
-                    <span className="text-toast-400">1 Activa</span>
-                    <span>3 Reservas</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 mt-6 text-xs text-slate-600 space-y-2">
-                <p className="font-bold text-slate-800">Estatus Operativo de Salas WebRTC:</p>
-                <div className="space-y-1 font-mono text-[11px] bg-white p-3 border border-slate-200 rounded-lg">
-                  <p className="text-slate-400 italic">No hay salas activas en este momento.</p>
-                </div>
-              </div>
-
-              {/* INTEGRACIÓN DEL COMPONENTE DE VIDEO PARA C-LEVEL */}
-              <div className="mt-8 border-t border-slate-100 pt-6">
-                <div className="mb-4">
-                  <h3 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center">
-                    <Video className="w-4 h-4 mr-1.5 text-toast-500" />
-                    Espejo Clínico (Monitoreo C-Level)
-                  </h3>
-                  <p className="text-xs text-slate-400">Transmisión en vivo de la sala médica principal. La cámara se inicializa automáticamente para auditoría de calidad.</p>
-                </div>
-                <div className="relative rounded-xl overflow-hidden shadow-xs border border-slate-200 bg-black min-h-[400px]">
-                  <VideollamadaVercel
-                    pacienteId="monitoreo_directivo"
-                    salaId="sala_admin_principal"
-                    tokenSesion={localStorage.getItem('mind_token') || ''}
-                  />
-                </div>
               </div>
             </div>
           </div>
@@ -2283,22 +2324,44 @@ export default function AdminPortal() {
           </div>
         )}
 
+        {/* VIEW: PRUEBAS Y EVALUACIONES */}
+        {activeTab === 'evaluations' && <AssessmentsPanel />}
+
         {/* VIEW: EQUIPO Y ACCESOS — Aprovisionamiento RBAC de Usuarios (Migrado) */}
         {activeTab === 'equipo' && (
           <div className="max-w-5xl mx-auto space-y-6 text-left">
-            <div className="border-b border-slate-200 pb-4">
-              <span className="bg-toast-100 text-charcoal-900 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-toast-300 font-mono">
-                Gestión de Accesos Clínicos
-              </span>
-              <h1 className="text-2xl font-black text-slate-900 tracking-tight mt-1">
-                Equipo y Aprovisionamiento de Profesionales
-              </h1>
-              <p className="text-xs text-slate-400 mt-1">
-                Registra psicólogos y personal de soporte con su información profesional — quedan asociados automáticamente a tu propio tenant, dentro de las licencias contratadas.
-              </p>
+            <div className="border-b border-slate-200 pb-4 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <span className="bg-toast-100 text-charcoal-900 text-[10px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-toast-300 font-mono">
+                  Gestión de Accesos Clínicos
+                </span>
+                <h1 className="text-2xl font-black text-slate-900 tracking-tight mt-1">
+                  Equipo y Aprovisionamiento de Profesionales
+                </h1>
+                <p className="text-xs text-slate-400 mt-1">
+                  Registra psicólogos y personal de soporte con su información profesional — quedan asociados automáticamente a tu propio tenant, dentro de las licencias contratadas.
+                </p>
+              </div>
+              <button
+                onClick={() => { setStaffError(null); setShowCreateStaffModal(true); }}
+                className="flex items-center gap-1.5 bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-sm px-4 py-2.5 rounded-lg transition-colors cursor-pointer shrink-0"
+              >
+                <UserPlus className="w-4 h-4" />
+                Crear profesional
+              </button>
             </div>
 
-            <div className="bg-white rounded-xl border border-slate-100 shadow-xs p-6 space-y-5">
+            {/* MODAL: Crear profesional — lo que se escriba queda en caché
+                (sessionStorage) aunque se cierre sin enviar. */}
+            {showCreateStaffModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden bg-white rounded-2xl shadow-xl p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-black text-slate-900">Crear profesional</h3>
+                <button onClick={() => setShowCreateStaffModal(false)} className="text-slate-400 hover:text-slate-700 cursor-pointer">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
               <p className="text-[10px] text-slate-400">Los campos marcados con * son obligatorios.</p>
               <form onSubmit={handleCreateStaff} className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
@@ -2457,6 +2520,8 @@ export default function AdminPortal() {
                 </button>
               </form>
             </div>
+            </div>
+            )}
 
             {staffSuccess && (
               <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-5 space-y-2">
@@ -2477,6 +2542,18 @@ export default function AdminPortal() {
                   <p className="text-[10.5px] text-slate-400 mt-0.5">Datos sensibles enmascarados por defecto (principio de acceso mínimo).</p>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
+                  <button
+                    onClick={() => { setStaffRecentFirst(v => !v); setStaffPage(1); }}
+                    className={`flex items-center gap-1.5 text-xs font-bold rounded-lg px-3 py-1.5 border cursor-pointer ${
+                      staffRecentFirst
+                        ? 'bg-toast-100 border-toast-300 text-charcoal-900'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                    title="Ordenar por fecha de alta, el más reciente primero"
+                  >
+                    <Clock className="w-3.5 h-3.5" />
+                    Recientes
+                  </button>
                   <button
                     onClick={() => setStaffDataRevealed(v => !v)}
                     className="flex items-center gap-1.5 text-xs font-bold text-slate-600 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-50 cursor-pointer"
@@ -2511,7 +2588,7 @@ export default function AdminPortal() {
                     ) : teamUsers.length === 0 ? (
                       <tr><td colSpan={5} className="p-8 text-center text-slate-400">Todavía no has creado colaboradores.</td></tr>
                     ) : (
-                      teamUsers.map((member) => (
+                      paginatedTeamUsers.map((member) => (
                         <tr key={member.id} className="hover:bg-slate-50 align-top">
                           <td className="p-4">
                             <p className="font-bold text-slate-900">{member.name}</p>
@@ -2570,6 +2647,32 @@ export default function AdminPortal() {
                   </tbody>
                 </table>
               </div>
+              {sortedTeamUsers.length > 0 && (
+                <div className="flex flex-col items-center justify-between gap-2 border-t border-slate-100 p-4 sm:flex-row">
+                  <span className="text-xs text-slate-400">
+                    Mostrando {staffRangeStart}–{staffRangeEnd} de {sortedTeamUsers.length}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setStaffPage((p) => Math.max(1, p - 1))}
+                      disabled={staffPage <= 1}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
+                    >
+                      Anterior
+                    </button>
+                    <span className="px-2 text-xs text-slate-400">Página {staffPage} de {staffTotalPages}</span>
+                    <button
+                      type="button"
+                      onClick={() => setStaffPage((p) => Math.min(staffTotalPages, p + 1))}
+                      disabled={staffPage >= staffTotalPages}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
+                    >
+                      Siguiente
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex items-start gap-2.5">
@@ -3367,26 +3470,24 @@ export default function AdminPortal() {
                 <>
                   <div className="flex flex-wrap items-end gap-3 bg-slate-50 p-4 rounded-xl border border-slate-150">
                     <div className="space-y-1 text-xs">
-                      <label className="block text-[10px] uppercase font-bold text-slate-600">Año</label>
-                      <select
-                        value={pendingRipsYear}
-                        onChange={(e) => setPendingRipsYear(Number(e.target.value))}
+                      <label className="block text-[10px] uppercase font-bold text-slate-600">Desde</label>
+                      <input
+                        type="date"
+                        value={pendingRipsStartDate}
+                        max={pendingRipsEndDate}
+                        onChange={(e) => setPendingRipsStartDate(e.target.value)}
                         className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
-                      >
-                        {[now.getFullYear(), now.getFullYear() - 1].map((y) => <option key={y} value={y}>Año {y}</option>)}
-                      </select>
+                      />
                     </div>
                     <div className="space-y-1 text-xs">
-                      <label className="block text-[10px] uppercase font-bold text-slate-600">Mes</label>
-                      <select
-                        value={pendingRipsMonth}
-                        onChange={(e) => setPendingRipsMonth(Number(e.target.value))}
+                      <label className="block text-[10px] uppercase font-bold text-slate-600">Hasta</label>
+                      <input
+                        type="date"
+                        value={pendingRipsEndDate}
+                        min={pendingRipsStartDate}
+                        onChange={(e) => setPendingRipsEndDate(e.target.value)}
                         className="bg-white border border-slate-200 rounded-lg p-2 text-xs text-slate-900 font-semibold focus:ring-2 focus:ring-toast-500"
-                      >
-                        {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-                          <option key={m} value={m}>{MONTH_LABELS[m]}</option>
-                        ))}
-                      </select>
+                      />
                     </div>
                     <div className="flex-1 min-w-[160px] space-y-1 text-xs">
                       <label className="block text-[10px] uppercase font-bold text-slate-600">Convenio</label>
@@ -3413,7 +3514,7 @@ export default function AdminPortal() {
                       title={pendingRipsList.length === 0 ? 'No hay pacientes pendientes en este periodo' : undefined}
                     >
                       <Bell className="w-3.5 h-3.5" />
-                      {pendingRipsNotifying ? 'Enviando...' : `Notificar diagnóstico RIPS de ${MONTH_LABELS[pendingRipsMonth]}`}
+                      {pendingRipsNotifying ? 'Enviando...' : `Notificar diagnóstico RIPS de ${pendingRipsPeriodLabel}`}
                     </button>
                   </div>
 
