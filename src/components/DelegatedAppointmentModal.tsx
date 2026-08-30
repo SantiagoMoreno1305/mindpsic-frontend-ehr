@@ -386,6 +386,9 @@ export default function DelegatedAppointmentModal({
     let cancelled = false;
     const from = new Date();
     from.setHours(0, 0, 0, 0);
+    // Límite EXCLUSIVO (ver listAppointments en Mind) — medianoche de dentro
+    // de 90 días, así que el rango real cubierto son los próximos 90 días
+    // completos (hoy incluido), no 89.
     const to = new Date(from);
     to.setDate(to.getDate() + 90);
     const pad = (n: number) => n.toString().padStart(2, '0');
@@ -582,6 +585,11 @@ export default function DelegatedAppointmentModal({
     e.preventDefault();
     setIsSubmitting(true);
 
+    // Declarado ACÁ (no dentro del try) para que el catch pueda leerlo: solo
+    // cuenta cuántas citas se alcanzaron a crear de verdad en ESTE envío, sin
+    // importar si el paciente ya estaba seleccionado — ver el catch más abajo.
+    let created = 0;
+
     try {
       const token  = localStorage.getItem('mind_token');
       const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
@@ -648,7 +656,6 @@ export default function DelegatedAppointmentModal({
       // ── Agendamiento nuevo — una cita por cada fecha en slotDates ───────
       // (1 sola si el paciente agenda una única sesión, varias si se está
       // programando de una vez el bloque de sesiones disponibles).
-      let created = 0;
       for (const dateTime of slotDates) {
         // Mismo motivo que en la reprogramación: dateTime es un datetime-local
         // ingenuo (hora de Bogotá sin zona horaria) — se convierte a UTC
@@ -692,9 +699,22 @@ export default function DelegatedAppointmentModal({
       resetAndClose();
     } catch (err: any) {
       toast.error(`Error al agendar: ${err.message}`);
-      // Si fue un fallo parcial (algunas sesiones sí se crearon), refresca la
-      // ficha para reflejarlas y deja el modal abierto en vez de resetearlo.
-      if (form.patientId) {
+      // Antes este `if` comprobaba `form.patientId` (casi siempre true, ya
+      // que para llegar aquí ya tenías paciente elegido) — así que CUALQUIER
+      // rechazo del backend (fecha ya pasada, choque de horario, cupo
+      // agotado...) disparaba onSuccess(), que en PsychologistPortal.tsx
+      // cierra el modal y limpia rescheduleTarget/showNewAppointmentModal,
+      // desmontando el formulario y perdiendo todo lo que ya habías llenado
+      // — aunque NINGUNA cita se hubiera creado de verdad.
+      //
+      // Ahora solo se dispara cuando de verdad hubo un ÉXITO PARCIAL (al
+      // menos una sesión sí se creó antes de que fallara otra, en un
+      // agendamiento de varias sesiones a la vez) — ahí sí tiene sentido
+      // refrescar y cerrar, porque ya cambió algo real. En un fallo total
+      // (created === 0, incluida la reprogramación, que nunca incrementa
+      // `created`), el modal se queda abierto con todo lo que ya llenaste
+      // intacto, y el toast de arriba es el único aviso.
+      if (created > 0) {
         apiFetch(`/api/patients/${form.patientId}/schedule-summary`)
           .then((r) => (r.ok ? r.json() : null))
           .then((data) => data && setScheduleSummary(data))
