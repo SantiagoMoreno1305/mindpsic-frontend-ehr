@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { User, Patient, resolveRole } from './types';
 import { WorkspaceContext } from './components/ContextSwitcher';
 import Login from './pages/Login';
 import SignConsent from './pages/SignConsent';
+import CancelAppointment from './pages/CancelAppointment';
 import InvitationLanding from './pages/InvitationLanding';
 import AnswerAssessment from './pages/AnswerAssessment';
 import PsychologistPortal from './pages/PsychologistPortal';
@@ -201,6 +202,17 @@ export default function App() {
   // el enlace de firma desde InitialAssessmentWizard) nunca se enteraba de
   // nada, aunque el backend creara la notificación correctamente. Puesto
   // aquí, cubre a todos los roles con un solo poller.
+  //
+  // staffNotifications se pasa a Navbar para la campana persistente. Antes
+  // consumía /unread: en cuanto se marcaba como leída desaparecía para
+  // siempre, sin historial. Ahora consume /recent (últimos 7 días, leídas y
+  // no leídas) — las leídas quedan atenuadas en vez de desaparecer, y solo
+  // se van cuando cumplen la semana o el usuario las borra a mano. El toast
+  // sigue siendo inmediato para las nuevas; toastedIdsRef evita repetirlo en
+  // cada poll, y se ignoran las que ya llegan marcadas leídas (historial).
+  const [staffNotifications, setStaffNotifications] = useState<any[]>([]);
+  const toastedIdsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     if (!currentUser) return;
 
@@ -210,13 +222,17 @@ export default function App() {
         if (!token) return;
 
         const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
-        const res = await fetch(`${apiBase}/api/notifications/unread`, {
+        const res = await fetch(`${apiBase}/api/notifications/recent`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) return;
-        const unread = await res.json();
+        const recent = await res.json();
+        setStaffNotifications(recent);
 
-        unread.forEach((notif: any) => {
+        recent.forEach((notif: any) => {
+          if (notif.read || toastedIdsRef.current.has(notif.id)) return;
+          toastedIdsRef.current.add(notif.id);
+
           if (notif.type === 'NEW_APPOINTMENT') {
             toast.success(notif.message, { duration: 6000, position: 'top-right' });
             window.dispatchEvent(new CustomEvent(NEW_APPOINTMENT_EVENT));
@@ -224,16 +240,10 @@ export default function App() {
           if (notif.type === 'CONSENT_SIGNED') {
             toast.success(notif.message, { duration: 8000, position: 'top-right', icon: '✅' });
           }
+          if (notif.type === 'APPOINTMENT_CANCELLED_BY_PATIENT') {
+            toast(notif.message, { duration: 8000, position: 'top-right', icon: '🚫' });
+          }
         });
-
-        if (unread.length > 0) {
-          const ids = unread.map((n: any) => n.id);
-          await fetch(`${apiBase}/api/notifications/mark-read`, {
-            method: 'POST',
-            body: JSON.stringify({ ids }),
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          });
-        }
       } catch {
         // Fallo silencioso — un poll perdido no debe interrumpir la sesión
       }
@@ -243,6 +253,52 @@ export default function App() {
     const intervalId = setInterval(checkStaffNotifications, 45000);
     return () => clearInterval(intervalId);
   }, [currentUser]);
+
+  // Marca como leídas SOLO las notificaciones que la campana tiene a la
+  // vista en ese momento — se llama al ABRIRLA (ver Navbar). Se actualizan
+  // de una vez en el estado local (quedan atenuadas, no desaparecen) — a
+  // diferencia de borrarlas, esto no genera la carrera de estado que ya
+  // tuvimos antes (la lista se sigue viendo igual, solo cambia el estilo).
+  const handleMarkNotificationsRead = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    setStaffNotifications((prev) => prev.map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)));
+    try {
+      const token = localStorage.getItem('mind_token');
+      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      await fetch(`${apiBase}/api/notifications/mark-read`, {
+        method: 'POST',
+        body: JSON.stringify({ ids }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // Si falla, el próximo poll las vuelve a traer como no leídas —
+      // no hace falta revertir el estado local a mano.
+    }
+  };
+
+  // Botón "×" por notificación en la campana — borrado puntual.
+  const handleDeleteNotification = (id: string) => {
+    setStaffNotifications((prev) => prev.filter((n) => n.id !== id));
+    const token = localStorage.getItem('mind_token');
+    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+    fetch(`${apiBase}/api/notifications/${id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => {});
+  };
+
+  // Botón "Eliminar todas" — vacía la campana completa, sin importar edad.
+  const handleDeleteAllNotifications = () => {
+    if (staffNotifications.length === 0) return;
+    if (!window.confirm('¿Eliminar todas las notificaciones? Esta acción no se puede deshacer.')) return;
+    setStaffNotifications([]);
+    const token = localStorage.getItem('mind_token');
+    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+    fetch(`${apiBase}/api/notifications`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    }).catch(() => {});
+  };
 
   const handleOpenDrMindWithPatient = (patient: Patient) => {
     setDrMindContextPatient(patient);
@@ -398,6 +454,17 @@ export default function App() {
   }
 
   // ============================================================================
+  // PANTALLA PÚBLICA DE CANCELACIÓN — /cancelar/:token
+  //
+  // Mismo modelo de confianza que /firmar/: enlace incluido en los correos de
+  // cita (ver utils/messaging.service.js en Mind), token opaco de un solo uso
+  // como única credencial, sin cuenta ni sesión del paciente.
+  // ============================================================================
+  if (window.location.pathname.startsWith('/cancelar/')) {
+    return <CancelAppointment />;
+  }
+
+  // ============================================================================
   // PANTALLA PÚBLICA DE AUTOAPLICACIÓN — /evaluacion/:token
   //
   // Misma superficie y mismo modelo de confianza que /firmar/: el paciente no
@@ -432,6 +499,10 @@ export default function App() {
         onUserUpdated={handleUserUpdated}
         currentContext={workspaceContext}
         onContextChange={setWorkspaceContext}
+        notifications={staffNotifications}
+        onMarkNotificationsRead={handleMarkNotificationsRead}
+        onDeleteNotification={handleDeleteNotification}
+        onDeleteAllNotifications={handleDeleteAllNotifications}
       />
 
       {/* 2. RBAC ROLE GUARD ROUTER */}

@@ -33,6 +33,15 @@ export const FORBIDDEN_ACCESS_EVENT = 'forbidden-access';
 // ────────────────────────────────────────────────────────────────────────────
 export const NEW_APPOINTMENT_EVENT = 'staff-new-appointment';
 
+// ────────────────────────────────────────────────────────────────────────────
+// EVENTO GLOBAL — abrir una cita puntual desde la campana de notificaciones
+// Navbar.tsx no conoce el estado interno de PsychologistPortal.tsx (modal de
+// detalle, tab activo) — dispara este evento con el `data` estructurado que
+// ya viene en la notificación (ver Notification.data en schema.prisma) y
+// PsychologistPortal.tsx arma el objeto de calendario y abre el modal.
+// ────────────────────────────────────────────────────────────────────────────
+export const OPEN_APPOINTMENT_EVENT = 'open-appointment-from-notification';
+
 function dispatchForbiddenAccess(): void {
   const event = new CustomEvent(FORBIDDEN_ACCESS_EVENT, {
     bubbles: true,
