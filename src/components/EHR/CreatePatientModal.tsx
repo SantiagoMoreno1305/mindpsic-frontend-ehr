@@ -44,6 +44,11 @@ const PATIENT_STATUS_LABELS: Record<string, string> = {
 };
 
 const DOCUMENT_TYPE_OPTIONS = ['CC', 'TI', 'PEP', 'PA', 'CE'];
+const ESTRATO_OPTIONS = [1, 2, 3, 4, 5, 6];
+// Mismo catálogo que usa Valoración Individual (InitialAssessmentWizard) para
+// el contacto de emergencia — se mantiene igual para no confundir con dos
+// listas distintas de parentesco en la misma app.
+const PARENTESCO_OPTIONS = ['Madre', 'Padre', 'Hermano/a', 'Cónyuge / Pareja', 'Hijo/a', 'Abuelo/a', 'Tutor legal', 'Otro'];
 
 // Filtrado en vivo — mismas reglas que valida el backend (validateName/
 // validateDocumentId/validatePhone en patient.controller.js), para que el
@@ -63,6 +68,11 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
   const [birthDate, setBirthDate] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [estrato, setEstrato] = useState('');
+  const [emergencyContactNombres, setEmergencyContactNombres] = useState('');
+  const [emergencyContactApellidos, setEmergencyContactApellidos] = useState('');
+  const [emergencyContactTelefono, setEmergencyContactTelefono] = useState('');
+  const [emergencyContactParentesco, setEmergencyContactParentesco] = useState('');
   const [companyId, setCompanyId] = useState('');
   const { companies, loading: loadingCompanies } = useCompanies();
   const [psychologistId, setPsychologistId] = useState('');
@@ -91,6 +101,11 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
     setBirthDate('');
     setEmail('');
     setPhone('');
+    setEstrato('');
+    setEmergencyContactNombres('');
+    setEmergencyContactApellidos('');
+    setEmergencyContactTelefono('');
+    setEmergencyContactParentesco('');
     setCompanyId('');
     setPsychologistId('');
     setError(null);
@@ -116,6 +131,10 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
       setError('El teléfono debe tener exactamente 10 dígitos.');
       return;
     }
+    if (emergencyContactTelefono.trim() && emergencyContactTelefono.trim().length !== 10) {
+      setError('El teléfono de contacto de emergencia debe tener exactamente 10 dígitos.');
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
@@ -132,6 +151,11 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
           birthDate: birthDate || undefined,
           email: email.trim() || undefined,
           phone: phone.trim() || undefined,
+          estrato: estrato || undefined,
+          emergencyContactNombres: emergencyContactNombres.trim() || undefined,
+          emergencyContactApellidos: emergencyContactApellidos.trim() || undefined,
+          emergencyContactTelefono: emergencyContactTelefono.trim() || undefined,
+          emergencyContactParentesco: emergencyContactParentesco || undefined,
           companyId: companyId || undefined,
           corporateClient: selectedCompany?.name || 'Particular',
           psychologistId: psychologistId || undefined,
@@ -268,6 +292,17 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
                 className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
               />
             </div>
+            <div>
+              <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Estrato</label>
+              <select
+                value={estrato}
+                onChange={(e) => setEstrato(e.target.value)}
+                className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+              >
+                <option value="">Sin especificar</option>
+                {ESTRATO_OPTIONS.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
           </div>
 
           <div>
@@ -279,6 +314,52 @@ export default function CreatePatientModal({ isOpen, onClose, onCreated }: Creat
               placeholder="juan@correo.com"
               className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
             />
+          </div>
+
+          <div className="border-t border-slate-100 pt-4">
+            <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Contacto de emergencia (opcional)</p>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Nombres</label>
+                <input
+                  value={emergencyContactNombres}
+                  onChange={(e) => setEmergencyContactNombres(onlyLetters(e.target.value))}
+                  placeholder="Ej. María"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Apellidos</label>
+                <input
+                  value={emergencyContactApellidos}
+                  onChange={(e) => setEmergencyContactApellidos(onlyLetters(e.target.value))}
+                  placeholder="Ej. Pérez"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Teléfono</label>
+                <input
+                  value={emergencyContactTelefono}
+                  onChange={(e) => setEmergencyContactTelefono(onlyDigits(e.target.value, 10))}
+                  placeholder="Ej. 3132220587"
+                  inputMode="numeric"
+                  maxLength={10}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Parentesco</label>
+                <select
+                  value={emergencyContactParentesco}
+                  onChange={(e) => setEmergencyContactParentesco(e.target.value)}
+                  className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                >
+                  <option value="">Selecciona</option>
+                  {PARENTESCO_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
