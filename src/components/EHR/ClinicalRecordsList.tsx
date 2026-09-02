@@ -10,6 +10,7 @@ interface RealPatient {
   documentId: string;
   email?: string | null;
   phone?: string | null;
+  recordNumber?: string | null;
 }
 
 interface Summary {
@@ -91,7 +92,7 @@ export default function ClinicalRecordsList({
     if (!q) return patients;
     return patients.filter((p) => {
       const name = `${p.firstName} ${p.lastName}`.toLowerCase();
-      return name.includes(q) || p.documentId?.toLowerCase().includes(q);
+      return name.includes(q) || p.documentId?.toLowerCase().includes(q) || p.recordNumber?.toLowerCase().includes(q);
     });
   }, [patients, query]);
 
@@ -109,7 +110,7 @@ export default function ClinicalRecordsList({
   const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="mx-auto max-w-7xl">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900">Gestor de Historias Clínicas</h1>
@@ -165,7 +166,7 @@ export default function ClinicalRecordsList({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar por nombre o documento..."
+            placeholder="Buscar por nombre, documento o número de historia clínica..."
             className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-9 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
           />
           {query && (
