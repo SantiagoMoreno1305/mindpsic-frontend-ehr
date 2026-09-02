@@ -45,12 +45,14 @@ interface AssessmentForm {
   telefono: string;
 
   requiereRepresentanteLegal: boolean;
-  legalRep1Nombre: string;
+  legalRep1Nombres: string;
+  legalRep1Apellidos: string;
   legalRep1Parentesco: string;
   legalRep1Telefono: string;
   legalRep1Correo: string;
   tieneSegundoRepresentante: boolean;
-  legalRep2Nombre: string;
+  legalRep2Nombres: string;
+  legalRep2Apellidos: string;
   legalRep2Parentesco: string;
   legalRep2Telefono: string;
   legalRep2Correo: string;
@@ -84,8 +86,8 @@ const EMPTY_FORM: AssessmentForm = {
   estudiaActualmente: null, semestreGradoTrimestre: '', carrera: '', ocupacion: '',
   correoElectronico: '', direccionResidencia: '', departamentoResidencia: '', ciudadResidencia: '',
   barrio: '', estrato: '', telefono: '',
-  requiereRepresentanteLegal: false, legalRep1Nombre: '', legalRep1Parentesco: '', legalRep1Telefono: '', legalRep1Correo: '',
-  tieneSegundoRepresentante: false, legalRep2Nombre: '', legalRep2Parentesco: '', legalRep2Telefono: '', legalRep2Correo: '',
+  requiereRepresentanteLegal: false, legalRep1Nombres: '', legalRep1Apellidos: '', legalRep1Parentesco: '', legalRep1Telefono: '', legalRep1Correo: '',
+  tieneSegundoRepresentante: false, legalRep2Nombres: '', legalRep2Apellidos: '', legalRep2Parentesco: '', legalRep2Telefono: '', legalRep2Correo: '',
   personaReportaMotivo: '', motivoConsulta: '', conducta: '', duracion: '', intensidad: '', frecuencia: '',
   expectativas: '',
   contactoEmergenciaNombres: '', contactoEmergenciaApellidos: '', contactoEmergenciaTelefono: '', contactoEmergenciaParentesco: '',
@@ -119,6 +121,27 @@ const STEPS = [
   'Contexto familiar',
   'Cierre profesional',
 ];
+
+// Mapea cada clave que el backend puede devolver en `missing` (ver
+// requiredFields en signAssessment) a la(s) clave(s) reales del formulario y
+// a la pestaña (índice de STEPS) donde vive — para resaltar en rojo
+// exactamente qué input falta y en qué pestaña está, en vez de solo listar
+// los nombres en un toast que hay que ir a buscar a mano.
+const REQUIRED_FIELD_MAP: Record<string, { formFields: (keyof AssessmentForm)[]; step: number }> = {
+  nombresApellidos: { formFields: ['nombresPaciente', 'apellidosPaciente'], step: 0 },
+  tipoDocumento: { formFields: ['tipoDocumento'], step: 0 },
+  numeroDocumento: { formFields: ['numeroDocumento'], step: 0 },
+  fechaNacimiento: { formFields: ['fechaNacimiento'], step: 0 },
+  sexoBiologico: { formFields: ['sexoBiologico'], step: 0 },
+  epsCodigo: { formFields: ['epsCodigo'], step: 0 },
+  telefono: { formFields: ['telefono'], step: 1 },
+  departamentoResidencia: { formFields: ['departamentoResidencia'], step: 1 },
+  ciudadResidencia: { formFields: ['ciudadResidencia'], step: 1 },
+  motivoConsulta: { formFields: ['motivoConsulta'], step: 3 },
+  conducta: { formFields: ['conducta'], step: 3 },
+  tipoConsentimiento: { formFields: ['tipoConsentimiento'], step: 5 },
+  anexoConsentimientoDocId: { formFields: ['anexoConsentimientoDocId'], step: 5 },
+};
 
 function apiBase() {
   return import.meta.env.VITE_API_URL || 'http://localhost:9000';
@@ -171,6 +194,14 @@ export default function InitialAssessmentWizard({
 }) {
   const [step, setStep] = useState(0);
   const [form, setForm] = useState<AssessmentForm>(EMPTY_FORM);
+  // Claves del formulario que el backend reportó como faltantes en el último
+  // intento de firma — se limpian una a una apenas el campo deja de estar vacío.
+  const [missingFields, setMissingFields] = useState<Set<keyof AssessmentForm>>(new Set());
+  // No se persiste — es solo el disparador de "copiar y bloquear" los campos
+  // de contacto de emergencia con los del representante legal 1. Al recargar
+  // el formulario siempre arranca destildado, aunque los datos ya copiados
+  // se queden (siguen siendo campos normales del contacto de emergencia).
+  const [emergencyContactSameAsLegalRep, setEmergencyContactSameAsLegalRep] = useState(false);
   const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRelationship, setNewMemberRelationship] = useState('');
@@ -262,6 +293,62 @@ export default function InitialAssessmentWizard({
     const next = { ...form, ...patch };
     setForm(next);
     scheduleSave(next);
+    // Apenas un campo marcado como faltante deja de estar vacío, se le quita
+    // el resaltado en rojo — no hace falta volver a intentar firmar para que
+    // desaparezca.
+    if (missingFields.size > 0) {
+      const stillMissing = new Set(missingFields);
+      let changed = false;
+      for (const key of Object.keys(patch) as (keyof AssessmentForm)[]) {
+        if (stillMissing.has(key) && next[key]) {
+          stillMissing.delete(key);
+          changed = true;
+        }
+      }
+      if (changed) setMissingFields(stillMissing);
+    }
+  };
+
+  // Copia (nombres/apellidos/teléfono/parentesco — el correo no aplica, el
+  // contacto de emergencia no tiene ese campo) del representante legal 1 al
+  // contacto de emergencia, y bloquea esos 4 campos mientras el checkbox
+  // siga marcado. Desmarcar solo desbloquea; no borra lo ya copiado.
+  //
+  // IMPORTANTE: si el representante legal 1 todavía no tiene un campo
+  // lleno, ESE campo no se toca al guardar — nunca se sobrescribe un
+  // contacto de emergencia ya guardado con vacíos solo porque marcaste el
+  // checkbox antes de llenar al representante. (Bug real: pasó exactamente
+  // esto — se perdió un contacto de emergencia ya guardado.) La pantalla sí
+  // se ve vacía/bloqueada mientras tanto (ver value= más abajo, que muestra
+  // en vivo lo del representante) — eso es solo visual, lo guardado no se toca.
+  const handleEmergencyContactSameAsLegalRep = (checked: boolean) => {
+    setEmergencyContactSameAsLegalRep(checked);
+    if (checked) {
+      const patch: Partial<AssessmentForm> = {};
+      if (form.legalRep1Nombres) patch.contactoEmergenciaNombres = form.legalRep1Nombres;
+      if (form.legalRep1Apellidos) patch.contactoEmergenciaApellidos = form.legalRep1Apellidos;
+      if (form.legalRep1Telefono) patch.contactoEmergenciaTelefono = form.legalRep1Telefono;
+      if (form.legalRep1Parentesco) patch.contactoEmergenciaParentesco = form.legalRep1Parentesco;
+      if (Object.keys(patch).length > 0) update(patch);
+    }
+  };
+
+  // Mientras el checkbox esté marcado, cualquier edición al representante
+  // legal 1 se refleja también en el contacto de emergencia (que queda
+  // bloqueado/de-solo-lectura en pantalla) — evita que quede desactualizado.
+  // Mismo cuidado que arriba: un campo que quede vacío en el representante
+  // NO se propaga como vacío al contacto de emergencia ya guardado.
+  const updateLegalRep1 = (patch: Partial<Pick<AssessmentForm, 'legalRep1Nombres' | 'legalRep1Apellidos' | 'legalRep1Telefono' | 'legalRep1Parentesco'>>) => {
+    if (!emergencyContactSameAsLegalRep) {
+      update(patch);
+      return;
+    }
+    const mirror: Partial<AssessmentForm> = {};
+    if (patch.legalRep1Nombres) mirror.contactoEmergenciaNombres = patch.legalRep1Nombres;
+    if (patch.legalRep1Apellidos) mirror.contactoEmergenciaApellidos = patch.legalRep1Apellidos;
+    if (patch.legalRep1Telefono) mirror.contactoEmergenciaTelefono = patch.legalRep1Telefono;
+    if (patch.legalRep1Parentesco) mirror.contactoEmergenciaParentesco = patch.legalRep1Parentesco;
+    update({ ...patch, ...mirror });
   };
 
   const toggleMulti = (field: 'poblacionDiferencial' | 'instrumentosAplicados', value: string) => {
@@ -379,8 +466,21 @@ export default function InitialAssessmentWizard({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         toast.error(data.error || 'Faltan campos obligatorios para firmar');
+        if (data.code === 'MISSING_REQUIRED_FIELDS' && Array.isArray(data.missing)) {
+          const nextMissing = new Set<keyof AssessmentForm>();
+          let firstStep: number | null = null;
+          for (const backendField of data.missing as string[]) {
+            const entry = REQUIRED_FIELD_MAP[backendField];
+            if (!entry) continue;
+            entry.formFields.forEach((f) => nextMissing.add(f));
+            if (firstStep === null || entry.step < firstStep) firstStep = entry.step;
+          }
+          setMissingFields(nextMissing);
+          if (firstStep !== null) setStep(firstStep);
+        }
         return;
       }
+      setMissingFields(new Set());
       toast.success('✅ Valoración Individual completada');
       onComplete();
     } catch {
@@ -400,6 +500,11 @@ export default function InitialAssessmentWizard({
 
   const age = calcAge(form.fechaNacimiento);
   const isLastStep = step === STEPS.length - 1;
+  const stepsWithMissing = new Set(
+    Object.values(REQUIRED_FIELD_MAP)
+      .filter((entry) => entry.formFields.some((f) => missingFields.has(f)))
+      .map((entry) => entry.step)
+  );
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
@@ -417,10 +522,15 @@ export default function InitialAssessmentWizard({
             key={label}
             type="button"
             onClick={() => setStep(i)}
-            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
-              i === step ? 'bg-charcoal-900 text-white' : i < step ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-white text-slate-400 border border-slate-200'
-            }`}
+            className={`relative rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+              stepsWithMissing.has(i)
+                ? 'bg-rose-50 text-rose-700 border border-rose-300'
+                : i === step ? 'bg-charcoal-900 text-white' : i < step ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-white text-slate-400 border border-slate-200'
+            } ${i === step ? 'ring-2 ring-offset-1 ring-charcoal-900' : ''}`}
           >
+            {stepsWithMissing.has(i) && (
+              <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-rose-500 text-[8px] font-bold text-white">!</span>
+            )}
             {i + 1}. {label}
           </button>
         ))}
@@ -429,13 +539,13 @@ export default function InitialAssessmentWizard({
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
         {step === 0 && (
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Nombres *">
+            <Field label="Nombres *" error={missingFields.has('nombresPaciente')}>
               <Input value={form.nombresPaciente} onChange={(v) => update({ nombresPaciente: v })} />
             </Field>
-            <Field label="Apellidos *">
+            <Field label="Apellidos *" error={missingFields.has('apellidosPaciente')}>
               <Input value={form.apellidosPaciente} onChange={(v) => update({ apellidosPaciente: v })} />
             </Field>
-            <Field label="Entidad prestadora de servicios de salud (EPS) *">
+            <Field label="Entidad prestadora de servicios de salud (EPS) *" error={missingFields.has('epsCodigo')}>
               <EpsSelect
                 codigo={form.epsCodigo}
                 nombre={form.epsNombre}
@@ -445,22 +555,22 @@ export default function InitialAssessmentWizard({
             <Field label="Régimen de salud">
               <Select value={form.regimenSalud} options={REGIMEN_OPTIONS} onChange={(v) => update({ regimenSalud: v })} />
             </Field>
-            <Field label="Tipo de documento *">
+            <Field label="Tipo de documento *" error={missingFields.has('tipoDocumento')}>
               <Select value={form.tipoDocumento} options={TIPO_DOC_OPTIONS} onChange={(v) => update({ tipoDocumento: v })} />
             </Field>
-            <Field label="Número de documento *">
+            <Field label="Número de documento *" error={missingFields.has('numeroDocumento')}>
               <Input value={form.numeroDocumento} onChange={(v) => update({ numeroDocumento: v.trim() })} />
             </Field>
             <Field label="Estado civil">
               <Select value={form.estadoCivil} options={ESTADO_CIVIL_OPTIONS} onChange={(v) => update({ estadoCivil: v })} />
             </Field>
-            <Field label="Sexo biológico *">
+            <Field label="Sexo biológico *" error={missingFields.has('sexoBiologico')}>
               <Select value={form.sexoBiologico} options={SEXO_OPTIONS} onChange={(v) => update({ sexoBiologico: v })} />
             </Field>
             <Field label="Género">
               <Select value={form.genero} options={GENERO_OPTIONS} onChange={(v) => update({ genero: v })} />
             </Field>
-            <Field label="Fecha de nacimiento *">
+            <Field label="Fecha de nacimiento *" error={missingFields.has('fechaNacimiento')}>
               <input
                 type="date" value={form.fechaNacimiento} max={new Date().toISOString().slice(0, 10)}
                 onChange={(e) => update({ fechaNacimiento: e.target.value })}
@@ -534,20 +644,20 @@ export default function InitialAssessmentWizard({
             <Field label="Correo electrónico">
               <Input type="email" value={form.correoElectronico} onChange={(v) => update({ correoElectronico: v })} />
             </Field>
-            <Field label="Teléfono celular o fijo">
+            <Field label="Teléfono celular o fijo *" error={missingFields.has('telefono')}>
               <Input value={form.telefono} onChange={(v) => update({ telefono: v })} />
             </Field>
             <Field label="Dirección de residencia">
               <Input value={form.direccionResidencia} onChange={(v) => update({ direccionResidencia: v })} />
             </Field>
-            <Field label="Residencia — Departamento *">
+            <Field label="Residencia — Departamento *" error={missingFields.has('departamentoResidencia')}>
               <Select
                 value={form.departamentoResidencia}
                 options={DEPARTAMENTOS_ORDENADOS}
                 onChange={(v) => update({ departamentoResidencia: v, ciudadResidencia: '' })}
               />
             </Field>
-            <Field label="Residencia — Ciudad / Municipio *">
+            <Field label="Residencia — Ciudad / Municipio *" error={missingFields.has('ciudadResidencia')}>
               <Select
                 value={form.ciudadResidencia}
                 options={form.departamentoResidencia ? (COLOMBIA_DEPARTAMENTOS[form.departamentoResidencia] ?? []) : []}
@@ -579,11 +689,27 @@ export default function InitialAssessmentWizard({
               <div className="rounded-xl border border-slate-100 bg-slate-50 p-4">
                 <p className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-400">Representante legal 1</p>
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Nombre completo"><Input value={form.legalRep1Nombre} onChange={(v) => update({ legalRep1Nombre: v })} /></Field>
-                  <Field label="Parentesco"><Input value={form.legalRep1Parentesco} onChange={(v) => update({ legalRep1Parentesco: v })} /></Field>
-                  <Field label="Teléfono / celular"><Input value={form.legalRep1Telefono} onChange={(v) => update({ legalRep1Telefono: v })} /></Field>
-                  <Field label="Correo electrónico"><Input type="email" value={form.legalRep1Correo} onChange={(v) => update({ legalRep1Correo: v })} /></Field>
+                  <Field label="Nombres"><Input value={form.legalRep1Nombres} onChange={(v) => updateLegalRep1({ legalRep1Nombres: v })} /></Field>
+                  <Field label="Apellidos"><Input value={form.legalRep1Apellidos} onChange={(v) => updateLegalRep1({ legalRep1Apellidos: v })} /></Field>
+                  <Field label="Parentesco"><Select value={form.legalRep1Parentesco} options={PARENTESCO_OPTIONS} onChange={(v) => updateLegalRep1({ legalRep1Parentesco: v })} /></Field>
+                  <Field label="Teléfono / celular"><Input value={form.legalRep1Telefono} onChange={(v) => updateLegalRep1({ legalRep1Telefono: v })} /></Field>
+                  {/* Correo — no tiene equivalente en Contacto de emergencia, así que
+                      nunca se bloquea ni se copia: siempre queda editable aparte. */}
+                  <Field label="Correo electrónico (opcional)"><Input type="email" value={form.legalRep1Correo} onChange={(v) => update({ legalRep1Correo: v })} /></Field>
                 </div>
+
+                <label className="mt-4 flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={emergencyContactSameAsLegalRep}
+                    onChange={(e) => handleEmergencyContactSameAsLegalRep(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 accent-indigo-600"
+                  />
+                  <span>
+                    ¿El contacto de emergencia es el mismo representante legal 1?
+                    <span className="block text-xs text-slate-400">Copia nombres, apellidos, teléfono y parentesco al Contacto de emergencia (pestaña Contexto familiar) y los bloquea ahí mientras esto quede marcado.</span>
+                  </span>
+                </label>
 
                 <div className="mt-4">
                   <Field label="¿Existe un segundo representante legal?">
@@ -595,10 +721,11 @@ export default function InitialAssessmentWizard({
                   <div className="mt-4 border-t border-slate-200 pt-4">
                     <p className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-400">Representante legal 2</p>
                     <div className="grid gap-4 sm:grid-cols-2">
-                      <Field label="Nombre completo"><Input value={form.legalRep2Nombre} onChange={(v) => update({ legalRep2Nombre: v })} /></Field>
-                      <Field label="Parentesco"><Input value={form.legalRep2Parentesco} onChange={(v) => update({ legalRep2Parentesco: v })} /></Field>
+                      <Field label="Nombres"><Input value={form.legalRep2Nombres} onChange={(v) => update({ legalRep2Nombres: v })} /></Field>
+                      <Field label="Apellidos"><Input value={form.legalRep2Apellidos} onChange={(v) => update({ legalRep2Apellidos: v })} /></Field>
+                      <Field label="Parentesco"><Select value={form.legalRep2Parentesco} options={PARENTESCO_OPTIONS} onChange={(v) => update({ legalRep2Parentesco: v })} /></Field>
                       <Field label="Teléfono / celular"><Input value={form.legalRep2Telefono} onChange={(v) => update({ legalRep2Telefono: v })} /></Field>
-                      <Field label="Correo electrónico"><Input type="email" value={form.legalRep2Correo} onChange={(v) => update({ legalRep2Correo: v })} /></Field>
+                      <Field label="Correo electrónico (opcional)"><Input type="email" value={form.legalRep2Correo} onChange={(v) => update({ legalRep2Correo: v })} /></Field>
                     </div>
                   </div>
                 )}
@@ -612,10 +739,10 @@ export default function InitialAssessmentWizard({
             <Field label="¿Quién reporta el motivo de consulta?">
               <Select value={form.personaReportaMotivo} options={REPORTA_OPTIONS} onChange={(v) => update({ personaReportaMotivo: v })} />
             </Field>
-            <Field label="Motivo de consulta *">
+            <Field label="Motivo de consulta *" error={missingFields.has('motivoConsulta')}>
               <TextArea value={form.motivoConsulta} onChange={(v) => update({ motivoConsulta: v })} rows={3} />
             </Field>
-            <Field label="Conducta objeto de valoración *">
+            <Field label="Conducta objeto de valoración *" error={missingFields.has('conducta')}>
               <TextArea value={form.conducta} onChange={(v) => update({ conducta: v })} rows={3} />
             </Field>
             <div className="grid gap-4 sm:grid-cols-3">
@@ -655,19 +782,49 @@ export default function InitialAssessmentWizard({
             </Field>
 
             <div>
-              <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-400">Contacto de emergencia</p>
+              <p className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-slate-400">
+                Contacto de emergencia
+                {emergencyContactSameAsLegalRep && (
+                  <span className="rounded-full bg-slate-200 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-slate-500">
+                    Igual al representante legal 1
+                  </span>
+                )}
+              </p>
               <div className="grid gap-3 sm:grid-cols-2">
+                {/* Bloqueado: se prioriza el valor EN VIVO del representante
+                    legal 1 (para que una edición ahí se refleje al instante),
+                    pero si el representante todavía no tiene ese dato, se cae
+                    a lo que YA esté guardado en contacto de emergencia — en
+                    modo lectura, nunca un blanco que dé a entender que se
+                    perdió un dato que en realidad sigue intacto. */}
                 <Field label="Nombres">
-                  <Input value={form.contactoEmergenciaNombres} onChange={(v) => update({ contactoEmergenciaNombres: v })} />
+                  <Input
+                    value={emergencyContactSameAsLegalRep ? (form.legalRep1Nombres || form.contactoEmergenciaNombres) : form.contactoEmergenciaNombres}
+                    onChange={(v) => update({ contactoEmergenciaNombres: v })}
+                    disabled={emergencyContactSameAsLegalRep}
+                  />
                 </Field>
                 <Field label="Apellidos">
-                  <Input value={form.contactoEmergenciaApellidos} onChange={(v) => update({ contactoEmergenciaApellidos: v })} />
+                  <Input
+                    value={emergencyContactSameAsLegalRep ? (form.legalRep1Apellidos || form.contactoEmergenciaApellidos) : form.contactoEmergenciaApellidos}
+                    onChange={(v) => update({ contactoEmergenciaApellidos: v })}
+                    disabled={emergencyContactSameAsLegalRep}
+                  />
                 </Field>
                 <Field label="Teléfono">
-                  <Input value={form.contactoEmergenciaTelefono} onChange={(v) => update({ contactoEmergenciaTelefono: v })} />
+                  <Input
+                    value={emergencyContactSameAsLegalRep ? (form.legalRep1Telefono || form.contactoEmergenciaTelefono) : form.contactoEmergenciaTelefono}
+                    onChange={(v) => update({ contactoEmergenciaTelefono: v })}
+                    disabled={emergencyContactSameAsLegalRep}
+                  />
                 </Field>
                 <Field label="Parentesco">
-                  <Select value={form.contactoEmergenciaParentesco} options={PARENTESCO_OPTIONS} onChange={(v) => update({ contactoEmergenciaParentesco: v })} />
+                  <Select
+                    value={emergencyContactSameAsLegalRep ? (form.legalRep1Parentesco || form.contactoEmergenciaParentesco) : form.contactoEmergenciaParentesco}
+                    options={PARENTESCO_OPTIONS}
+                    onChange={(v) => update({ contactoEmergenciaParentesco: v })}
+                    disabled={emergencyContactSameAsLegalRep}
+                  />
                 </Field>
               </div>
             </div>
@@ -697,14 +854,14 @@ export default function InitialAssessmentWizard({
             <Field label="Hipótesis preliminares">
               <TextArea value={form.hipotesisPreliminares} onChange={(v) => update({ hipotesisPreliminares: v })} rows={3} />
             </Field>
-            <Field label="Tratamiento de datos — Consentimiento o Asentimiento *">
+            <Field label="Tratamiento de datos — Consentimiento o Asentimiento *" error={missingFields.has('tipoConsentimiento')}>
               <Select
                 value={form.tipoConsentimiento} options={CONSENTIMIENTO_OPTIONS}
                 onChange={(v) => update({ tipoConsentimiento: v })}
                 placeholder="Acepto el tratamiento de datos — seleccione el tipo"
               />
             </Field>
-            <Field label="Anexo — Consentimiento/Asentimiento firmado">
+            <Field label="Anexo — Consentimiento/Asentimiento firmado *" error={missingFields.has('anexoConsentimientoDocId')}>
               <div className="flex flex-col gap-2 rounded-lg border border-toast-200 bg-toast-50/60 p-3">
                 {form.anexoConsentimientoDocId ? (
                   <span className="inline-flex w-fit items-center gap-1.5 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-xs font-bold text-emerald-700">
@@ -789,20 +946,26 @@ export default function InitialAssessmentWizard({
   );
 }
 
-function Field({ label, children, span2 }: { label: string; children: React.ReactNode; span2?: boolean }) {
+function Field({ label, children, span2, error }: { label: string; children: React.ReactNode; span2?: boolean; error?: boolean }) {
   return (
     <div className={span2 ? 'sm:col-span-2' : ''}>
-      <label className="mb-1 block text-xs font-semibold text-slate-600">{label}</label>
-      {children}
+      <label className={`mb-1 flex items-center gap-1.5 text-xs font-semibold ${error ? 'text-rose-600' : 'text-slate-600'}`}>
+        {label}
+        {error && <span className="rounded-full bg-rose-100 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-rose-600">Falta</span>}
+      </label>
+      {/* El anillo rojo envuelve el contenido tal cual venga (input, select,
+          o componentes propios como EpsSelect/AnexoUpload) sin tener que
+          tocar cada uno por dentro. */}
+      <div className={error ? 'rounded-lg ring-2 ring-rose-400' : ''}>{children}</div>
     </div>
   );
 }
 
-function Input({ value, onChange, type = 'text', placeholder }: { value: string; onChange: (v: string) => void; type?: string; placeholder?: string }) {
+function Input({ value, onChange, type = 'text', placeholder, disabled }: { value: string; onChange: (v: string) => void; type?: string; placeholder?: string; disabled?: boolean }) {
   return (
     <input
-      type={type} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)}
-      className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+      type={type} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} disabled={disabled}
+      className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm text-charcoal-900 outline-none focus:ring-2 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-charcoal-900"
     />
   );
 }
@@ -822,7 +985,7 @@ function Select({ value, options, onChange, disabled, placeholder }: { value: st
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-slate-50 disabled:text-slate-400"
+      className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm text-charcoal-900 outline-none focus:ring-2 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-charcoal-900"
     >
       <option value="">{placeholder ?? '— Seleccione —'}</option>
       {options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
