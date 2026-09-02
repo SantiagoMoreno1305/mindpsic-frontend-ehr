@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
-  ArrowLeft, AlertTriangle, CheckCircle2, Clock, Loader2, ShieldAlert, Save,
+  ArrowLeft, AlertTriangle, CheckCircle2, Clock, Loader2, ShieldAlert, Save, Stethoscope,
 } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 
@@ -56,6 +56,8 @@ interface Instrument {
   instructions: string;
   timeWindow: string | null;
   durationMin: number | null;
+  modality: string;
+  notes: string | null;
   scales: Scale[];
   items: Item[];
   responseSets: { setId: string; options: ResponseOption[] }[];
@@ -87,6 +89,10 @@ interface Administration {
   companyName: string | null;
   ageAtTest: number | null;
   sexAtTest: string | null;
+  appliedMode: string;
+  notes: string | null;
+  ratedByName: string | null;
+  assignedByName: string | null;
   patient: { id: string; firstName: string; lastName: string; recordNumber: string | null };
   results: ScoreResult[];
   firedAlerts: FiredAlert[];
@@ -141,6 +147,14 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [notas, setNotas] = useState('');
+
+  // ── Heteroaplicada ─────────────────────────────────────────────────────────
+  // La puntúa el profesional durante la entrevista, con el paciente delante.
+  // Cambia el encabezado (guía de administración, no instrucciones para el
+  // paciente), el lenguaje ("puntuación" en vez de "tus respuestas") y hace
+  // visible qué ítem es crítico: eso el clínico SÍ debe saberlo.
+  const esHetero = instrument?.modality === 'heteroaplicada';
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -151,6 +165,7 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
       setInstrument(data.instrument);
       setAdministration(data.administration);
       setAnswers(data.administration.responses || {});
+      setNotas(data.administration.notes || '');
     } catch (err) {
       console.error('[AssessmentRunner] Error cargando la aplicación:', err);
       toast.error('No se pudo cargar la prueba.');
@@ -222,7 +237,8 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
       if (!saveRes.ok) throw new Error(`HTTP ${saveRes.status}`);
 
       const res = await apiFetch(
-        `/api/assessments/administrations/${administrationId}/submit`, { method: 'POST' }
+        `/api/assessments/administrations/${administrationId}/submit`,
+        { method: 'POST', body: JSON.stringify({ notes: notas }) }
       );
       const data = await res.json();
       if (!res.ok) {
@@ -314,13 +330,38 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
           </div>
         </div>
 
+        {esHetero && (
+          <div className="mt-4 flex items-start gap-2 rounded-lg border border-toast-300 bg-toast-50 p-3">
+            <Stethoscope className="mt-0.5 h-4 w-4 shrink-0 text-toast-500" />
+            <p className="text-xs leading-relaxed text-slate-700">
+              <span className="font-bold text-toast-500">Escala heteroaplicada.</span>{' '}
+              La puntúas tú a partir de la entrevista, no la responde el paciente.
+            </p>
+          </div>
+        )}
+
         <p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm leading-relaxed text-slate-700">
+          {esHetero && (
+            <span className="mb-1 block text-xs font-bold uppercase tracking-wide text-slate-400">
+              Guía de administración
+            </span>
+          )}
           {instrument.instructions}
         </p>
         {instrument.timeWindow && (
           <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-toast-500">
             Periodo evaluado: {instrument.timeWindow}
           </p>
+        )}
+        {esHetero && instrument.notes && (
+          <details className="mt-3">
+            <summary className="cursor-pointer text-xs font-semibold text-slate-500 hover:text-slate-900">
+              Notas del instrumento y limitaciones
+            </summary>
+            <p className="mt-2 whitespace-pre-line text-xs leading-relaxed text-slate-600">
+              {instrument.notes}
+            </p>
+          </details>
         )}
       </div>
 
@@ -411,9 +452,9 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
                 </span>
                 <p className="text-sm font-semibold leading-relaxed text-slate-900">
                   {item.text}
-                  {item.isCritical && (
+                  {item.isCritical && esHetero && (
                     <span className="ml-2 align-middle text-[10px] font-bold uppercase text-red-600">
-                      ítem crítico
+                      ítem crítico · verificar riesgo
                     </span>
                   )}
                 </p>
@@ -468,11 +509,47 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
         })}
       </div>
 
+      {/* Observaciones de la aplicación */}
+      {!isCompleted && (
+        <div className="rounded-xl border border-slate-100 bg-white p-4">
+          <label className="text-xs font-semibold text-slate-600">
+            Observaciones de la aplicación
+            {esHetero && <span className="ml-1 font-normal text-slate-400">— en qué te basaste para puntuar</span>}
+            <textarea
+              rows={3}
+              value={notas}
+              onChange={(e) => { setNotas(e.target.value); setDirty(true); }}
+              placeholder={esHetero
+                ? 'Observación de conducta, contexto de la entrevista, aclaraciones sobre ítems dudosos…'
+                : 'Contexto de la aplicación (opcional)'}
+              className="mt-1.5 w-full resize-y rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-toast-500"
+            />
+          </label>
+        </div>
+      )}
+
+      {isCompleted && administration.notes && (
+        <div className="rounded-xl border border-slate-100 bg-white p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Observaciones de la aplicación
+          </p>
+          <p className="mt-1.5 whitespace-pre-line text-sm leading-relaxed text-slate-700">
+            {administration.notes}
+          </p>
+          {administration.ratedByName && (
+            <p className="mt-2 text-xs text-slate-400">
+              Puntuada por {administration.ratedByName}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Barra de envío */}
       {!isCompleted && (
         <div className="sticky bottom-0 flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-lg">
           <div className="text-xs text-slate-500">
-            <span className="font-bold text-slate-900">{answeredCount}</span> de {visibleItems.length} respondidos
+            <span className="font-bold text-slate-900">{answeredCount}</span> de {visibleItems.length}{' '}
+            {esHetero ? 'puntuados' : 'respondidos'}
             {missing.length > 0 && (
               <span className="ml-2 text-amber-600">· faltan {missing.length}</span>
             )}

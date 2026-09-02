@@ -243,6 +243,20 @@ export default function App() {
           if (notif.type === 'APPOINTMENT_CANCELLED_BY_PATIENT') {
             toast(notif.message, { duration: 8000, position: 'top-right', icon: '🚫' });
           }
+          // Estos tres tipos se crean en el backend (assessments.service.js /
+          // assessments.controller.js) pero antes no tenían rama aquí — el
+          // poll de abajo las marcaba read igual, así que una alerta crítica
+          // de riesgo (ideación suicida) podía quedar marcada como leída sin
+          // que nadie la hubiera visto nunca.
+          if (notif.type === 'ASSESSMENT_CRITICAL_ALERT') {
+            toast.error(notif.message, { duration: 15000, position: 'top-right', icon: '⚠️' });
+          }
+          if (notif.type === 'ASSESSMENT_COMPLETED') {
+            toast.success(notif.message, { duration: 8000, position: 'top-right', icon: '📋' });
+          }
+          if (notif.type === 'ASSESSMENT_ASSIGNED') {
+            toast(notif.message, { duration: 5000, position: 'top-right', icon: '📝' });
+          }
         });
       } catch {
         // Fallo silencioso — un poll perdido no debe interrumpir la sesión

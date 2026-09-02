@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
   ClipboardList, Search, X, Loader2, CheckCircle2, AlertTriangle,
-  ShieldAlert, Lock, Send,
+  ShieldAlert, Lock, Send, Stethoscope,
 } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
@@ -47,8 +47,10 @@ interface AdministrationRow {
   assignedAt: string;
   completedAt: string | null;
   companyName: string | null;
-  instrument: { code: string; name: string; version: string; tier: string };
+  instrument: { code: string; name: string; version: string; tier: string; modality: string };
   patient: { id: string; firstName: string; lastName: string; recordNumber: string | null };
+  ageAtTest: number | null;
+  guardianAuthorizedAt: string | null;
   results: {
     scaleId: string; rawScore: number; maxTheoretical: number;
     label: string | null; isPrimary: boolean;
@@ -63,6 +65,42 @@ interface PatientOption {
   documentId: string;
   recordNumber?: string | null;
   companyId?: string | null;
+  birthDate?: string | null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Edad del paciente y reglas asociadas
+//
+// Dos reglas distintas, y conviene no confundirlas:
+//   · Rango etario del instrumento — es propiedad del instrumento; fuera de él
+//     no se puede aplicar, no es criterio del profesional.
+//   · Minoría de edad — sí se puede aplicar EN CONSULTA; lo que exige
+//     autorización del representante legal es enviarle el enlace para que
+//     responda solo.
+// ─────────────────────────────────────────────────────────────────────────────
+const MAYORIA_DE_EDAD = 18;
+
+function calcularEdad(birthDate?: string | null): number | null {
+  if (!birthDate) return null;
+  const nacimiento = new Date(birthDate);
+  if (Number.isNaN(nacimiento.getTime())) return null;
+  const hoy = new Date();
+  let edad = hoy.getFullYear() - nacimiento.getFullYear();
+  const mes = hoy.getMonth() - nacimiento.getMonth();
+  if (mes < 0 || (mes === 0 && hoy.getDate() < nacimiento.getDate())) edad -= 1;
+  return edad >= 0 ? edad : null;
+}
+
+type MotivoBloqueo = { bloquea: boolean; razon: string | null };
+
+function evaluarPaciente(edad: number | null, min: number, max: number): MotivoBloqueo {
+  if (edad === null) {
+    return { bloquea: true, razon: 'Sin fecha de nacimiento registrada' };
+  }
+  if (edad < min || edad > max) {
+    return { bloquea: true, razon: `${edad} años — el instrumento es para ${min}-${max}` };
+  }
+  return { bloquea: false, razon: null };
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -234,13 +272,22 @@ export default function AssessmentsPanel() {
                   </p>
                 </button>
                 <div className="flex shrink-0 items-center gap-2">
-                  <button
-                    onClick={() => setLinkTarget(a)}
-                    title="Enviar enlace al paciente"
-                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold uppercase text-slate-600 hover:border-toast-500 hover:text-toast-500"
-                  >
-                    <Send className="h-3 w-3" /> Enlace
-                  </button>
+                  {a.instrument.modality === 'heteroaplicada' ? (
+                    <span
+                      title="Escala heteroaplicada: la puntúa el profesional en consulta"
+                      className="inline-flex items-center gap-1 rounded-md bg-toast-50 px-2 py-1 text-[10px] font-bold uppercase text-toast-500"
+                    >
+                      <Stethoscope className="h-3 w-3" /> En consulta
+                    </span>
+                  ) : (
+                    <button
+                      onClick={() => setLinkTarget(a)}
+                      title="Enviar enlace al paciente"
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold uppercase text-slate-600 hover:border-toast-500 hover:text-toast-500"
+                    >
+                      <Send className="h-3 w-3" /> Enlace
+                    </button>
+                  )}
                   <span className={`rounded-md px-2 py-1 text-[10px] font-bold uppercase ${STATUS_STYLE[a.status]}`}>
                     {STATUS_LABEL[a.status]}
                   </span>
@@ -401,7 +448,20 @@ function AssignModal({
   // Autoaplicación por enlace. El vencimiento es obligatorio para poder
   // enviarlo — depende de la situación clínica, así que no se asume.
   const [sendLink, setSendLink] = useState(false);
+  // La modalidad es del instrumento: solo "mixta" deja elegir. En una
+  // heteroaplicada el enlace ni siquiera se ofrece — el backend lo rechaza, y
+  // ofrecerlo para después fallar se siente roto.
+  const esHetero = instrument.modality === 'heteroaplicada';
+  const esMixta = instrument.modality === 'mixta';
+  const [avisoMenor, setAvisoMenor] = useState<{ paciente: PatientOption; edad: number } | null>(null);
+  const [guardianAuthorized, setGuardianAuthorized] = useState(false);
   const expiry = useLinkExpiry();
+
+  const edadSeleccionado = calcularEdad(selected?.birthDate);
+  const esMenor = edadSeleccionado !== null && edadSeleccionado < MAYORIA_DE_EDAD;
+  // Cambiar de paciente reinicia la autorización: se otorga para un menor
+  // concreto, no para el formulario.
+  useEffect(() => { setGuardianAuthorized(false); }, [selected?.id]);
 
   useEffect(() => {
     const handle = setTimeout(async () => {
@@ -447,7 +507,7 @@ function AssignModal({
       if (sendLink) {
         const linkRes = await apiFetch(
           `/api/assessments/administrations/${administrationId}/link`,
-          { method: 'POST', body: JSON.stringify({ expiresInMinutes: expiry.minutes }) }
+          { method: 'POST', body: JSON.stringify({ expiresInMinutes: expiry.minutes, guardianAuthorized }) }
         );
         const linkData = await linkRes.json();
         if (!linkRes.ok) {
@@ -535,20 +595,41 @@ function AssignModal({
           ) : (
             patients.map((p) => {
               const active = selected?.id === p.id;
+              const edad = calcularEdad(p.birthDate);
+              const { bloquea, razon } = evaluarPaciente(edad, instrument.minAge, instrument.maxAge);
+              const menor = edad !== null && edad < MAYORIA_DE_EDAD;
               return (
                 <button
                   key={p.id}
-                  onClick={() => setSelected(p)}
+                  disabled={bloquea}
+                  title={razon || undefined}
+                  onClick={() => {
+                    setSelected(p);
+                    // El aviso aparece al SELECCIONAR, que es cuando la
+                    // información sirve, no al intentar enviar.
+                    if (menor) setAvisoMenor({ paciente: p, edad: edad as number });
+                  }}
                   className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
-                    active
-                      ? 'border-toast-500 bg-toast-50'
-                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                    bloquea
+                      ? 'cursor-not-allowed border-slate-100 bg-slate-50 opacity-60'
+                      : active
+                        ? 'border-toast-500 bg-toast-50'
+                        : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
                   }`}
                 >
-                  <span className="font-semibold text-slate-900">
-                    {p.firstName} {p.lastName}
+                  <span className="min-w-0">
+                    <span className={`block truncate font-semibold ${bloquea ? 'text-slate-500' : 'text-slate-900'}`}>
+                      {p.firstName} {p.lastName}
+                    </span>
+                    {bloquea ? (
+                      <span className="text-xs text-red-600">{razon}</span>
+                    ) : (
+                      <span className="text-xs text-slate-400">
+                        {edad} años{menor && ' · menor de edad'}
+                      </span>
+                    )}
                   </span>
-                  <span className="text-xs text-slate-400">
+                  <span className="shrink-0 text-xs text-slate-400">
                     {p.recordNumber || p.documentId}
                   </span>
                 </button>
@@ -561,14 +642,24 @@ function AssignModal({
         <div className="mb-4 grid gap-2 sm:grid-cols-2">
           <label className="text-xs font-semibold text-slate-600">
             Modo de aplicación
-            <select
-              value={appliedMode}
-              onChange={(e) => setAppliedMode(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-toast-500"
-            >
-              <option value="autoaplicada">Autoaplicada (responde el paciente)</option>
-              <option value="heteroaplicada">Heteroaplicada (responde el profesional)</option>
-            </select>
+            {esMixta ? (
+              <select
+                value={appliedMode}
+                onChange={(e) => setAppliedMode(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-normal text-slate-900 outline-none focus:border-toast-500"
+              >
+                <option value="autoaplicada">Autoaplicada (responde el paciente)</option>
+                <option value="heteroaplicada">Heteroaplicada (responde el profesional)</option>
+              </select>
+            ) : (
+              // No es una elección: el instrumento lo define. Se muestra para
+              // que el profesional lo sepa, no para que lo cambie.
+              <p className="mt-1 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm font-normal text-slate-500">
+                {esHetero
+                  ? 'Heteroaplicada — la puntúa el profesional'
+                  : 'Autoaplicada — la responde el paciente'}
+              </p>
+            )}
           </label>
           <label className="text-xs font-semibold text-slate-600">
             Nota (opcional)
@@ -581,7 +672,17 @@ function AssignModal({
           </label>
         </div>
 
-        {/* Autoaplicación por enlace */}
+        {/* Autoaplicación por enlace — no aplica a heteroaplicadas */}
+        {esHetero ? (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-toast-300 bg-toast-50 p-3">
+            <Stethoscope className="mt-0.5 h-4 w-4 shrink-0 text-toast-500" />
+            <p className="text-xs leading-relaxed text-slate-700">
+              <span className="font-bold text-toast-500">Escala heteroaplicada.</span>{' '}
+              La puntúa el profesional durante la entrevista, con el paciente presente.
+              No se le puede enviar al paciente para que la responda por su cuenta.
+            </p>
+          </div>
+        ) : (
         <div className="mb-4 rounded-lg border border-slate-200 p-3">
           <label className="flex items-start gap-2 text-sm">
             <input
@@ -600,6 +701,25 @@ function AssignModal({
 
           {sendLink && (
             <div className="mt-3 border-t border-slate-100 pt-3">
+              {esMenor && (
+                <label className="mb-3 flex items-start gap-2 rounded-lg border-2 border-amber-300 bg-amber-50 p-3 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={guardianAuthorized}
+                    onChange={(e) => setGuardianAuthorized(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 accent-amber-600"
+                  />
+                  <span>
+                    <span className="font-semibold text-amber-900">
+                      Confirmo que cuento con la autorización del representante legal
+                    </span>
+                    <span className="block text-xs leading-relaxed text-amber-800">
+                      {selected?.firstName} tiene {edadSeleccionado} años. Un menor no otorga
+                      consentimiento por sí mismo para responder una evaluación sin acompañamiento.
+                    </span>
+                  </span>
+                </label>
+              )}
               <LinkExpiryFields expiry={expiry} />
               <p className="mt-1.5 text-xs text-slate-400">
                 Ten en cuenta el periodo que evalúa la prueba: si el paciente responde muy
@@ -608,6 +728,16 @@ function AssignModal({
             </div>
           )}
         </div>
+        )}
+
+        {avisoMenor && (
+          <AvisoMenorModal
+            paciente={avisoMenor.paciente}
+            edad={avisoMenor.edad}
+            instrument={instrument}
+            onClose={() => setAvisoMenor(null)}
+          />
+        )}
 
         <div className="flex justify-end gap-2">
           <button
@@ -618,7 +748,11 @@ function AssignModal({
           </button>
           <button
             onClick={assign}
-            disabled={!selected || assigning || (sendLink && !expiry.valid)}
+            disabled={
+              !selected || assigning
+              || (sendLink && !expiry.valid)
+              || (sendLink && esMenor && !guardianAuthorized)
+            }
             className="inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2 text-xs font-bold text-white hover:opacity-90 disabled:opacity-40"
           >
             {assigning
@@ -645,13 +779,22 @@ function SendLinkModal({
 }) {
   const expiry = useLinkExpiry();
   const [sending, setSending] = useState(false);
+  const [guardianAuthorized, setGuardianAuthorized] = useState(false);
+
+  // El enlace también se puede generar desde aquí, no solo al asignar, así que
+  // la regla de menores tiene que estar en los dos caminos. La edad se toma del
+  // snapshot guardado al asignar, no se recalcula.
+  const edad = administration.ageAtTest;
+  const esMenor = edad !== null && edad < MAYORIA_DE_EDAD;
+  const yaAutorizado = !!administration.guardianAuthorizedAt;
+  const requiereAutorizacion = esMenor && !yaAutorizado;
 
   const send = async () => {
     setSending(true);
     try {
       const res = await apiFetch(
         `/api/assessments/administrations/${administration.id}/link`,
-        { method: 'POST', body: JSON.stringify({ expiresInMinutes: expiry.minutes }) }
+        { method: 'POST', body: JSON.stringify({ expiresInMinutes: expiry.minutes, guardianAuthorized }) }
       );
       const data = await res.json();
       if (!res.ok) {
@@ -687,6 +830,32 @@ function SendLinkModal({
           </button>
         </div>
 
+        {esMenor && (
+          <div className="mb-4 rounded-lg border-2 border-amber-300 bg-amber-50 p-3">
+            <p className="text-xs font-bold uppercase tracking-wide text-amber-800">
+              Paciente menor de edad · {edad} años
+            </p>
+            {yaAutorizado ? (
+              <p className="mt-1.5 text-xs leading-relaxed text-amber-900">
+                La autorización del representante legal ya quedó registrada para esta aplicación.
+              </p>
+            ) : (
+              <label className="mt-2 flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={guardianAuthorized}
+                  onChange={(e) => setGuardianAuthorized(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-amber-600"
+                />
+                <span className="text-xs leading-relaxed text-amber-900">
+                  Confirmo que cuento con la <strong>autorización del representante legal</strong> para
+                  que {administration.patient.firstName} responda esta evaluación por su cuenta.
+                </span>
+              </label>
+            )}
+          </div>
+        )}
+
         <LinkExpiryFields expiry={expiry} autoFocus />
         <p className="mt-2 text-xs text-slate-400">
           El paciente abrirá el enlace con su número de documento. Si ya existía un enlace
@@ -702,12 +871,69 @@ function SendLinkModal({
           </button>
           <button
             onClick={send}
-            disabled={sending || !expiry.valid}
+            disabled={sending || !expiry.valid || (requiereAutorizacion && !guardianAuthorized)}
             className="inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2 text-xs font-bold text-white hover:opacity-90 disabled:opacity-40"
           >
             {sending
               ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Enviando…</>
               : <><Send className="h-3.5 w-3.5" /> Enviar enlace</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Aviso al seleccionar un paciente menor de edad.
+//
+// Deliberadamente ESPECÍFICO y no genérico. Un cartel que diga "algunas
+// evaluaciones no se envían a menores" se vuelve un clic reflejo en una semana:
+// no dice nada que el profesional no sepa. Este nombra al paciente, su edad, el
+// instrumento y qué sí y qué no procede — eso sí se lee.
+//
+// No bloquea: aplicar la prueba en consulta con el menor delante es práctica
+// clínica normal. Lo que queda condicionado es el envío del enlace.
+// ─────────────────────────────────────────────────────────────────────────────
+function AvisoMenorModal({
+  paciente, edad, instrument, onClose,
+}: {
+  paciente: PatientOption;
+  edad: number;
+  instrument: CatalogItem;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-lg rounded-xl bg-white p-6 shadow-xl">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 h-6 w-6 shrink-0 text-amber-600" />
+          <div className="min-w-0">
+            <h3 className="text-base font-bold text-slate-900">
+              {paciente.firstName} {paciente.lastName} tiene {edad} años
+            </h3>
+            <p className="mt-2 text-sm leading-relaxed text-slate-700">
+              El <strong>{instrument.code}</strong> está normado para {instrument.minAge}-{instrument.maxAge} años,
+              así que <strong>puedes aplicárselo en consulta</strong> con normalidad.
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-slate-700">
+              Lo que no procede sin autorización es <strong>enviarle el enlace</strong> para que
+              lo responda por su cuenta: un menor no otorga consentimiento por sí mismo, y varios
+              de estos instrumentos indagan ideación suicida sin un adulto presente.
+            </p>
+            <p className="mt-3 rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-600">
+              Si vas a enviar el enlace, tendrás que confirmar que cuentas con la autorización
+              del representante legal. Queda registrado en la aplicación con tu usuario y la fecha.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end">
+          <button
+            onClick={onClose}
+            className="rounded-lg bg-toast-500 px-5 py-2 text-xs font-bold text-white hover:opacity-90"
+          >
+            Entendido
           </button>
         </div>
       </div>
