@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, CalendarClock, ClipboardList,
@@ -9,6 +9,7 @@ import ClinicalHistoryEditor from './ClinicalHistoryEditor';
 import ClinicalAttachments from './ClinicalAttachments';
 import InitialAssessmentWizard from './InitialAssessmentWizard';
 import PatientInvitationCard from './PatientInvitationCard';
+import AssessmentRunner from './AssessmentRunner';
 
 interface RipsDiagnosis {
   id: string;
@@ -100,12 +101,14 @@ interface InitialAssessmentData {
   telefono?: string | null;
   telefonoEmergencia?: string | null;
   requiereRepresentanteLegal: boolean;
-  legalRep1Nombre?: string | null;
+  legalRep1Nombres?: string | null;
+  legalRep1Apellidos?: string | null;
   legalRep1Parentesco?: string | null;
   legalRep1Telefono?: string | null;
   legalRep1Correo?: string | null;
   tieneSegundoRepresentante: boolean;
-  legalRep2Nombre?: string | null;
+  legalRep2Nombres?: string | null;
+  legalRep2Apellidos?: string | null;
   legalRep2Parentesco?: string | null;
   legalRep2Telefono?: string | null;
   legalRep2Correo?: string | null;
@@ -120,6 +123,13 @@ interface InitialAssessmentData {
   aspectosAPA?: string | null;
   hipotesisPreliminares?: string | null;
   householdMembers: HouseholdMember[];
+}
+
+interface PendingAdministration {
+  id: string;
+  status: 'ASSIGNED' | 'IN_PROGRESS' | 'COMPLETED' | 'INVALID';
+  assignedAt: string;
+  instrument: { code: string; name: string; nameEs?: string | null; modality: string };
 }
 
 interface RiskEvent {
@@ -421,7 +431,7 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
 }
 
 const STATUS_OPTIONS = [
-  { value: 'activo', label: 'Activo', className: 'border-emerald-600/30 bg-emerald-50 text-emerald-600' },
+  { value: 'activo', label: 'Atendida', className: 'border-emerald-600/30 bg-emerald-50 text-emerald-600' },
   { value: 'pausa', label: 'En pausa', className: 'border-amber-600/30 bg-amber-50 text-amber-600' },
   { value: 'alta', label: 'Alta', className: 'border-slate-200 bg-slate-100 text-slate-400' },
 ];
@@ -687,7 +697,7 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="rounded-lg border border-slate-100 p-3">
               <p className="mb-2 text-xs font-bold uppercase text-slate-400">Representante 1</p>
-              <InfoRow label="Nombre" value={a.legalRep1Nombre} />
+              <InfoRow label="Nombre" value={[a.legalRep1Nombres, a.legalRep1Apellidos].filter(Boolean).join(' ')} />
               <InfoRow label="Parentesco" value={a.legalRep1Parentesco} />
               <InfoRow label="Teléfono" value={a.legalRep1Telefono} />
               <InfoRow label="Correo" value={a.legalRep1Correo} />
@@ -695,7 +705,7 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
             {a.tieneSegundoRepresentante && (
               <div className="rounded-lg border border-slate-100 p-3">
                 <p className="mb-2 text-xs font-bold uppercase text-slate-400">Representante 2</p>
-                <InfoRow label="Nombre" value={a.legalRep2Nombre} />
+                <InfoRow label="Nombre" value={[a.legalRep2Nombres, a.legalRep2Apellidos].filter(Boolean).join(' ')} />
                 <InfoRow label="Parentesco" value={a.legalRep2Parentesco} />
                 <InfoRow label="Teléfono" value={a.legalRep2Telefono} />
                 <InfoRow label="Correo" value={a.legalRep2Correo} />
@@ -1012,6 +1022,31 @@ function EvaluacionesTab({ patientId, assessments, riskEvents, onChange }: {
   const [saving, setSaving] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
+  // ── Aplicar una prueba desde la ficha ────────────────────────────────────
+  // Es el punto de entrada natural para las escalas heteroaplicadas: el
+  // profesional está aquí durante la sesión, con el paciente delante. Ir al
+  // catálogo a buscarla rompe el flujo de la consulta.
+  const [pendientes, setPendientes] = useState<PendingAdministration[]>([]);
+  const [runnerId, setRunnerId] = useState<string | null>(null);
+
+  const cargarPendientes = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `${apiBase()}/api/assessments/administrations?patientId=${patientId}`,
+        { headers: authHeaders() }
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setPendientes(
+        (data.administrations || []).filter((a: PendingAdministration) => a.status !== 'COMPLETED')
+      );
+    } catch (err) {
+      console.error('[EvaluacionesTab] Error cargando pendientes:', err);
+    }
+  }, [patientId]);
+
+  useEffect(() => { cargarPendientes(); }, [cargarPendientes]);
+
   const addAssessment = async () => {
     if (!name.trim() || !score.trim()) return;
     setSaving(true);
@@ -1087,8 +1122,53 @@ function EvaluacionesTab({ patientId, assessments, riskEvents, onChange }: {
     });
   };
 
+  if (runnerId) {
+    return (
+      <AssessmentRunner
+        administrationId={runnerId}
+        onBack={() => { setRunnerId(null); cargarPendientes(); }}
+        onCompleted={() => { cargarPendientes(); }}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col gap-3">
+      {/* Pruebas pendientes de aplicar a ESTE paciente. Para una escala
+          heteroaplicada esto es la puerta principal: se aplica en la sesión. */}
+      {pendientes.length > 0 && (
+        <div className="rounded-xl border border-toast-200 bg-toast-50/50 p-4">
+          <p className="mb-3 text-xs font-bold uppercase tracking-wide text-toast-500">
+            Pruebas pendientes de aplicar ({pendientes.length})
+          </p>
+          <div className="space-y-2">
+            {pendientes.map((a) => {
+              const hetero = a.instrument.modality === 'heteroaplicada';
+              return (
+                <button
+                  key={a.id}
+                  onClick={() => setRunnerId(a.id)}
+                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3 text-left transition-colors hover:border-toast-500"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold text-slate-900">
+                      {a.instrument.nameEs || a.instrument.name}
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      {a.instrument.code} · asignada {formatDate(a.assignedAt)}
+                      {a.status === 'IN_PROGRESS' && ' · en progreso'}
+                    </span>
+                  </span>
+                  <span className="shrink-0 rounded-md bg-toast-500 px-3 py-1.5 text-[10px] font-bold uppercase text-white">
+                    {hetero ? 'Aplicar en consulta' : 'Aplicar'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Escaladas automáticas de riesgo. Van primero y con peso visual: el
           badge de la cabecera cambió solo, y esto explica por qué. */}
       {riskEvents.map((ev) => (
