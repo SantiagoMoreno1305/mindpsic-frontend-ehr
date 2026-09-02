@@ -79,10 +79,17 @@ import {
   X,
   Users,
   Stethoscope,
-  Filter,
   BarChart3,
+  LayoutGrid,
 } from 'lucide-react';
-import CalendarPanel, { normalizeStatus, type CalendarAppointment } from '../components/EHR/CalendarPanel';
+import CalendarPanel, {
+  normalizeStatus,
+  type CalendarAppointment,
+  type ApptStatusKey,
+  StatusFilterPills,
+  CalendarFilterGroup,
+  CalendarFilterSelect,
+} from '../components/EHR/CalendarPanel';
 import { legalDisclosureSpanish } from '../data/mockData';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
@@ -95,6 +102,7 @@ const CALENDAR_KPI_TONES: Record<string, string> = {
   emerald: 'bg-emerald-100 text-emerald-700',
   indigo: 'bg-indigo-100 text-indigo-700',
   rose: 'bg-rose-100 text-rose-700',
+  slate: 'bg-slate-200 text-slate-700',
 };
 
 function CalendarKpiCard({
@@ -102,14 +110,21 @@ function CalendarKpiCard({
   label,
   value,
   tone,
+  onClick,
 }: {
   icon: React.ElementType;
   label: string;
   value: number;
   tone: keyof typeof CALENDAR_KPI_TONES;
+  onClick?: () => void;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-xs">
+    <div
+      onClick={onClick}
+      className={`flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-xs ${
+        onClick ? 'cursor-pointer transition-colors hover:border-toast-300 hover:bg-toast-50/40' : ''
+      }`}
+    >
       <div className={`flex h-10 w-10 items-center justify-center rounded-lg shrink-0 ${CALENDAR_KPI_TONES[tone]}`}>
         <Icon className="w-5 h-5" />
       </div>
@@ -474,6 +489,7 @@ export default function PsychologistPortal({
   const [view, setView] = useState<'month' | 'week' | 'day'>('month');
   const [currentDate, setCurrentDate] = useState(new Date());
   const [calendarPatientFilter, setCalendarPatientFilter] = useState('todos');
+  const [calendarStatusFilter, setCalendarStatusFilter] = useState<ApptStatusKey | 'todos'>('todos');
 
   useEffect(() => {
     refetchAppointments();
@@ -507,19 +523,19 @@ export default function PsychologistPortal({
     new Set(weeklyAppointments.map((a) => a.patientName))
   ).sort((a, b) => a.localeCompare(b));
 
-  const filteredWeeklyAppointments = calendarPatientFilter === 'todos'
-    ? weeklyAppointments
-    : weeklyAppointments.filter((a) => a.patientName === calendarPatientFilter);
+  const filteredWeeklyAppointments = weeklyAppointments
+    .filter((a) => calendarPatientFilter === 'todos' || a.patientName === calendarPatientFilter)
+    .filter((a) => calendarStatusFilter === 'todos' || normalizeStatus(a.estatus) === calendarStatusFilter);
 
   const calendarKpis = (() => {
     const todayStr = new Date().toDateString();
-    const counts = { pendiente: 0, atendida: 0, no_atendido: 0, reprogramada: 0 };
+    const counts = { pendiente: 0, atendida: 0, reprogramada: 0 };
     let hoy = 0;
     weeklyAppointments.forEach(app => {
       counts[normalizeStatus(app.estatus)]++;
       if (app.appDate.toDateString() === todayStr) hoy++;
     });
-    return { hoy, ...counts };
+    return { hoy, total: weeklyAppointments.length, ...counts };
   })();
 
   const [showNewAppointmentModal, setShowNewAppointmentModal] = useState(false);
@@ -535,7 +551,6 @@ export default function PsychologistPortal({
   const [selectedPdfPatient, setSelectedPdfPatient] = useState<Patient | null>(null);
   const [calendarSearchQuery, setCalendarSearchQuery] = useState('');
   const [calendarTypeFilter, setCalendarTypeFilter] = useState('todos');
-  const [calendarStatusFilter, setCalendarStatusFilter] = useState('todos');
 
   // Research state
   const [researchData] = useState<ResearchProject[]>(researchProjects);
@@ -978,11 +993,26 @@ export default function PsychologistPortal({
                 usando currentUser en lugar de valores estáticos. */}
             {/* KPIs DE AGENDAMIENTO */}
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-              <CalendarKpiCard icon={CalendarDays} label="Citas hoy" value={calendarKpis.hoy} tone="charcoal" />
+              <CalendarKpiCard
+                icon={CalendarDays}
+                label="Citas hoy"
+                value={calendarKpis.hoy}
+                tone="charcoal"
+                onClick={() => {
+                  setCurrentDate(new Date());
+                  setView('day');
+                }}
+              />
+              <CalendarKpiCard
+                icon={LayoutGrid}
+                label="Todas"
+                value={calendarKpis.total}
+                tone="slate"
+                onClick={() => setView('month')}
+              />
               <CalendarKpiCard icon={CircleDot} label="Pendientes" value={calendarKpis.pendiente} tone="toast" />
               <CalendarKpiCard icon={CheckCircle2} label="Atendidas" value={calendarKpis.atendida} tone="emerald" />
               <CalendarKpiCard icon={RotateCcw} label="Reprogramadas" value={calendarKpis.reprogramada} tone="indigo" />
-              <CalendarKpiCard icon={XCircle} label="No Atendió" value={calendarKpis.no_atendido} tone="rose" />
             </div>
 
             {/* PANEL DE AGENDAMIENTO */}
@@ -995,19 +1025,18 @@ export default function PsychologistPortal({
               onSelectAppointment={(app) => setSelectedSessionForModal(app)}
               onNewAppointment={() => setShowNewAppointmentModal(true)}
               filterSlot={
-                <div className="flex items-center gap-1.5">
-                  <Filter className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                  <select
+                <CalendarFilterGroup>
+                  <CalendarFilterSelect
+                    icon={UserIcon}
+                    label="Paciente"
                     value={calendarPatientFilter}
-                    onChange={(e) => setCalendarPatientFilter(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-toast-50 px-2.5 py-1.5 text-sm font-medium text-charcoal-900 focus:ring-2 focus:ring-toast-500 outline-none cursor-pointer"
-                  >
-                    <option value="todos">Todos los pacientes</option>
-                    {calendarPatientOptions.map((name) => (
-                      <option key={name} value={name}>{name}</option>
-                    ))}
-                  </select>
-                </div>
+                    onChange={setCalendarPatientFilter}
+                    options={calendarPatientOptions}
+                    allLabel="Todos los pacientes"
+                  />
+                  <div className="hidden h-6 w-px bg-slate-200 sm:block" />
+                  <StatusFilterPills value={calendarStatusFilter} onChange={setCalendarStatusFilter} />
+                </CalendarFilterGroup>
               }
             />
 
@@ -1043,6 +1072,7 @@ export default function PsychologistPortal({
                 pacienteId={activeVideoCall?.patientId}
                 salaId={activeVideoCall?.id}
                 tokenSesion={localStorage.getItem('mind_token') || ''}
+                emailUsuario={currentUser?.email}
               />
             </div>
           </div>
@@ -1055,6 +1085,7 @@ export default function PsychologistPortal({
         {activeTab === 'patients' && (
           <PacientesPanel
             token={token}
+            userRole={currentUser?.role}
             onSelectPatient={(id) => {
               window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
               setSelectedPatientId(id);

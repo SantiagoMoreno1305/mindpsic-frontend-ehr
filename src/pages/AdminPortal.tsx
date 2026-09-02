@@ -22,7 +22,14 @@ import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
 import AssessmentsPanel from '../components/EHR/AssessmentsPanel';
-import CalendarPanel, { type CalendarAppointment } from '../components/EHR/CalendarPanel';
+import CalendarPanel, {
+  type CalendarAppointment,
+  type ApptStatusKey,
+  normalizeStatus,
+  StatusFilterPills,
+  CalendarFilterGroup,
+  CalendarFilterSelect,
+} from '../components/EHR/CalendarPanel';
 import { apiFetch } from '../lib/apiClient';
 import { 
   Patient, 
@@ -64,7 +71,10 @@ import {
   ClipboardX,
   ClipboardList,
   Bell,
-  Clock
+  Clock,
+  User2,
+  ChevronDown,
+  Check
 } from 'lucide-react';
 
 type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
@@ -93,6 +103,7 @@ export default function AdminPortal() {
   const [calendarView, setCalendarView] = useState<'month' | 'week' | 'day'>('month');
   const [calendarDate, setCalendarDate] = useState(new Date());
   const [calendarPsychologistFilter, setCalendarPsychologistFilter] = useState('todos');
+  const [calendarStatusFilter, setCalendarStatusFilter] = useState<ApptStatusKey | 'todos'>('todos');
 
   const calendarAppointmentsAll = (realAppointments || []).map((appt: any) => {
     const appDate = new Date(appt?.date || appt?.dateTime || Date.now());
@@ -114,9 +125,9 @@ export default function AdminPortal() {
     new Set(calendarAppointmentsAll.map((a) => a.psychologistName))
   ).sort((a, b) => a.localeCompare(b));
 
-  const calendarAppointments = calendarPsychologistFilter === 'todos'
-    ? calendarAppointmentsAll
-    : calendarAppointmentsAll.filter((a) => a.psychologistName === calendarPsychologistFilter);
+  const calendarAppointments = calendarAppointmentsAll
+    .filter((a) => calendarPsychologistFilter === 'todos' || a.psychologistName === calendarPsychologistFilter)
+    .filter((a) => calendarStatusFilter === 'todos' || normalizeStatus(a.estatus) === calendarStatusFilter);
 
   // ── Equipo y Accesos: autoservicio de aprovisionamiento (POST /users/provision) ──
   // NOTA: no se usa apiFetch/apiPost aquí a propósito — ese wrapper trata CUALQUIER
@@ -511,6 +522,38 @@ export default function AdminPortal() {
   const [newLocationAddress, setNewLocationAddress] = useState('');
   const [savingLocation, setSavingLocation] = useState(false);
 
+  // Catálogo de "Tipo de convenio" — a diferencia de Ubicaciones (anidadas
+  // bajo un companyId), este es un catálogo propio del tenant (como EPS,
+  // pero por tenant en vez de global) — se puede gestionar y usar aunque
+  // todavía se esté CREANDO el convenio, no hace falta guardarlo primero.
+  const [agreementTypes, setAgreementTypes] = useState<{ id: string; name: string }[]>([]);
+  const [newAgreementTypeName, setNewAgreementTypeName] = useState('');
+  const [savingAgreementType, setSavingAgreementType] = useState(false);
+  // Edición en línea (renombrar) — se creó mal un tipo, sin tener que
+  // borrarlo y volver a crearlo perdiendo el orden/histórico.
+  const [editingAgreementTypeId, setEditingAgreementTypeId] = useState<string | null>(null);
+  const [editingAgreementTypeName, setEditingAgreementTypeName] = useState('');
+  // Pestañas tipo píldora INLINE (Direcciones / Tipos de convenio) dentro
+  // del propio formulario — nada de modal-sobre-modal. Y el desplegable con
+  // estilo propio para "Tipo de convenio", reemplazando el <select> nativo.
+  const [catalogTab, setCatalogTab] = useState<'locations' | 'types'>('locations');
+  const [agreementTypeDropdownOpen, setAgreementTypeDropdownOpen] = useState(false);
+
+  const fetchAgreementTypes = async () => {
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/agreement-types`, { headers: { 'Authorization': `Bearer ${token}` } });
+      if (res.ok) setAgreementTypes(await res.json());
+    } catch {
+      // Fallo silencioso — el <select> simplemente queda con la lista vacía/vieja
+    }
+  };
+
+  useEffect(() => {
+    fetchAgreementTypes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const openCreateCompanyModal = () => {
     setEditingCompanyId(null);
     setCompanyForm(emptyCompanyForm);
@@ -582,6 +625,71 @@ export default function AdminPortal() {
       await fetchCompanies();
     } catch {
       toast.error('Error al eliminar la ubicación de atención.');
+    }
+  };
+
+  const handleAddAgreementType = async () => {
+    if (!newAgreementTypeName.trim()) return;
+    setSavingAgreementType(true);
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/agreement-types`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ name: newAgreementTypeName.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Error al agregar el tipo de convenio.');
+        return;
+      }
+      setAgreementTypes((prev) => [...prev, data].sort((a, b) => a.name.localeCompare(b.name)));
+      // Deja el tipo recién creado ya seleccionado en el convenio que se está editando.
+      setCompanyForm((prev) => ({ ...prev, agreementType: data.name }));
+      setNewAgreementTypeName('');
+    } catch (err: any) {
+      toast.error('Error de red: ' + err.message);
+    } finally {
+      setSavingAgreementType(false);
+    }
+  };
+
+  const handleRemoveAgreementType = async (id: string) => {
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/agreement-types/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error();
+      setAgreementTypes((prev) => prev.filter((t) => t.id !== id));
+    } catch {
+      toast.error('Error al eliminar el tipo de convenio.');
+    }
+  };
+
+  const handleRenameAgreementType = async (id: string, newName: string) => {
+    if (!newName.trim()) return;
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/agreement-types/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ name: newName.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Error al renombrar el tipo de convenio.');
+        return;
+      }
+      setAgreementTypes((prev) => prev.map((t) => (t.id === id ? data : t)).sort((a, b) => a.name.localeCompare(b.name)));
+      // Si el tipo renombrado era el elegido para este convenio, actualiza el valor seleccionado también.
+      setCompanyForm((prev) => (prev.agreementType && agreementTypes.find((t) => t.id === id)?.name === prev.agreementType
+        ? { ...prev, agreementType: data.name }
+        : prev));
+      setEditingAgreementTypeId(null);
+    } catch (err: any) {
+      toast.error('Error de red: ' + err.message);
     }
   };
 
@@ -1808,19 +1916,18 @@ export default function AdminPortal() {
                 setShowDelegatedModal(true);
               }}
               filterSlot={
-                <div className="flex items-center gap-1.5">
-                  <Filter className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-                  <select
+                <CalendarFilterGroup>
+                  <CalendarFilterSelect
+                    icon={User2}
+                    label="Psicólogo"
                     value={calendarPsychologistFilter}
-                    onChange={(e) => setCalendarPsychologistFilter(e.target.value)}
-                    className="rounded-lg border border-slate-200 bg-toast-50 px-2.5 py-1.5 text-sm font-medium text-charcoal-900 focus:ring-2 focus:ring-toast-500 outline-none cursor-pointer"
-                  >
-                    <option value="todos">Todos los psicólogos</option>
-                    {calendarPsychologistOptions.map((name) => (
-                      <option key={name} value={name}>{name}</option>
-                    ))}
-                  </select>
-                </div>
+                    onChange={setCalendarPsychologistFilter}
+                    options={calendarPsychologistOptions}
+                    allLabel="Todos los psicólogos"
+                  />
+                  <div className="hidden h-6 w-px bg-slate-200 sm:block" />
+                  <StatusFilterPills value={calendarStatusFilter} onChange={setCalendarStatusFilter} />
+                </CalendarFilterGroup>
               }
             />
 
@@ -2217,6 +2324,7 @@ export default function AdminPortal() {
                   pacienteId="monitoreo_directivo"
                   salaId="sala_admin_principal"
                   tokenSesion={localStorage.getItem('mind_token') || ''}
+                  emailUsuario={currentUser?.email}
                 />
               </div>
 
@@ -2297,6 +2405,7 @@ export default function AdminPortal() {
         {activeTab === 'patients' && (
           <PacientesPanel
             token={token}
+            userRole={currentUser?.role}
             onSelectPatient={(id) => {
               window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
               setSelectedPatientId(id);
@@ -2901,7 +3010,13 @@ export default function AdminPortal() {
                       <tr key={c.id} className="hover:bg-slate-50 align-top">
                         <td className="p-4">
                           <div className="flex items-center gap-1.5">
-                            <p className="font-bold text-slate-900">{c.name}</p>
+                            <button
+                              type="button"
+                              onClick={() => openEditCompanyModal(c)}
+                              className="font-bold text-slate-900 hover:text-indigo-600 hover:underline cursor-pointer text-left"
+                            >
+                              {c.name}
+                            </button>
                             {c.isDefault && (
                               <span className="inline-flex items-center px-1.5 py-0.5 rounded font-bold text-[8px] bg-toast-100 border border-toast-300 text-charcoal-900 uppercase">
                                 Por defecto
@@ -2968,20 +3083,23 @@ export default function AdminPortal() {
           </div>
         )}
 
-        {/* MODAL: Nuevo/Editar Convenio */}
+        {/* MODAL: Nuevo/Editar Convenio — encabezado fijo (no se va con el
+            scroll) y solo el formulario scrollea; antes todo era un único
+            bloque con scroll, así que el título y la "X" desaparecían apenas
+            bajabas un poco. */}
         {showCompanyModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-            <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden bg-white rounded-2xl shadow-xl p-6 space-y-4">
-              <div className="flex items-center justify-between">
+            <div className="w-full max-w-lg max-h-[90vh] bg-white rounded-2xl shadow-xl flex flex-col overflow-hidden">
+              <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100 shrink-0">
                 <h3 className="text-base font-black text-slate-900">
                   {editingCompanyId ? 'Editar convenio/cliente' : 'Nuevo convenio/cliente'}
                 </h3>
-                <button onClick={() => setShowCompanyModal(false)} className="text-slate-400 hover:text-slate-700">
+                <button onClick={() => setShowCompanyModal(false)} className="text-slate-400 hover:text-slate-700 cursor-pointer">
                   <X className="w-5 h-5" />
                 </button>
               </div>
 
-              <form onSubmit={handleSaveCompany} className="space-y-4">
+              <form onSubmit={handleSaveCompany} className="overflow-y-auto overflow-x-hidden px-6 py-4 space-y-4 flex-1">
                 <div>
                   <label className="block text-xs font-bold text-slate-600 mb-1.5">Tipo de cliente</label>
                   <div className="grid grid-cols-2 gap-2">
@@ -3039,11 +3157,51 @@ export default function AdminPortal() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-600 mb-1.5">Tipo de convenio</label>
-                    <input
-                      type="text" placeholder="Ej. Bienestar corporativo, Póliza..." value={companyForm.agreementType}
-                      onChange={e => setCompanyForm({ ...companyForm, agreementType: e.target.value })}
-                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                    />
+
+                    {/* Desplegable con estilo propio — reemplaza el <select> nativo.
+                        Para AGREGAR o BORRAR tipos, ver "Catálogos del convenio" más abajo. */}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setAgreementTypeDropdownOpen((v) => !v)}
+                        className="w-full flex items-center justify-between border border-slate-200 rounded-lg p-2.5 text-sm bg-white hover:border-slate-300 focus:ring-2 focus:ring-indigo-500 outline-none cursor-pointer"
+                      >
+                        <span className={companyForm.agreementType ? 'text-slate-900' : 'text-slate-400'}>
+                          {companyForm.agreementType || 'Sin especificar'}
+                        </span>
+                        <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 transition-transform ${agreementTypeDropdownOpen ? 'rotate-180' : ''}`} />
+                      </button>
+
+                      {agreementTypeDropdownOpen && (
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={() => setAgreementTypeDropdownOpen(false)} />
+                          <div className="absolute left-0 right-0 top-full mt-1 z-50 max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+                            <button
+                              type="button"
+                              onClick={() => { setCompanyForm(prev => ({ ...prev, agreementType: '' })); setAgreementTypeDropdownOpen(false); }}
+                              className="block w-full text-left px-3 py-2 text-sm text-slate-400 hover:bg-slate-50 cursor-pointer"
+                            >
+                              Sin especificar
+                            </button>
+                            {agreementTypes.map((t) => (
+                              <button
+                                key={t.id}
+                                type="button"
+                                onClick={() => { setCompanyForm(prev => ({ ...prev, agreementType: t.name })); setAgreementTypeDropdownOpen(false); }}
+                                className={`block w-full text-left px-3 py-2 text-sm hover:bg-slate-50 cursor-pointer ${companyForm.agreementType === t.name ? 'bg-indigo-50 text-indigo-700 font-semibold' : 'text-slate-700'}`}
+                              >
+                                {t.name}
+                              </button>
+                            ))}
+                            {agreementTypes.length === 0 && (
+                              <p className="px-3 py-4 text-xs text-slate-400 text-center">
+                                Sin tipos registrados — créalos abajo en "Catálogos del convenio".
+                              </p>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div>
                     <label className="block text-xs font-bold text-slate-600 mb-1.5">Sesiones cubiertas</label>
@@ -3074,6 +3232,163 @@ export default function AdminPortal() {
                   </div>
                 </div>
 
+                {/* Catálogos del convenio — inline, sin modal encima del modal.
+                    Pestañas tipo píldora para alternar entre Direcciones y
+                    Tipos de convenio en el mismo espacio. */}
+                <div className="border-t border-slate-100 pt-3">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Catálogos del convenio</p>
+                  <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 mb-3 w-fit">
+                    <button
+                      type="button"
+                      onClick={() => setCatalogTab('locations')}
+                      className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${
+                        catalogTab === 'locations' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      Direcciones
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCatalogTab('types')}
+                      className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer ${
+                        catalogTab === 'types' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      Tipos de convenio
+                    </button>
+                  </div>
+
+                  {catalogTab === 'locations' ? (
+                    !editingCompanyId ? (
+                      <p className="text-xs text-slate-400">Guarda el convenio primero para poder agregar ubicaciones de atención.</p>
+                    ) : (
+                      <>
+                        {editingLocations.length > 0 && (
+                          <ul className="flex flex-col gap-1.5 mb-2">
+                            {editingLocations.map((loc) => (
+                              <li key={loc.id} className="flex items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs">
+                                <span className="text-slate-700">
+                                  <span className="font-bold">{loc.name}</span>
+                                  {loc.address && <span className="text-slate-400"> — {loc.address}</span>}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveLocation(loc.id)}
+                                  className="text-slate-400 hover:text-red-600 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        <div className="grid grid-cols-2 gap-2 mb-2">
+                          <input
+                            type="text" placeholder="Ej. Salón B1" value={newLocationName}
+                            onChange={e => setNewLocationName(e.target.value)}
+                            className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                          />
+                          <input
+                            type="text" placeholder="Dirección (opcional)" value={newLocationAddress}
+                            onChange={e => setNewLocationAddress(e.target.value)}
+                            className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleAddLocation}
+                          disabled={savingLocation || !newLocationName.trim()}
+                          className="w-full inline-flex items-center justify-center gap-1.5 bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-xs py-2.5 rounded-lg disabled:opacity-50 cursor-pointer"
+                        >
+                          <PlusCircle className="w-3.5 h-3.5" />
+                          Añadir ubicación
+                        </button>
+                      </>
+                    )
+                  ) : (
+                    <>
+                      {agreementTypes.length > 0 && (
+                        <ul className="flex flex-col gap-1.5 mb-2">
+                          {agreementTypes.map((t) => (
+                            <li key={t.id} className="flex items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs">
+                              {editingAgreementTypeId === t.id ? (
+                                <>
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    value={editingAgreementTypeName}
+                                    onChange={(e) => setEditingAgreementTypeName(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') { e.preventDefault(); handleRenameAgreementType(t.id, editingAgreementTypeName); }
+                                      if (e.key === 'Escape') { e.preventDefault(); setEditingAgreementTypeId(null); }
+                                    }}
+                                    className="min-w-0 flex-1 border border-indigo-300 rounded-md px-2 py-1 text-xs focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRenameAgreementType(t.id, editingAgreementTypeName)}
+                                    disabled={!editingAgreementTypeName.trim()}
+                                    className="text-emerald-600 hover:text-emerald-800 disabled:opacity-40 cursor-pointer"
+                                    title="Guardar"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingAgreementTypeId(null)}
+                                    className="text-slate-400 hover:text-slate-600 cursor-pointer"
+                                    title="Cancelar"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="text-slate-700">{t.name}</span>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => { setEditingAgreementTypeId(t.id); setEditingAgreementTypeName(t.name); }}
+                                      className="text-slate-400 hover:text-indigo-600 cursor-pointer"
+                                      title={`Renombrar "${t.name}"`}
+                                    >
+                                      <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveAgreementType(t.id)}
+                                      className="text-slate-400 hover:text-red-600 cursor-pointer"
+                                      title={`Eliminar "${t.name}"`}
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text" placeholder="Nuevo tipo de convenio..." value={newAgreementTypeName}
+                          onChange={(e) => setNewAgreementTypeName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAddAgreementType(); } }}
+                          className="min-w-0 flex-1 border border-slate-200 rounded-lg p-2 text-xs focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleAddAgreementType}
+                          disabled={savingAgreementType || !newAgreementTypeName.trim()}
+                          className="shrink-0 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold px-2.5 py-2 disabled:opacity-50 cursor-pointer"
+                        >
+                          {savingAgreementType ? '...' : 'Agregar'}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+
                 <div className="border-t border-slate-100 pt-3">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Contacto (opcional)</p>
                   <div className="grid grid-cols-2 gap-3">
@@ -3095,56 +3410,6 @@ export default function AdminPortal() {
                   </div>
                 </div>
 
-                <div className="border-t border-slate-100 pt-3">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-2">Ubicaciones de atención</p>
-                  {!editingCompanyId ? (
-                    <p className="text-xs text-slate-400">Guarda el convenio primero para poder agregar ubicaciones de atención.</p>
-                  ) : (
-                    <>
-                      {editingLocations.length > 0 && (
-                        <ul className="flex flex-col gap-1.5 mb-3">
-                          {editingLocations.map((loc) => (
-                            <li key={loc.id} className="flex items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs">
-                              <span className="text-slate-700">
-                                <span className="font-bold">{loc.name}</span>
-                                {loc.address && <span className="text-slate-400"> — {loc.address}</span>}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveLocation(loc.id)}
-                                className="text-slate-400 hover:text-red-600"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      <div className="grid grid-cols-2 gap-3 mb-2">
-                        <input
-                          type="text" placeholder="Ej. Salón B1" value={newLocationName}
-                          onChange={e => setNewLocationName(e.target.value)}
-                          className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                        />
-                        <input
-                          type="text" placeholder="Dirección (opcional)" value={newLocationAddress}
-                          onChange={e => setNewLocationAddress(e.target.value)}
-                          className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                        />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleAddLocation}
-                        disabled={savingLocation || !newLocationName.trim()}
-                        className="w-full inline-flex items-center justify-center gap-1.5 bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-xs py-2.5 rounded-lg disabled:opacity-50"
-                      >
-                        <PlusCircle className="w-3.5 h-3.5" />
-                        Añadir ubicación
-                      </button>
-                    </>
-                  )}
-                </div>
-
                 <div>
                   <label className="block text-xs font-bold text-slate-600 mb-1.5">Notas</label>
                   <textarea
@@ -3163,13 +3428,13 @@ export default function AdminPortal() {
                 <div className="flex gap-2">
                   <button
                     type="button" onClick={() => setShowCompanyModal(false)}
-                    className="flex-1 border border-slate-200 text-slate-600 font-bold text-sm py-2.5 rounded-lg hover:bg-slate-50"
+                    className="flex-1 border border-slate-200 text-slate-600 font-bold text-xs py-2 rounded-lg hover:bg-slate-50 cursor-pointer"
                   >
                     Cancelar
                   </button>
                   <button
                     type="submit" disabled={savingCompany}
-                    className="flex-1 bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-sm py-2.5 rounded-lg transition-colors disabled:opacity-50"
+                    className="flex-1 bg-charcoal-900 hover:bg-charcoal-950 text-white font-bold text-xs py-2 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
                   >
                     {savingCompany ? 'Guardando...' : editingCompanyId ? 'Guardar cambios' : 'Crear convenio/cliente'}
                   </button>
