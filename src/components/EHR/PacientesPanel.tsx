@@ -14,10 +14,10 @@
  * se trae todo de una vez.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall } from 'lucide-react';
+import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, CheckCircle2 } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
-import CreatePatientModal from './CreatePatientModal';
-import EditPatientModal from './EditPatientModal';
+import CreatePatientModal, { PATIENT_STATUS_LABELS } from './CreatePatientModal';
+import BulkImportPatientsModal from './BulkImportPatientsModal';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../DelegatedAppointmentModal';
 import { useCompanies } from '../../hooks/useCompanies';
 import type { BackendPatient } from '../../types';
@@ -26,6 +26,8 @@ interface PacientesPanelProps {
   token: string | null;
   /** Navega a la ficha/historia clínica del paciente (tab "Historias Clínicas"). */
   onSelectPatient?: (patientId: string) => void;
+  /** Rol del usuario logueado — determina si "Cargar masivo" está disponible (solo CEO/DIRECTIVO). */
+  userRole?: string;
 }
 
 interface SpecialistOption {
@@ -35,11 +37,9 @@ interface SpecialistOption {
 
 const PAGE_SIZE = 10;
 
-const STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: 'activo', label: 'Activo' },
-  { value: 'pausa', label: 'En pausa' },
-  { value: 'alta', label: 'De alta' },
-];
+const STATUS_OPTIONS: { value: string; label: string }[] = Object.entries(PATIENT_STATUS_LABELS).map(
+  ([value, label]) => ({ value, label })
+);
 
 // Búsqueda/filtros/página — se guardan en sessionStorage (dura mientras la
 // pestaña siga abierta, no para siempre como localStorage) porque este panel
@@ -67,10 +67,16 @@ function readSearchState(): PacientesSearchState {
   }
 }
 
-export default function PacientesPanel({ token, onSelectPatient }: PacientesPanelProps) {
+export default function PacientesPanel({ token, onSelectPatient, userRole }: PacientesPanelProps) {
+  const canBulkImport = userRole === 'CEO' || userRole === 'DIRECTIVO';
   const initialSearchState = readSearchState();
   const [patients, setPatients] = useState<BackendPatient[]>([]);
   const [total, setTotal] = useState(0);
+  // Conteo de pacientes "Finalizado" — independiente de los filtros activos
+  // (siempre el total del tenant), para la tarjeta clicable que filtra por
+  // ese estado. Se refresca en los mismos puntos donde el estado de un
+  // paciente puede cambiar (crear/editar/reactivar/cambio inline).
+  const [finalizadoCount, setFinalizadoCount] = useState(0);
   const [page, setPage] = useState(initialSearchState.page);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState(initialSearchState.query);
@@ -81,12 +87,15 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
   const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [bulkImportOpen, setBulkImportOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleForPatient, setScheduleForPatient] = useState<BackendPatient | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editPatientTarget, setEditPatientTarget] = useState<BackendPatient | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [sendingLinea247Id, setSendingLinea247Id] = useState<string | null>(null);
+  const [resendingConfirmationId, setResendingConfirmationId] = useState<string | null>(null);
+  const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
 
   // RENDIMIENTO: desde este panel se agenda constantemente, así que se precargan
   // los catálogos al montar para que el modal abra sin espera perceptible.
@@ -126,6 +135,45 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
       setSendingLinea247Id(null);
     }
   }
+
+  // Reenvía la confirmación de la cita vigente del paciente por Email/
+  // WhatsApp, tomando su correo/teléfono ACTUALES — pensado para cuando el
+  // dato de contacto estaba mal y se corrigió después de haber agendado, sin
+  // tener que cancelar y volver a crear la cita.
+  async function handleResendConfirmation(patient: BackendPatient) {
+    setResendingConfirmationId(patient.id);
+    try {
+      const res = await apiFetch(`/api/appointments/patients/${patient.id}/resend-confirmation`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data?.error || 'No se pudo reenviar la confirmación de la cita.');
+        return;
+      }
+      const destino = [data.sentTo?.email, data.sentTo?.phone].filter(Boolean).join(' / ');
+      showToast(destino ? `Confirmación reenviada a ${destino}.` : 'Confirmación reenviada.');
+    } catch {
+      showToast('No se pudo contactar el servidor.');
+    } finally {
+      setResendingConfirmationId(null);
+    }
+  }
+
+  const fetchFinalizadoCount = async () => {
+    if (!token) return;
+    try {
+      const res = await apiFetch('/api/patients?status=finalizado&page=1&limit=1');
+      if (!res.ok) return;
+      const data = await res.json();
+      setFinalizadoCount(typeof data.total === 'number' ? data.total : 0);
+    } catch {
+      // Silencioso — la tarjeta simplemente no se actualiza en este ciclo
+    }
+  };
+
+  useEffect(() => {
+    fetchFinalizadoCount();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   const fetchPatients = async () => {
     if (!token) { setLoading(false); return; }
@@ -204,8 +252,33 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
     setEditOpen(true);
   }
 
+  // Cambio de estado directo desde la tabla — sin abrir el modal completo,
+  // para hacer seguimiento rápido (ej. Notificado 1°vez → 2°vez).
+  async function handleInlineStatusChange(patient: BackendPatient, newStatus: string) {
+    const previousStatus = patient.status;
+    setUpdatingStatusId(patient.id);
+    setPatients((prev) => prev.map((p) => (p.id === patient.id ? { ...p, status: newStatus } : p)));
+    try {
+      const res = await apiFetch(`/api/patients/${patient.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || `HTTP ${res.status}`);
+      }
+      showToast(`Estado de ${patient.firstName} ${patient.lastName} actualizado a "${PATIENT_STATUS_LABELS[newStatus] || newStatus}".`);
+      if (newStatus === 'finalizado' || previousStatus === 'finalizado') fetchFinalizadoCount();
+    } catch (err: any) {
+      setPatients((prev) => prev.map((p) => (p.id === patient.id ? { ...p, status: previousStatus } : p)));
+      showToast(err.message || 'No se pudo actualizar el estado.');
+    } finally {
+      setUpdatingStatusId(null);
+    }
+  }
+
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="mx-auto max-w-7xl">
       {/* Header — solo título, sin botones ni stat sueltos flotando arriba. */}
       <div className="mb-5 text-left">
         <h1 className="text-2xl font-bold tracking-tight text-charcoal-900">Pacientes</h1>
@@ -219,12 +292,28 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
           caja. */}
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-            <Users className="h-4 w-4 text-toast-500" />
-            <span className="text-xs font-medium text-slate-500">
-              {query.trim() ? 'Resultados de la búsqueda:' : 'Pacientes registrados:'}
-            </span>
-            <span className="text-sm font-bold text-charcoal-900">{total.toLocaleString('es-CO')}</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <Users className="h-4 w-4 text-toast-500" />
+              <span className="text-xs font-medium text-slate-500">
+                {query.trim() ? 'Resultados de la búsqueda:' : 'Pacientes registrados:'}
+              </span>
+              <span className="text-sm font-bold text-charcoal-900">{total.toLocaleString('es-CO')}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setStatus((s) => (s === 'finalizado' ? '' : 'finalizado'))}
+              title="Filtrar por pacientes finalizados"
+              className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 transition-colors cursor-pointer ${
+                status === 'finalizado'
+                  ? 'border-toast-400 bg-toast-50'
+                  : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
+              }`}
+            >
+              <CheckCircle2 className={`h-4 w-4 ${status === 'finalizado' ? 'text-toast-500' : 'text-slate-400'}`} />
+              <span className="text-xs font-medium text-slate-500">Finalizados:</span>
+              <span className="text-sm font-bold text-charcoal-900">{finalizadoCount.toLocaleString('es-CO')}</span>
+            </button>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -234,6 +323,15 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
               <CalendarPlus className="h-4 w-4 text-toast-500" />
               Agendar paciente
             </button>
+            {canBulkImport && (
+              <button
+                onClick={() => setBulkImportOpen(true)}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 shadow-sm transition-colors hover:bg-toast-50 cursor-pointer"
+              >
+                <Upload className="h-4 w-4 text-toast-500" />
+                Cargar masivo
+              </button>
+            )}
             <button
               onClick={() => setCreateOpen(true)}
               className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-charcoal-800 cursor-pointer"
@@ -250,7 +348,7 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Buscar por nombre o documento..."
+              placeholder="Buscar por nombre, documento o número de historia clínica..."
               className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-9 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
             />
             {query && (
@@ -311,7 +409,7 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] border-collapse text-sm">
+          <table className="w-full min-w-[940px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-400">
                 <th className="px-3 py-2.5 font-semibold">Paciente</th>
@@ -319,13 +417,14 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
                 <th className="px-3 py-2.5 font-semibold">Convenio</th>
                 <th className="px-3 py-2.5 font-semibold">Psicólogo asignado</th>
                 <th className="px-3 py-2.5 font-semibold">Contacto</th>
+                <th className="px-3 py-2.5 font-semibold">Estado</th>
                 <th className="px-3 py-2.5 text-right font-semibold">Acción</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {loading && (
                 <tr>
-                  <td colSpan={6} className="py-10 text-center text-sm text-slate-400">Cargando pacientes...</td>
+                  <td colSpan={7} className="py-10 text-center text-sm text-slate-400">Cargando pacientes...</td>
                 </tr>
               )}
               {!loading && patients.map((p) => (
@@ -363,6 +462,20 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
                     <span className="block truncate">{p.email || '—'}</span>
                     <span className="block text-xs">{p.phone || ''}</span>
                   </td>
+                  <td className="px-3 py-3">
+                    <select
+                      value={p.status || 'activo'}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => { e.stopPropagation(); handleInlineStatusChange(p, e.target.value); }}
+                      disabled={updatingStatusId === p.id}
+                      title="Cambiar estado del paciente"
+                      className="w-full max-w-[150px] rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-2.5 pr-6 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20 disabled:cursor-wait disabled:opacity-50 cursor-pointer"
+                    >
+                      {STATUS_OPTIONS.map((s) => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
+                    </select>
+                  </td>
                   <td className="px-3 py-3 text-right">
                     <div className="inline-flex items-center gap-1.5">
                       <button
@@ -381,6 +494,14 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
                         <PhoneCall className="h-3.5 w-3.5" />
                       </button>
                       <button
+                        onClick={(e) => { e.stopPropagation(); handleResendConfirmation(p); }}
+                        disabled={resendingConfirmationId === p.id}
+                        title="Reenviar confirmación de la cita (con el correo/teléfono actuales)"
+                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 cursor-pointer disabled:opacity-40 disabled:cursor-wait"
+                      >
+                        <SendHorizontal className="h-3.5 w-3.5" />
+                      </button>
+                      <button
                         onClick={(e) => { e.stopPropagation(); openScheduleFor(p); }}
                         className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-toast-50 cursor-pointer"
                       >
@@ -393,7 +514,7 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
               ))}
               {!loading && patients.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="py-10 text-center text-sm text-slate-400">
+                  <td colSpan={7} className="py-10 text-center text-sm text-slate-400">
                     No se encontraron pacientes con los filtros aplicados.
                   </td>
                 </tr>
@@ -442,8 +563,10 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
       <CreatePatientModal
         isOpen={createOpen}
         onClose={() => setCreateOpen(false)}
+        userRole={userRole}
         onCreated={(patient, wasReactivated) => {
           fetchPatients();
+          fetchFinalizadoCount();
           showToast(
             wasReactivated
               ? `Paciente "${patient.firstName} ${patient.lastName}" reactivado correctamente.`
@@ -461,15 +584,26 @@ export default function PacientesPanel({ token, onSelectPatient }: PacientesPane
           showToast('Cita agendada correctamente.');
         }}
       />
-      <EditPatientModal
+      <CreatePatientModal
         isOpen={editOpen}
         patient={editPatientTarget}
         onClose={() => setEditOpen(false)}
         onUpdated={(patient) => {
           fetchPatients();
+          fetchFinalizadoCount();
           showToast(`Paciente "${patient.firstName} ${patient.lastName}" actualizado correctamente.`);
         }}
       />
+      {canBulkImport && (
+        <BulkImportPatientsModal
+          isOpen={bulkImportOpen}
+          onClose={() => setBulkImportOpen(false)}
+          onImported={(count) => {
+            fetchPatients();
+            showToast(`${count} paciente(s) importado(s) correctamente.`);
+          }}
+        />
+      )}
     </div>
   );
 }

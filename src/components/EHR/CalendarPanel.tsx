@@ -4,7 +4,7 @@
  * Panel de agendamiento (Día / Semana / Mes) del portal de psicólogos.
  * Tema claro institucional (toast + charcoal), consistente con el resto de ehr.
  */
-import { useMemo, type ReactNode } from 'react';
+import { useMemo, type ComponentType, type ReactNode } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -30,23 +30,113 @@ export interface CalendarAppointment {
   [key: string]: any;
 }
 
-export type ApptStatusKey = 'pendiente' | 'atendida' | 'no_atendido' | 'reprogramada' | 'cancelada';
+// "No Atendido" se retiró como estado — un no-show ahora se registra como
+// Cancelada (ver normalizeStatus). Etiquetas: Pendiente→Agendado,
+// Reprogramada→Aplazado (solo el rótulo visible, el string guardado sigue
+// siendo el mismo internamente).
+export type ApptStatusKey = 'pendiente' | 'atendida' | 'reprogramada' | 'cancelada';
 
-const STATUS_STYLES: Record<ApptStatusKey, { chip: string; dot: string; label: string }> = {
-  pendiente:    { chip: 'border-toast-300 bg-toast-100 text-toast-500',      dot: 'bg-toast-500',   label: 'Pendiente' },
+export const STATUS_STYLES: Record<ApptStatusKey, { chip: string; dot: string; label: string }> = {
+  pendiente:    { chip: 'border-toast-300 bg-toast-100 text-toast-500',      dot: 'bg-toast-500',   label: 'Agendado' },
   atendida:     { chip: 'border-emerald-300 bg-emerald-50 text-emerald-700', dot: 'bg-emerald-500', label: 'Atendida' },
-  no_atendido:  { chip: 'border-rose-300 bg-rose-50 text-rose-700',          dot: 'bg-rose-500',    label: 'No Atendido' },
-  reprogramada: { chip: 'border-indigo-300 bg-indigo-50 text-indigo-700',    dot: 'bg-indigo-500',  label: 'Reprogramada' },
+  reprogramada: { chip: 'border-indigo-300 bg-indigo-50 text-indigo-700',    dot: 'bg-indigo-500',  label: 'Aplazado' },
   cancelada:    { chip: 'border-slate-300 bg-slate-100 text-slate-500',      dot: 'bg-slate-400',   label: 'Cancelada' },
 };
 
+const STATUS_FILTER_KEYS: ApptStatusKey[] = ['pendiente', 'atendida', 'reprogramada', 'cancelada'];
+
 export function normalizeStatus(status: string): ApptStatusKey {
   const s = (status || '').toLowerCase();
-  if (s.includes('cancel')) return 'cancelada';
-  if (s.includes('no atend')) return 'no_atendido';
+  // Un "no atendido" histórico (statuses previos ya guardados así) cae en
+  // Cancelada — la categoría más cercana ahora que el estado se retiró.
+  if (s.includes('cancel') || s.includes('no atend')) return 'cancelada';
   if (s.includes('atend')) return 'atendida';
   if (s.includes('reprogram')) return 'reprogramada';
   return 'pendiente';
+}
+
+// Filtro por estado reutilizable — pills con los mismos colores/labels que las
+// chips del propio calendario, para que ambos portales (admin y psicólogo) lo
+// usen sin reimplementar el mapeo de estilos.
+export function StatusFilterPills({
+  value,
+  onChange,
+}: {
+  value: ApptStatusKey | 'todos';
+  onChange: (v: ApptStatusKey | 'todos') => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        onClick={() => onChange('todos')}
+        className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer ${
+          value === 'todos'
+            ? 'border-charcoal-900 bg-charcoal-900 text-white'
+            : 'border-slate-200 bg-white text-charcoal-500 hover:border-slate-300 hover:bg-slate-50'
+        }`}
+      >
+        Todos
+      </button>
+      {STATUS_FILTER_KEYS.map((key) => {
+        const s = STATUS_STYLES[key];
+        const active = value === key;
+        return (
+          <button
+            key={key}
+            type="button"
+            onClick={() => onChange(key)}
+            className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer ${
+              active ? `${s.chip} ring-1 ring-inset ring-current` : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:bg-slate-50'
+            }`}
+          >
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${s.dot}`} />
+            {s.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// Agrupa los filtros del header del calendario (selector + StatusFilterPills)
+// dentro de la toolbar unificada que ya provee CalendarPanel — sin borde propio
+// para no anidar "cajas" dentro de la barra.
+export function CalendarFilterGroup({ children }: { children: ReactNode }) {
+  return <div className="flex flex-wrap items-center gap-3">{children}</div>;
+}
+
+export function CalendarFilterSelect({
+  icon: Icon,
+  label,
+  value,
+  onChange,
+  options,
+  allLabel,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  allLabel: string;
+}) {
+  return (
+    <label className="flex items-center gap-1.5">
+      <Icon className="h-3.5 w-3.5 shrink-0 text-charcoal-400" />
+      <span className="hidden text-xs font-semibold text-charcoal-400 sm:inline">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-sm font-medium text-charcoal-900 focus:ring-2 focus:ring-toast-500 outline-none cursor-pointer"
+      >
+        <option value="todos">{allLabel}</option>
+        {options.map((o) => (
+          <option key={o} value={o}>{o}</option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 const MONTHS = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
@@ -111,7 +201,7 @@ export default function CalendarPanel({
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 p-4 md:p-6 shadow-sm text-left">
-      {/* Header */}
+      {/* Header: título + navegación de fecha (izq.) y selector de vista + nueva cita (der.) */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <h2 className="text-xl md:text-2xl font-bold text-charcoal-900">{title}</h2>
@@ -139,8 +229,6 @@ export default function CalendarPanel({
           </div>
         </div>
 
-        {filterSlot}
-
         <div className="flex items-center gap-3">
           <div className="flex items-center rounded-lg border border-slate-200 bg-toast-50 p-0.5">
             {(['day', 'week', 'month'] as CalendarView[]).map((v) => (
@@ -165,15 +253,12 @@ export default function CalendarPanel({
         </div>
       </div>
 
-      {/* Leyenda */}
-      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-slate-100 pt-3">
-        {(Object.keys(STATUS_STYLES) as ApptStatusKey[]).map((s) => (
-          <span key={s} className="flex items-center gap-1.5 text-xs text-slate-500">
-            <span className={`h-2 w-2 rounded-full ${STATUS_STYLES[s].dot}`} />
-            {STATUS_STYLES[s].label}
-          </span>
-        ))}
-      </div>
+      {/* Barra de filtros, en su propia caja debajo del header */}
+      {filterSlot && (
+        <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-slate-50/70 px-3 py-2.5">
+          {filterSlot}
+        </div>
+      )}
 
       <div className="mt-4">
         {view === 'month' && (

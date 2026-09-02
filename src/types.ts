@@ -288,10 +288,17 @@ export interface BackendPatient {
   tenantId?: string;
   recordNumber?: string;
   status?: string;
+  estrato?: number | null;
   riskLevel?: string;
   psychologist?: { id: string; name: string } | null;
   lastAppointmentStatus?: string | null;
   lastAppointmentDate?: string | null;
+  agreementType?: string | null;
+  relacion?: string | null;
+  tipoAtencion?: string | null;
+  fechaSolicitud?: string | null;
+  fechaAgendamiento?: string | null;
+  fechaFinalizacion?: string | null;
 }
 
 export interface BackendAppointment {

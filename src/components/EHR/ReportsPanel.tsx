@@ -81,7 +81,7 @@ const RISK_STYLES: Record<string, string> = {
 };
 
 const STATUS_OPTIONS: { value: string; label: string }[] = [
-  { value: 'activo', label: 'Activo' },
+  { value: 'activo', label: 'Atendida' },
   { value: 'pausa', label: 'En pausa' },
   { value: 'alta', label: 'De alta' },
 ];
@@ -298,7 +298,7 @@ export default function ReportsPanel({
   }
 
   return (
-    <div className="mx-auto max-w-6xl">
+    <div className="mx-auto max-w-7xl">
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="text-left">
           <h1 className="text-2xl font-bold tracking-tight text-charcoal-900">Reportes</h1>
