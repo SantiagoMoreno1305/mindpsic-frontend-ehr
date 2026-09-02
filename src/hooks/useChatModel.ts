@@ -25,6 +25,16 @@ import { toast } from 'react-hot-toast';
 // ── Intervalo del Long Polling (ms) ─────────────────────────────────────────
 const POLL_INTERVAL_MS = 4000; // 4 segundos — balance entre latencia y carga del servidor
 
+// Refresco periódico de la LISTA de contactos (previews + no leídos), no solo
+// de la conversación abierta. Antes esta lista se cargaba una única vez al
+// montar el hook, así que un mensaje nuevo de otro contacto (o uno propio,
+// sin la conversación abierta) solo se veía reflejado al recargar la página
+// — el toast de "Tienes nuevos mensajes" sí llegaba (otro canal), pero la
+// sidebar quedaba desactualizada. Intervalo más largo que POLL_INTERVAL_MS
+// porque esto trae la lista completa de colegas + conversaciones, no solo
+// mensajes incrementales de un chat puntual.
+const CONTACTS_REFRESH_INTERVAL_MS = 10000; // 10 segundos
+
 // ── Tipos exportados ─────────────────────────────────────────────────────────
 export interface ChatContact {
   id: string;
@@ -173,85 +183,110 @@ export function useChatModel(currentUser: User | null) {
   }, [activeContact]);
 
   // ── 1. Cargar colegas + resumen real de conversaciones, y fusionarlos ───
-  useEffect(() => {
+  // Extraído a función reutilizable: se llama al montar y, más abajo, en un
+  // refresco periódico — así la sidebar recoge previews/no-leídos nuevos sin
+  // necesidad de remontar el componente (salir y volver a entrar a la pestaña).
+  const loadContacts = useCallback(async () => {
     if (!currentUser) return;
 
-    (async () => {
-      try {
-        const [colleaguesRes, conversationsRes] = await Promise.all([
-          fetch(`${apiUrl}/users/colleagues`, { headers: authHeaders() }),
-          fetch(`${apiUrl}/api/chat/conversations`, { headers: authHeaders() }),
-        ]);
+    try {
+      const [colleaguesRes, conversationsRes] = await Promise.all([
+        fetch(`${apiUrl}/users/colleagues`, { headers: authHeaders() }),
+        fetch(`${apiUrl}/api/chat/conversations`, { headers: authHeaders() }),
+      ]);
 
-        if (!colleaguesRes.ok) throw new Error(`HTTP ${colleaguesRes.status}`);
-        const colleagues: any[] = await colleaguesRes.json();
-        const conversations: ConversationSummary[] = conversationsRes.ok ? await conversationsRes.json() : [];
+      if (!colleaguesRes.ok) throw new Error(`HTTP ${colleaguesRes.status}`);
+      const colleagues: any[] = await colleaguesRes.json();
+      const conversations: ConversationSummary[] = conversationsRes.ok ? await conversationsRes.json() : [];
 
-        // Mapa peerId -> resumen de conversación DIRECT (solo 1-a-1 por ahora)
-        const summaryByPeerId = new Map<string, ConversationSummary>();
-        conversations
-          .filter((c) => c.type === 'DIRECT' && c.participants.length === 1)
-          .forEach((c) => summaryByPeerId.set(c.participants[0].id, c));
+      // Mapa peerId -> resumen de conversación DIRECT (solo 1-a-1 por ahora)
+      const summaryByPeerId = new Map<string, ConversationSummary>();
+      conversations
+        .filter((c) => c.type === 'DIRECT' && c.participants.length === 1)
+        .forEach((c) => summaryByPeerId.set(c.participants[0].id, c));
 
-        const mapped: ChatContact[] = colleagues
-          .filter((u) => u.id !== currentUser.id)
-          .map((u) => {
-            const summary = summaryByPeerId.get(u.id);
-            return {
-              id:              u.id,
-              name:            u.name ?? `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
-              role:            u.role as UserRole,
-              avatarUrl:       resolveCachedUrl(u.id, u.avatarUrl ?? u.profilePicture, avatarUrlCacheRef.current, AVATAR_URL_CACHE_TTL_MS),
-              online:          u.online ?? false,
-              specialty:       u.specialty ?? undefined,
-              conversationId:  summary?.id,
-              lastMessage:     summary?.lastMessagePreview ?? undefined,
-              lastMessageTime: summary?.lastMessageAt
-                ? new Date(summary.lastMessageAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
-                : undefined,
-              unreadCount:     summary?.unreadCount ?? 0,
-            };
-          });
+      const mapped: ChatContact[] = colleagues
+        .filter((u) => u.id !== currentUser.id)
+        .map((u) => {
+          const summary = summaryByPeerId.get(u.id);
+          return {
+            id:              u.id,
+            name:            u.name ?? `${u.firstName ?? ''} ${u.lastName ?? ''}`.trim(),
+            role:            u.role as UserRole,
+            avatarUrl:       resolveCachedUrl(u.id, u.avatarUrl ?? u.profilePicture, avatarUrlCacheRef.current, AVATAR_URL_CACHE_TTL_MS),
+            online:          u.online ?? false,
+            specialty:       u.specialty ?? undefined,
+            conversationId:  summary?.id,
+            lastMessage:     summary?.lastMessagePreview ?? undefined,
+            lastMessageTime: summary?.lastMessageAt
+              ? new Date(summary.lastMessageAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
+              : undefined,
+            unreadCount:     summary?.unreadCount ?? 0,
+          };
+        });
 
-        // Conversaciones DIRECT cuyo peer NO está en /users/colleagues (ese
-        // directorio excluye a propósito a USUARIO_B2C — es el directorio de
-        // staff). Si un paciente ya escribió desde su canal propio
-        // (/api/patients/me/chat/*), el backend igual devuelve esa
-        // conversación aquí (con el paciente en participants), pero sin este
-        // paso se descartaba en silencio: no había ningún ChatContact al que
-        // pegarle el resumen. Se arma el contacto directo desde
-        // participants[0] — el resto del hook (polling, sendMessage,
-        // historial) ya es genérico y no asume que el peer sea staff.
-        const colleagueIds = new Set(colleagues.map((u) => u.id));
-        const patientContacts: ChatContact[] = [...summaryByPeerId.entries()]
-          .filter(([peerId]) => !colleagueIds.has(peerId))
-          .map(([peerId, summary]) => {
-            const peer = summary.participants[0];
-            return {
-              id:              peerId,
-              name:            peer.name,
-              role:            peer.role,
-              online:          false,
-              specialty:       peer.specialty ?? undefined,
-              conversationId:  summary.id,
-              lastMessage:     summary.lastMessagePreview ?? undefined,
-              lastMessageTime: summary.lastMessageAt
-                ? new Date(summary.lastMessageAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
-                : undefined,
-              unreadCount:     summary.unreadCount ?? 0,
-            };
-          });
+      // Conversaciones DIRECT cuyo peer NO está en /users/colleagues (ese
+      // directorio excluye a propósito a USUARIO_B2C — es el directorio de
+      // staff). Si un paciente ya escribió desde su canal propio
+      // (/api/patients/me/chat/*), el backend igual devuelve esa
+      // conversación aquí (con el paciente en participants), pero sin este
+      // paso se descartaba en silencio: no había ningún ChatContact al que
+      // pegarle el resumen. Se arma el contacto directo desde
+      // participants[0] — el resto del hook (polling, sendMessage,
+      // historial) ya es genérico y no asume que el peer sea staff.
+      const colleagueIds = new Set(colleagues.map((u) => u.id));
+      const patientContacts: ChatContact[] = [...summaryByPeerId.entries()]
+        .filter(([peerId]) => !colleagueIds.has(peerId))
+        .map(([peerId, summary]) => {
+          const peer = summary.participants[0];
+          return {
+            id:              peerId,
+            name:            peer.name,
+            role:            peer.role,
+            online:          false,
+            specialty:       peer.specialty ?? undefined,
+            conversationId:  summary.id,
+            lastMessage:     summary.lastMessagePreview ?? undefined,
+            lastMessageTime: summary.lastMessageAt
+              ? new Date(summary.lastMessageAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
+              : undefined,
+            unreadCount:     summary.unreadCount ?? 0,
+          };
+        });
 
-        // No se auto-selecciona ningún contacto — el usuario elige con quién
-        // empezar desde la lista (antes se abría el primero automáticamente).
-        setContacts([...mapped, ...patientContacts]);
-        persistUrlCache(AVATAR_URL_CACHE_KEY, avatarUrlCacheRef.current);
-      } catch (err) {
-        console.error('[useChatModel] Error al cargar colegas/conversaciones:', err);
-      }
-    })();
+      // La conversación actualmente abierta se está viendo en este momento
+      // — se fuerza su unreadCount a 0 sin importar lo que diga el resumen
+      // del servidor, para no "resucitar" el contador que handleSelectContact
+      // ya limpió localmente (el backend puede tardar en marcarla como leída,
+      // o este refresco puede llegar justo en medio de esa carrera).
+      const openConversationId = activeContactRef.current?.conversationId;
+      const withOpenAsRead = (list: ChatContact[]) =>
+        openConversationId
+          ? list.map((c) => (c.conversationId === openConversationId ? { ...c, unreadCount: 0 } : c))
+          : list;
+
+      // No se auto-selecciona ningún contacto — el usuario elige con quién
+      // empezar desde la lista (antes se abría el primero automáticamente).
+      setContacts(withOpenAsRead([...mapped, ...patientContacts]));
+      persistUrlCache(AVATAR_URL_CACHE_KEY, avatarUrlCacheRef.current);
+    } catch (err) {
+      console.error('[useChatModel] Error al cargar colegas/conversaciones:', err);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser]);
+
+  useEffect(() => {
+    loadContacts();
+  }, [loadContacts]);
+
+  // Refresco periódico de la lista de contactos, independiente de si hay una
+  // conversación abierta (a diferencia del Long Polling de mensajes de más
+  // abajo, que solo corre mientras `activeContact` tiene conversationId).
+  useEffect(() => {
+    if (!currentUser) return;
+    const id = setInterval(loadContacts, CONTACTS_REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [currentUser, loadContacts]);
 
   // ── 2. Long Polling: arrancar/parar cuando cambia el contacto activo ─────
   useEffect(() => {

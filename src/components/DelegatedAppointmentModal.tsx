@@ -155,6 +155,7 @@ interface SelectoresData {
   specialists: Specialist[];
   companies: CompanyRecord[];
   specialties: SpecialtyOption[];
+  agreementTypes: { id: string; name: string }[];
 }
 
 let selectoresCache: (SelectoresData & { ts: number }) | null = null;
@@ -176,7 +177,7 @@ async function cargarSelectores(): Promise<SelectoresData> {
   if (cargaEnVuelo) return cargaEnVuelo;
 
   cargaEnVuelo = (async () => {
-    const [specialists, companies, specialtyRes] = await Promise.all([
+    const [specialists, companies, specialtyRes, agreementTypeRes] = await Promise.all([
       apiFetch('/api/users/specialists'),
       // Reutiliza la misma caché compartida que PacientesPanel/CreatePatientModal/
       // el panel de Convenios de AdminPortal (ver src/hooks/useCompanies.ts) — así
@@ -184,6 +185,7 @@ async function cargarSelectores(): Promise<SelectoresData> {
       // esos consumidores ya la trajo recientemente.
       getCompaniesCached(),
       apiFetch('/api/specialties/options'),
+      apiFetch('/api/agreement-types'),
     ]);
 
     const leer = async <T,>(res: Response): Promise<T[]> => {
@@ -196,6 +198,7 @@ async function cargarSelectores(): Promise<SelectoresData> {
       specialists:  await leer<Specialist>(specialists),
       companies,
       specialties:  await leer<SpecialtyOption>(specialtyRes),
+      agreementTypes: await leer<{ id: string; name: string }>(agreementTypeRes),
     };
 
     selectoresCache = { ...frescos, ts: Date.now() };
@@ -249,6 +252,7 @@ export default function DelegatedAppointmentModal({
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [specialties, setSpecialties] = useState<SpecialtyOption[]>([]);
+  const [agreementTypes, setAgreementTypes] = useState<{ id: string; name: string }[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isEditingAppointment = !!initialData?.id;
@@ -370,6 +374,7 @@ export default function DelegatedAppointmentModal({
     notes: initialData?.notes || '',
     corporateClient: initialData?.corporateClient || '',
     locationId: initialData?.locationId || '',
+    agreementType: initialData?.agreementType || '',
   });
 
   // ── Horarios ya ocupados del psicólogo seleccionado (próximos 90 días) ──
@@ -430,6 +435,7 @@ export default function DelegatedAppointmentModal({
         notes: initialData.notes || '',
         corporateClient: initialData.corporateClient || '',
         locationId: initialData.locationId || '',
+        agreementType: initialData.agreementType || '',
       });
       // Precarga el paciente ya conocido (reprogramar una cita existente, o
       // "Agendar" desde la fila de un paciente en PacientesPanel) para que el
@@ -449,7 +455,7 @@ export default function DelegatedAppointmentModal({
       setForm({
         userId: '', patientId: '', specialtyId: '', dateTime: '', timeSlot: '',
         appointmentType: 'clinico', modality: 'Virtual', location: '', notes: '',
-        corporateClient: '', locationId: '',
+        corporateClient: '', locationId: '', agreementType: '',
       });
       setSelectedPatientFull(null);
     }
@@ -490,6 +496,7 @@ export default function DelegatedAppointmentModal({
     setSpecialists(d.specialists);
     setCompanies(d.companies);
     setSpecialties(d.specialties);
+    setAgreementTypes(d.agreementTypes);
   };
 
   const fetchSelectorsData = async () => {
@@ -632,6 +639,7 @@ export default function DelegatedAppointmentModal({
           specialistId:    form.userId,
           userId:          form.userId,
           specialtyId:     form.specialtyId || null,
+          agreementType:   form.agreementType || null,
         };
         // Solo es una "reprogramación" real si la fecha/hora efectivamente
         // cambió — si solo se ajustó el especialista/especialidad, se guarda
@@ -675,6 +683,7 @@ export default function DelegatedAppointmentModal({
           corporateClient: form.corporateClient,
           companyId:       selectedCompany?.id || null,
           locationId:      form.locationId || null,
+          agreementType:   form.agreementType || null,
         };
 
         const res = await fetch(`${apiUrl}/api/appointments`, {
@@ -822,7 +831,7 @@ export default function DelegatedAppointmentModal({
     setForm({
       userId: '', patientId: '', specialtyId: '', dateTime: '', timeSlot: '',
       appointmentType: 'clinico', modality: 'Virtual', location: '', notes: '',
-      corporateClient: '', locationId: '',
+      corporateClient: '', locationId: '', agreementType: '',
     });
     setIsEditingPatient(false);
     setIsCreatingPatient(false);
@@ -990,6 +999,22 @@ export default function DelegatedAppointmentModal({
   const activeAuth = scheduleSummary?.activeAuthorization ?? null;
   const isUnlimitedAuth = activeAuth?.sessionsAuthorized === null;
   const remainingSessions = scheduleSummary?.sessionsRemaining ?? 0;
+  // Autorizar sesiones (agregar cupo o dejarlo "libre") es una decisión
+  // administrativa/financiera, no clínica — un psicólogo puede AGENDAR si
+  // ya hay cupo disponible, pero no crear cupo nuevo. El backend ya lo
+  // rechaza (403) igual, esto es solo para no mostrar un formulario que de
+  // todos modos va a fallar. Mismo patrón de lectura de rol que el resto
+  // del EHR (localStorage.mind_user), sin necesidad de pasar un prop nuevo
+  // desde los dos portales que usan este modal.
+  const canAuthorizeSessions = (() => {
+    try {
+      const userStr = localStorage.getItem('mind_user');
+      const role = userStr ? JSON.parse(userStr).role : null;
+      return role === 'CEO' || role === 'DIRECTIVO';
+    } catch {
+      return false;
+    }
+  })();
   // Mismo estilo "bloqueado" que la caja de Convenio / Cliente Corporativo —
   // misma altura, color y fuente en cualquier caja de solo lectura.
   const lockedBoxClass = 'flex min-h-[42px] w-full items-center border border-slate-200 rounded-lg p-2.5 text-sm bg-slate-100 text-slate-600';
@@ -1007,7 +1032,11 @@ export default function DelegatedAppointmentModal({
     </select>
   );
 
-  const authorizeControls = (
+  const authorizeControls = !canAuthorizeSessions ? (
+    <div className="rounded-lg border border-slate-200 bg-slate-100 p-2.5 text-[11px] leading-relaxed text-slate-500">
+      No puedes agregar sesiones — contacta al centro administrativo.
+    </div>
+  ) : (
     <div className="space-y-1.5">
       <div className="flex items-center gap-1.5">
         {authLibres ? (
@@ -1369,6 +1398,29 @@ export default function DelegatedAppointmentModal({
                 </div>
               </div>
 
+              {/* ── Tipo de convenio — catálogo del tenant (ver AdminPortal → Editar
+                  convenio/cliente → "Tipos de convenio"). Se copia como texto plano
+                  a la cita al agendar/reprogramar, igual que Company.agreementType,
+                  para que quede fijo en el historial aunque el catálogo cambie
+                  después. Opcional: no todos los convenios distinguen tipos. ── */}
+              {agreementTypes.length > 0 && (
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
+                    Tipo de convenio
+                  </label>
+                  <select
+                    value={form.agreementType}
+                    onChange={(e) => setForm({ ...form, agreementType: e.target.value })}
+                    className="min-h-[42px] w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  >
+                    <option value="">Sin especificar</option>
+                    {agreementTypes.map((t) => (
+                      <option key={t.id} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               {/* ── Fila 2: Sesiones (estado) + Agregar sesión / agendar ahora ── */}
               {!isCreatingPatient && form.patientId && !isEditingAppointment && !loadingSummary && scheduleSummary && (
                 <div className="grid grid-cols-2 gap-3">
@@ -1376,7 +1428,7 @@ export default function DelegatedAppointmentModal({
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
                       Sesiones
                     </label>
-                    <div className={!hasUsableBatch ? 'flex min-h-[42px] w-full items-center rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-sm text-amber-700' : lockedBoxClass}>
+                    <div className={!hasUsableBatch ? 'flex min-h-[42px] w-full items-center rounded-lg border border-rose-300 bg-rose-50 p-2.5 text-sm text-rose-700' : lockedBoxClass}>
                       {!activeAuth
                         ? 'Sin autorización vigente.'
                         : !hasUsableBatch
@@ -1388,7 +1440,7 @@ export default function DelegatedAppointmentModal({
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                      {hasUsableBatch && !showAuthForm ? '¿Cuántas agendar ahora?' : 'Agregar sesión'}
+                      {hasUsableBatch && !showAuthForm ? '¿Cuántas agendar ahora?' : 'Agendar sesión'}
                     </label>
                     {!hasUsableBatch ? (
                       authorizeControls

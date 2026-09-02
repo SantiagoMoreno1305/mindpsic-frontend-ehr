@@ -5,12 +5,16 @@ interface VideollamadaProps {
   pacienteId?: string;
   salaId?: string;
   tokenSesion?: string;
+  // Correo del usuario logueado en el EHR — MindHealth usa las mismas
+  // credenciales, así que se lo pasamos por query param para que su propio
+  // login precargue el campo de correo (nunca la contraseña).
+  emailUsuario?: string;
 }
 
-const VideollamadaVercel: React.FC<VideollamadaProps> = ({ pacienteId, salaId, tokenSesion }) => {
+const VideollamadaVercel: React.FC<VideollamadaProps> = ({ pacienteId, salaId, tokenSesion, emailUsuario }) => {
   // Construimos la URL dinámica hacia tu Vercel (o usamos import.meta.env.VITE_TELEMEDICINE_URL si existe)
   const baseUrl = import.meta.env.VITE_TELEMEDICINE_URL || 'https://mindhealthips.com/';
-  const urlVercel = `${baseUrl}?paciente=${pacienteId || ''}&room=${salaId || ''}&token=${tokenSesion || ''}`;
+  const urlVercel = `${baseUrl}?paciente=${pacienteId || ''}&room=${salaId || ''}&token=${tokenSesion || ''}${emailUsuario ? `&email=${encodeURIComponent(emailUsuario)}` : ''}`;
 
   return (
     <div className="w-full h-[600px] rounded-xl overflow-hidden border border-gray-800 bg-[#FAF6F3]">
