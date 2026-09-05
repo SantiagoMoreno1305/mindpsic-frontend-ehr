@@ -112,7 +112,11 @@ export default function PsychologistAvailabilityGrid({
   }, [psychologistId, weekStart.getTime()]);
 
   // Mapa "díaÍndice-hora" → primera cita que cae en esa franja, para lookup O(1) por celda.
+  // Una cita CANCELADA libera el horario — no cuenta como ocupado (mismo
+  // criterio que psychologistBusyTimes en DelegatedAppointmentModal.tsx) — se
+  // guarda aparte solo para el aviso visual de "estuvo cancelada".
   const cellMap = new Map<string, AvailabilityAppointment>();
+  const cancelledCellMap = new Map<string, AvailabilityAppointment>();
   let startHour = DEFAULT_START_HOUR;
   let endHour = DEFAULT_END_HOUR;
   for (const appt of appointments) {
@@ -120,7 +124,12 @@ export default function PsychologistAvailabilityGrid({
     const d = new Date(appt.date);
     const dayIdx = (d.getDay() + 6) % 7; // 0=Lun … 6=Dom
     const h = d.getHours();
-    cellMap.set(`${dayIdx}-${h}`, appt);
+    const key = `${dayIdx}-${h}`;
+    if (appt.status === 'Cancelada') {
+      cancelledCellMap.set(key, appt);
+    } else {
+      cellMap.set(key, appt);
+    }
     // Amplía el rango visible si hay una cita real fuera de la jornada por defecto.
     if (h < startHour) startHour = h;
     if (h > endHour) endHour = h;
@@ -233,17 +242,25 @@ export default function PsychologistAvailabilityGrid({
                     </button>
                   );
                 }
+                // Un horario con una cita CANCELADA sigue disponible — se
+                // marca con un puntito para que quede claro que hubo una
+                // cancelación ahí, sin bloquear el clic para volver a agendar.
+                const wasCancelled = cancelledCellMap.has(`${dayIdx}-${hour}`);
                 return (
                   <button
                     key={dayIdx}
                     type="button"
                     disabled={isPast}
                     onClick={() => onSlotPick(toDateTimeLocal(cellDate, hour))}
-                    title={isPast ? undefined : 'Usar este horario'}
-                    className={`h-9 border-b border-l border-slate-200 transition-colors ${
+                    title={isPast ? undefined : wasCancelled ? 'Horario disponible — la cita anterior aquí fue cancelada' : 'Usar este horario'}
+                    className={`relative h-9 border-b border-l border-slate-200 transition-colors ${
                       isPast ? 'cursor-not-allowed bg-slate-100' : 'cursor-pointer bg-white hover:bg-indigo-100'
                     }`}
-                  />
+                  >
+                    {wasCancelled && !isPast && (
+                      <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-slate-300" />
+                    )}
+                  </button>
                 );
               })}
             </div>
@@ -255,6 +272,7 @@ export default function PsychologistAvailabilityGrid({
         <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-orange-400" /> Pendiente</span>
         <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Atendida</span>
         <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-indigo-400" /> Reprogramada</span>
+        <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-slate-300" /> Disponible (hubo una cancelada)</span>
         <span className="flex items-center gap-1">
           <span className="flex h-3 w-3 items-center justify-center rounded-full border-2 border-indigo-600 bg-white text-[6px] font-bold text-indigo-600">S</span>
           Sesión seleccionada (sin guardar) — clic para limpiar

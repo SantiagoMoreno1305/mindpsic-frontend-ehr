@@ -47,6 +47,7 @@ interface NavbarProps {
 export default function Navbar({ user, onLogout, onUserUpdated, currentContext, onContextChange, notifications, onMarkNotificationsRead, onDeleteNotification, onDeleteAllNotifications }: NavbarProps) {
   const [showProfile, setShowProfile] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const unreadCount = notifications.filter((n) => !n.read).length;
 
   // Se marcan como leídas al ABRIR la campana (no al recibirlas) — mismo
   // patrón que la campana de AdminCenter (src/App.tsx): quedan atenuadas
@@ -169,8 +170,10 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
                   className="relative p-2 rounded-lg text-stone-400 hover:text-stone-900 hover:bg-stone-100 transition-colors duration-150 cursor-pointer"
                 >
                   <Bell className="w-4 h-4" />
-                  {notifications.some((n) => !n.read) && (
-                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-toast-500 border border-white" />
+                  {unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full border border-white bg-toast-500 px-1 text-[9px] font-bold leading-none text-white">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
                   )}
                 </button>
 
