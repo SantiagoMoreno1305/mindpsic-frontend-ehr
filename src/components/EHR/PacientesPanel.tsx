@@ -14,10 +14,12 @@
  * se trae todo de una vez.
  */
 import { useEffect, useRef, useState } from 'react';
-import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, CheckCircle2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, CheckCircle2, MoreVertical, History } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal, { PATIENT_STATUS_LABELS } from './CreatePatientModal';
 import BulkImportPatientsModal from './BulkImportPatientsModal';
+import PatientStatusHistoryModal from './PatientStatusHistoryModal';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../DelegatedAppointmentModal';
 import { useCompanies } from '../../hooks/useCompanies';
 import type { BackendPatient } from '../../types';
@@ -69,6 +71,11 @@ function readSearchState(): PacientesSearchState {
 
 export default function PacientesPanel({ token, onSelectPatient, userRole }: PacientesPanelProps) {
   const canBulkImport = userRole === 'CEO' || userRole === 'DIRECTIVO';
+  // Cambiar (o incluso ver la lista completa de) el estado del paciente es
+  // una decisión administrativa/de seguimiento comercial — un especialista
+  // clínico ve su estado ACTUAL como referencia, de solo lectura, pero no
+  // puede modificarlo desde acá.
+  const canManageStatus = userRole === 'CEO' || userRole === 'DIRECTIVO' || userRole === 'OPERATIVO';
   const initialSearchState = readSearchState();
   const [patients, setPatients] = useState<BackendPatient[]>([]);
   const [total, setTotal] = useState(0);
@@ -92,10 +99,35 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   const [scheduleForPatient, setScheduleForPatient] = useState<BackendPatient | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editPatientTarget, setEditPatientTarget] = useState<BackendPatient | null>(null);
+  const [statusHistoryPatient, setStatusHistoryPatient] = useState<BackendPatient | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [sendingLinea247Id, setSendingLinea247Id] = useState<string | null>(null);
   const [resendingConfirmationId, setResendingConfirmationId] = useState<string | null>(null);
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
+  // Menú "más acciones" (Editar/Agendar/Línea 24-7/Reenviar confirmación) —
+  // reemplaza los 4 botones sueltos de antes, que hacían la tabla demasiado
+  // ancha. Se renderiza en un portal a document.body con posición fija
+  // calculada del botón (ver actionMenu.top/bottom/right) — si viviera dentro
+  // de la tabla, el contenedor "overflow-x-auto" de la tabla (que por CSS
+  // también recorta el eje vertical) lo cortaba para las filas cercanas al
+  // final. Se ancla con `top` (debajo del botón) o `bottom` (encima del
+  // botón, para las últimas filas donde no cabe hacia abajo) según el
+  // espacio disponible en el viewport al momento de abrirlo.
+  const ACTION_MENU_HEIGHT = 176; // 4 ítems ≈ 44px c/u — usado para decidir si abre hacia arriba
+  const [actionMenu, setActionMenu] = useState<{ patientId: string; top?: number; bottom?: number; right: number } | null>(null);
+
+  useEffect(() => {
+    if (!actionMenu) return;
+    const close = () => setActionMenu(null);
+    // capture: true porque el scroll dentro de un contenedor anidado no
+    // burbujea — solo así se detecta el scroll de la tabla, no solo el de window.
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [actionMenu]);
 
   // RENDIMIENTO: desde este panel se agenda constantemente, así que se precargan
   // los catálogos al montar para que el modal abra sin espera perceptible.
@@ -409,11 +441,10 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[940px] border-collapse text-sm">
+          <table className="w-full min-w-[820px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-400">
                 <th className="px-3 py-2.5 font-semibold">Paciente</th>
-                <th className="px-3 py-2.5 font-semibold">Documento</th>
                 <th className="px-3 py-2.5 font-semibold">Convenio</th>
                 <th className="px-3 py-2.5 font-semibold">Psicólogo asignado</th>
                 <th className="px-3 py-2.5 font-semibold">Contacto</th>
@@ -424,7 +455,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
             <tbody className="divide-y divide-slate-100">
               {loading && (
                 <tr>
-                  <td colSpan={7} className="py-10 text-center text-sm text-slate-400">Cargando pacientes...</td>
+                  <td colSpan={6} className="py-10 text-center text-sm text-slate-400">Cargando pacientes...</td>
                 </tr>
               )}
               {!loading && patients.map((p) => (
@@ -433,88 +464,147 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
                   onClick={onSelectPatient ? () => onSelectPatient(p.id) : undefined}
                   className={`transition-colors hover:bg-toast-50/40 ${onSelectPatient ? 'cursor-pointer' : ''}`}
                 >
-                  <td className="px-3 py-3">
+                  <td className="whitespace-nowrap px-3 py-3">
                     <div className="flex items-center gap-3">
                       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-toast-100 text-xs font-bold text-toast-500">
                         {`${p.firstName?.[0] || ''}${p.lastName?.[0] || ''}`.toUpperCase()}
                       </div>
-                      <span className="font-semibold text-charcoal-900">
-                        {onSelectPatient ? (
-                          <button
-                            type="button"
-                            onClick={(e) => { e.stopPropagation(); onSelectPatient(p.id); }}
-                            className="hover:underline cursor-pointer"
-                          >
-                            {p.firstName} {p.lastName}
-                          </button>
-                        ) : (
-                          <>{p.firstName} {p.lastName}</>
+                      <div>
+                        <span className="block font-semibold text-charcoal-900">
+                          {onSelectPatient ? (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); onSelectPatient(p.id); }}
+                              className="hover:underline cursor-pointer"
+                            >
+                              {p.firstName} {p.lastName}
+                            </button>
+                          ) : (
+                            <>{p.firstName} {p.lastName}</>
+                          )}
+                        </span>
+                        {(p.recordNumber || p.documentId) && (
+                          <span className="block font-mono text-[10.5px] text-slate-400">
+                            {p.recordNumber}
+                            {p.recordNumber && p.documentId && ' · '}
+                            {p.documentType ? `${p.documentType} ` : ''}{p.documentId}
+                          </span>
                         )}
-                      </span>
+                      </div>
                     </div>
                   </td>
-                  <td className="px-3 py-3 font-mono text-xs text-slate-500">{p.documentId}</td>
                   <td className="px-3 py-3">
                     <ConvenioTag name={p.corporateClient} />
                   </td>
-                  <td className="px-3 py-3 text-slate-600">{p.psychologist?.name || '—'}</td>
+                  <td className="whitespace-nowrap px-3 py-3 text-slate-600">{p.psychologist?.name || '—'}</td>
                   <td className="px-3 py-3 text-slate-500">
                     <span className="block truncate">{p.email || '—'}</span>
                     <span className="block text-xs">{p.phone || ''}</span>
                   </td>
                   <td className="px-3 py-3">
-                    <select
-                      value={p.status || 'activo'}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => { e.stopPropagation(); handleInlineStatusChange(p, e.target.value); }}
-                      disabled={updatingStatusId === p.id}
-                      title="Cambiar estado del paciente"
-                      className="w-full max-w-[150px] rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-2.5 pr-6 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20 disabled:cursor-wait disabled:opacity-50 cursor-pointer"
-                    >
-                      {STATUS_OPTIONS.map((s) => (
-                        <option key={s.value} value={s.value}>{s.label}</option>
-                      ))}
-                    </select>
+                    {canManageStatus ? (
+                      <select
+                        value={p.status || 'activo'}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => { e.stopPropagation(); handleInlineStatusChange(p, e.target.value); }}
+                        disabled={updatingStatusId === p.id}
+                        title="Cambiar estado del paciente"
+                        className="w-full max-w-[150px] rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-2.5 pr-6 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20 disabled:cursor-wait disabled:opacity-50 cursor-pointer"
+                      >
+                        {STATUS_OPTIONS.map((s) => (
+                          <option key={s.value} value={s.value}>{s.label}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span
+                        title="Cambiar el estado del paciente es una acción exclusiva del área administrativa."
+                        className="inline-flex w-full max-w-[150px] items-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-charcoal-900"
+                      >
+                        {PATIENT_STATUS_LABELS[p.status || 'activo'] || p.status}
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-3 text-right">
-                    <div className="inline-flex items-center gap-1.5">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); openEditFor(p); }}
-                        title="Editar paciente"
-                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 cursor-pointer"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleSendLinea247Access(p); }}
-                        disabled={sendingLinea247Id === p.id}
-                        title="Enviar acceso a línea 24/7"
-                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 cursor-pointer disabled:opacity-40 disabled:cursor-wait"
-                      >
-                        <PhoneCall className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleResendConfirmation(p); }}
-                        disabled={resendingConfirmationId === p.id}
-                        title="Reenviar confirmación de la cita (con el correo/teléfono actuales)"
-                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 cursor-pointer disabled:opacity-40 disabled:cursor-wait"
-                      >
-                        <SendHorizontal className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); openScheduleFor(p); }}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-charcoal-900 transition-colors hover:bg-toast-50 cursor-pointer"
-                      >
-                        <CalendarPlus className="h-3.5 w-3.5 text-toast-500" />
-                        Agendar
-                      </button>
-                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (actionMenu?.patientId === p.id) { setActionMenu(null); return; }
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const right = window.innerWidth - rect.right;
+                        const fitsBelow = window.innerHeight - rect.bottom >= ACTION_MENU_HEIGHT;
+                        setActionMenu(
+                          fitsBelow
+                            ? { patientId: p.id, top: rect.bottom + 4, right }
+                            : { patientId: p.id, bottom: window.innerHeight - rect.top + 4, right }
+                        );
+                      }}
+                      title="Más acciones"
+                      className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 cursor-pointer"
+                    >
+                      <MoreVertical className="h-4 w-4" />
+                    </button>
+                    {actionMenu?.patientId === p.id && createPortal(
+                      <>
+                        {/* Portal: aunque el nodo vive en document.body, React sigue
+                            burbujeando el evento por el árbol de React (no el DOM) —
+                            sin stopPropagation, este clic (y el de cada opción de abajo)
+                            también dispara el onClick de la fila y navegaba a la
+                            historia clínica del paciente. */}
+                        <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setActionMenu(null); }} />
+                        <div
+                          className="fixed z-50 w-64 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
+                          style={{
+                            right: actionMenu.right,
+                            ...(actionMenu.top !== undefined ? { top: actionMenu.top } : { bottom: actionMenu.bottom }),
+                          }}
+                        >
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setActionMenu(null); openScheduleFor(p); }}
+                            className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm font-medium text-charcoal-900 transition-colors hover:bg-toast-50 cursor-pointer"
+                          >
+                            <CalendarPlus className="h-3.5 w-3.5 shrink-0 text-toast-500" />
+                            Agendar cita
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setActionMenu(null); openEditFor(p); }}
+                            className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-charcoal-900 transition-colors hover:bg-slate-50 cursor-pointer"
+                          >
+                            <Pencil className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            Editar paciente
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setActionMenu(null); setStatusHistoryPatient(p); }}
+                            className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-charcoal-900 transition-colors hover:bg-slate-50 cursor-pointer"
+                          >
+                            <History className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            Historial de estados
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setActionMenu(null); handleSendLinea247Access(p); }}
+                            disabled={sendingLinea247Id === p.id}
+                            className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-charcoal-900 transition-colors hover:bg-slate-50 disabled:cursor-wait disabled:opacity-40 cursor-pointer"
+                          >
+                            <PhoneCall className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            Enviar acceso a línea 24/7
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setActionMenu(null); handleResendConfirmation(p); }}
+                            disabled={resendingConfirmationId === p.id}
+                            className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-charcoal-900 transition-colors hover:bg-slate-50 disabled:cursor-wait disabled:opacity-40 cursor-pointer"
+                          >
+                            <SendHorizontal className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            Reenviar confirmación
+                          </button>
+                        </div>
+                      </>,
+                      document.body
+                    )}
                   </td>
                 </tr>
               ))}
               {!loading && patients.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-10 text-center text-sm text-slate-400">
+                  <td colSpan={6} className="py-10 text-center text-sm text-slate-400">
                     No se encontraron pacientes con los filtros aplicados.
                   </td>
                 </tr>
@@ -587,12 +677,19 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
       <CreatePatientModal
         isOpen={editOpen}
         patient={editPatientTarget}
+        userRole={userRole}
         onClose={() => setEditOpen(false)}
         onUpdated={(patient) => {
           fetchPatients();
           fetchFinalizadoCount();
           showToast(`Paciente "${patient.firstName} ${patient.lastName}" actualizado correctamente.`);
         }}
+      />
+      <PatientStatusHistoryModal
+        isOpen={!!statusHistoryPatient}
+        onClose={() => setStatusHistoryPatient(null)}
+        patientId={statusHistoryPatient?.id ?? null}
+        patientName={statusHistoryPatient ? `${statusHistoryPatient.firstName} ${statusHistoryPatient.lastName}` : undefined}
       />
       {canBulkImport && (
         <BulkImportPatientsModal

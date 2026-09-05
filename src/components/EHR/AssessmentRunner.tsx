@@ -34,6 +34,7 @@ interface Item {
   valueMax: number | null;
   required: boolean;
   isCritical: boolean;
+  reversed: boolean;
   visibleIf: string | null;
 }
 
@@ -131,6 +132,14 @@ function isVisible(condition: string | null, answers: Record<string, Answer>): b
     case '!=': return left !== right;
     default: return true;
   }
+}
+
+// Recodificación de un ítem inverso: mismo cálculo que hace el motor en el
+// backend (mínimo + máximo − valor), replicado aquí SOLO para mostrarlo. El
+// puntaje real lo sigue calculando el servidor.
+function valorEfectivo(valor: number, options: ResponseOption[]): number {
+  const valores = options.map((o) => o.value);
+  return Math.min(...valores) + Math.max(...valores) - valor;
 }
 
 interface Props {
@@ -457,8 +466,26 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
                       ítem crítico · verificar riesgo
                     </span>
                   )}
+                  {item.reversed && (
+                    <span className="ml-2 align-middle rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-bold uppercase text-indigo-700">
+                      ítem inverso
+                    </span>
+                  )}
                 </p>
               </div>
+
+              {/* Un ítem inverso está redactado al revés que los demás: estar de
+                  acuerdo indica MENOS del constructo. El sistema lo recodifica al
+                  puntuar, y sin decirlo el profesional ve que marcó 6 y que el
+                  total sube 1, sin saber por qué. */}
+              {item.reversed && (
+                <p className="mt-2 rounded-lg bg-indigo-50 px-3 py-2 text-xs leading-relaxed text-indigo-900">
+                  Este ítem está redactado en sentido contrario: estar de acuerdo indica
+                  <strong> menos</strong> del rasgo evaluado. Registra lo que responde el paciente
+                  tal cual; el sistema lo recodifica solo. La columna de la derecha muestra
+                  <strong> valor marcado → valor que suma</strong>.
+                </p>
+              )}
 
               {item.responseType === 'OPCION_UNICA' ? (
                 <div className="mt-3 space-y-1.5 pl-8">
@@ -482,7 +509,14 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
                           {selected && <span className="h-2 w-2 rounded-full bg-toast-500" />}
                         </span>
                         <span className="flex-1 leading-relaxed">{option.label}</span>
-                        <span className="shrink-0 text-xs font-bold text-slate-400">{option.value}</span>
+                        {item.reversed ? (
+                          <span className="shrink-0 whitespace-nowrap text-xs font-bold text-indigo-600">
+                            {option.value} <span className="font-normal text-indigo-400">→</span>{' '}
+                            {valorEfectivo(option.value, options)}
+                          </span>
+                        ) : (
+                          <span className="shrink-0 text-xs font-bold text-slate-400">{option.value}</span>
+                        )}
                       </button>
                     );
                   })}

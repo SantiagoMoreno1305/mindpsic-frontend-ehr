@@ -202,6 +202,10 @@ export default function ClinicalRecordsList({
                       {p.email ? ` · ${p.email}` : ''}
                     </p>
                   </div>
+                  <div className="hidden shrink-0 flex-col items-end sm:flex">
+                    <span className="text-[9.5px] font-semibold uppercase tracking-wide text-slate-400">N.º historia</span>
+                    <span className="font-mono text-xs text-slate-600">{p.recordNumber || '—'}</span>
+                  </div>
                   <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5" />
                 </button>
               </li>

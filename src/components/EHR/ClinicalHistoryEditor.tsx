@@ -244,12 +244,16 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
           setHistoryStatus('SIGNED');
           return;
         }
-        throw new Error('Failed to save');
+        if (errBody.code === 'CLINICAL_ACCESS_READONLY') {
+          toast.error(errBody.error || 'Un acceso prestado a esta historia es de solo lectura.');
+          return;
+        }
+        throw new Error(errBody.error || 'Failed to save');
       }
       toast.success('Borrador guardado automáticamente', { position: 'bottom-right', duration: 2000 });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving draft:', error);
-      toast.error('Error al guardar el borrador');
+      toast.error(error?.message && error.message !== 'Failed to save' ? error.message : 'Error al guardar el borrador');
     } finally {
       setSaving(false);
     }

@@ -215,6 +215,7 @@ export default function PsychologistPortal({
         patientName: detail.patientName || 'Paciente',
         patientId: detail.patientId || 'unknown',
         documentId: '',
+        documentType: '',
         phone: '',
         corporateClient: '',
         notes: '',
@@ -373,6 +374,9 @@ export default function PsychologistPortal({
     companyName: string | null;
     cancelledAt: string | null;
     cancelledByName: string | null;
+    documentId: string | null;
+    documentType: string | null;
+    phone: string | null;
   } | null>(null);
   const [loadingSessionDetail, setLoadingSessionDetail] = useState(false);
   const [rescheduleTarget, setRescheduleTarget] = useState<any>(null);
@@ -398,6 +402,13 @@ export default function PsychologistPortal({
           companyName: data.activeAuthorization?.companyName || data.patient?.companyName || null,
           cancelledAt: match?.cancelledAt ?? null,
           cancelledByName: match?.cancelledByName ?? null,
+          // Respaldo para cuando el modal se abrió desde una notificación (ver
+          // el handler de NEW_APPOINTMENT/campana más arriba) — ese flujo arma
+          // selectedSessionForModal con documentId/phone en blanco porque el
+          // payload de la notificación no los trae; este fetch sí los tiene.
+          documentId: data.patient?.documentId ?? null,
+          documentType: data.patient?.documentType ?? null,
+          phone: data.patient?.phone ?? null,
         });
       })
       .catch(() => { if (!cancelled) setSessionDetailInfo(null); })
@@ -502,6 +513,7 @@ export default function PsychologistPortal({
       patientName: `${appt?.patient?.firstName || ''} ${appt?.patient?.lastName || ''}`.trim() || 'Paciente Desconocido',
       patientId: appt?.patient?.id || 'unknown',
       documentId: appt?.patient?.documentId || '',
+      documentType: appt?.patient?.documentType || '',
       phone: appt?.patient?.phone || '',
       corporateClient: appt?.patient?.corporateClient || '',
       notes: appt?.notes || '',
@@ -793,7 +805,15 @@ export default function PsychologistPortal({
           </button>
 
           <button
-            onClick={() => setActiveTab('clinical_history')}
+            onClick={() => {
+              // Clic en el menú siempre debe llevar al LISTADO — antes, si ya
+              // estabas dentro de la ficha de un paciente (activeTab ya era
+              // 'clinical_history'), el clic no hacía nada porque el tab no
+              // cambiaba, y selectedPatientId seguía apuntando a esa ficha.
+              setSelectedPatientId(null);
+              setClinicalHistoryReturnTab(null);
+              setActiveTab('clinical_history');
+            }}
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'clinical_history' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
             }`}
@@ -1162,9 +1182,6 @@ export default function PsychologistPortal({
         // que la alterarían (unirse, marcar asistencia, cancelar de nuevo),
         // no solo la reprogramación.
         const isCancelled = statusLabel === 'Cancelada';
-        // Igual que en el modal de edición: una cita ya atendida/cancelada, o
-        // cuya fecha ya pasó, no se puede reprogramar.
-        const isLockedForReschedule = statusLabel === 'Atendida' || isCancelled || start.getTime() < Date.now();
         const STATUS_TONE: Record<string, string> = {
           Programada: 'bg-toast-500/15 text-toast-300 border-toast-500/30',
           Atendida: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
@@ -1224,8 +1241,17 @@ export default function PsychologistPortal({
                     <div>
                       <p className="text-base font-bold text-slate-900">{selectedSessionForModal.patientName}</p>
                       <p className="text-xs text-slate-500">
-                        {selectedSessionForModal.documentId ? `CC ${selectedSessionForModal.documentId}` : 'Sin documento'}
-                        {selectedSessionForModal.phone ? ` • ${selectedSessionForModal.phone}` : ''}
+                        {(() => {
+                          const documentId = selectedSessionForModal.documentId || sessionDetailInfo?.documentId;
+                          const documentType = selectedSessionForModal.documentType || sessionDetailInfo?.documentType || 'CC';
+                          const phone = selectedSessionForModal.phone || sessionDetailInfo?.phone;
+                          return (
+                            <>
+                              {documentId ? `${documentType} ${documentId}` : (loadingSessionDetail ? 'Cargando documento…' : 'Sin documento')}
+                              {phone ? ` • ${phone}` : ''}
+                            </>
+                          );
+                        })()}
                       </p>
                     </div>
                   </div>
@@ -1332,18 +1358,6 @@ export default function PsychologistPortal({
                     className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
                   >
                     <FileText className="h-3.5 w-3.5" /> Historia clínica
-                  </button>
-                  <button
-                    disabled={isLockedForReschedule}
-                    title={isLockedForReschedule ? 'No se puede reprogramar: la cita ya fue atendida/cancelada o su fecha ya pasó.' : undefined}
-                    onClick={() => {
-                      const fullAppt = (realAppointments || []).find((a: any) => a.id === selectedSessionForModal.id);
-                      setSelectedSessionForModal(null);
-                      setRescheduleTarget(fullAppt || null);
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-white"
-                  >
-                    <RotateCcw className="h-3.5 w-3.5" /> Re-programar
                   </button>
                 </div>
                 <div className="flex items-center gap-4">

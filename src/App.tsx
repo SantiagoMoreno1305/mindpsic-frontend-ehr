@@ -233,29 +233,18 @@ export default function App() {
           if (notif.read || toastedIdsRef.current.has(notif.id)) return;
           toastedIdsRef.current.add(notif.id);
 
+          // El resto de tipos (nueva cita, consentimiento firmado, cita
+          // cancelada por el paciente, evaluación asignada/completada) ya NO
+          // aparece como toast flotante — solo dentro de la campana, para no
+          // llenar la pantalla de popups por cada evento rutinario. La única
+          // excepción es la alerta de riesgo crítico (ideación suicida): esa
+          // sí debe interrumpir aunque la campana esté cerrada, porque es una
+          // urgencia clínica, no un aviso administrativo.
           if (notif.type === 'NEW_APPOINTMENT') {
-            toast.success(notif.message, { duration: 6000, position: 'top-right' });
             window.dispatchEvent(new CustomEvent(NEW_APPOINTMENT_EVENT));
           }
-          if (notif.type === 'CONSENT_SIGNED') {
-            toast.success(notif.message, { duration: 8000, position: 'top-right', icon: '✅' });
-          }
-          if (notif.type === 'APPOINTMENT_CANCELLED_BY_PATIENT') {
-            toast(notif.message, { duration: 8000, position: 'top-right', icon: '🚫' });
-          }
-          // Estos tres tipos se crean en el backend (assessments.service.js /
-          // assessments.controller.js) pero antes no tenían rama aquí — el
-          // poll de abajo las marcaba read igual, así que una alerta crítica
-          // de riesgo (ideación suicida) podía quedar marcada como leída sin
-          // que nadie la hubiera visto nunca.
           if (notif.type === 'ASSESSMENT_CRITICAL_ALERT') {
             toast.error(notif.message, { duration: 15000, position: 'top-right', icon: '⚠️' });
-          }
-          if (notif.type === 'ASSESSMENT_COMPLETED') {
-            toast.success(notif.message, { duration: 8000, position: 'top-right', icon: '📋' });
-          }
-          if (notif.type === 'ASSESSMENT_ASSIGNED') {
-            toast(notif.message, { duration: 5000, position: 'top-right', icon: '📝' });
           }
         });
       } catch {

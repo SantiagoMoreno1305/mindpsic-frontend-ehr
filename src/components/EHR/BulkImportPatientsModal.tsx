@@ -31,6 +31,11 @@ interface SpecialistOption {
   name: string;
 }
 
+interface AgreementTypeOption {
+  id: string;
+  name: string;
+}
+
 interface RowError {
   row: number;
   field: string;
@@ -52,6 +57,13 @@ interface ParsedRow {
   emergencyContactTelefono: string;
   emergencyContactParentesco: string;
   psychologistId: string | null;
+  agreementType: string;
+  relacion: string;
+  tipoAtencion: string;
+  fechaSolicitud: string;
+  fechaAgendamiento: string;
+  fechaFinalizacion: string;
+  sessionsAuthorized: string;
 }
 
 interface BulkImportPatientsModalProps {
@@ -67,6 +79,16 @@ const SIN_ASIGNAR_LABEL = 'Sin asignar (se define después)';
 const BULK_STATUS_KEYS = ['notificado_1', 'notificado_2', 'notificado_3', 'notificado_4', 'anulado', 'activo', 'alta', 'pausa'];
 
 const PARENTESCO_OPTIONS = ['Madre', 'Padre', 'Hermano/a', 'Cónyuge / Pareja', 'Hijo/a', 'Abuelo/a', 'Tutor legal', 'Otro'];
+// Mismos catálogos fijos que CreatePatientModal — deben coincidir EXACTAMENTE
+// con PATIENT_RELACION_VALUES/PATIENT_TIPO_ATENCION_VALUES en el backend.
+const RELACION_OPTIONS = ['Estudiante', 'Colaborador', 'Familiar de colaborador', 'Familiar de estudiante', 'Consultante'];
+const TIPO_ATENCION_LABEL_TO_VALUE: Record<string, string> = {
+  'presencial': 'Presencial',
+  'telepsicología': 'Telepsicologia',
+  'telepsicologia': 'Telepsicologia',
+};
+const TIPO_ATENCION_LABELS = ['Presencial', 'Telepsicología'];
+const LIBRES_LABEL = 'Libres';
 
 const COL_NOMBRES = 'Nombres';
 const COL_APELLIDOS = 'Apellidos';
@@ -82,10 +104,19 @@ const COL_EC_APELLIDOS = 'Contacto de emergencia - Apellidos';
 const COL_EC_TEL = 'Contacto de emergencia - Teléfono';
 const COL_EC_PARENTESCO = 'Contacto de emergencia - Parentesco';
 const COL_PSICOLOGO = 'Psicólogo asignado';
+const COL_TIPO_CONVENIO = 'Tipo de convenio';
+const COL_RELACION = 'Relación';
+const COL_TIPO_ATENCION = 'Tipo de atención';
+const COL_FECHA_SOLICITUD = 'Fecha de solicitud (dd/mm/aaaa)';
+const COL_FECHA_AGENDAMIENTO = 'Fecha de agendamiento (dd/mm/aaaa)';
+const COL_FECHA_FINALIZACION = 'Fecha de finalización (dd/mm/aaaa)';
+const COL_SESIONES_APROBADAS = 'Sesiones aprobadas (número o "Libres")';
 
 const COLUMN_HEADERS = [
   COL_NOMBRES, COL_APELLIDOS, COL_TIPO_DOC, COL_NUM_DOC, COL_FECHA_NAC, COL_TEL, COL_ESTRATO,
   COL_ESTADO, COL_EMAIL, COL_EC_NOMBRES, COL_EC_APELLIDOS, COL_EC_TEL, COL_EC_PARENTESCO, COL_PSICOLOGO,
+  COL_TIPO_CONVENIO, COL_RELACION, COL_TIPO_ATENCION,
+  COL_FECHA_SOLICITUD, COL_FECHA_AGENDAMIENTO, COL_FECHA_FINALIZACION, COL_SESIONES_APROBADAS,
 ];
 
 function statusLabelToKey(label: string): string | null {
@@ -100,6 +131,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
   const { companies } = useCompanies();
   const [companyId, setCompanyId] = useState('');
   const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
+  const [agreementTypes, setAgreementTypes] = useState<AgreementTypeOption[]>([]);
   const [fileName, setFileName] = useState('');
   const [parsedRows, setParsedRows] = useState<ParsedRow[] | null>(null);
   const [clientErrors, setClientErrors] = useState<RowError[]>([]);
@@ -115,6 +147,18 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       .then(data => setSpecialists(Array.isArray(data?.specialists) ? data.specialists : Array.isArray(data) ? data : []))
       .catch(() => setSpecialists([]));
   }, [isOpen]);
+
+  // Propio de CADA convenio (companyId) — no un catálogo compartido de todo
+  // el tenant, ver comentario en schema.prisma. Se recarga cada vez que
+  // cambia el convenio del lote elegido arriba; "Particular (sin convenio)"
+  // (companyId vacío) no tiene catálogo propio que mostrar.
+  useEffect(() => {
+    if (!isOpen || !companyId) { setAgreementTypes([]); return; }
+    apiFetch(`/api/agreement-types?companyId=${companyId}`)
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setAgreementTypes(Array.isArray(data) ? data : []))
+      .catch(() => setAgreementTypes([]));
+  }, [isOpen, companyId]);
 
   function reset() {
     setCompanyId('');
@@ -140,6 +184,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       'Juan', 'Pérez', 'CC', '1024556778', '15/03/1990', '3132220587', '3',
       'Notificado 1°vez', 'juan@correo.com', 'María', 'Pérez', '3132220587', 'Madre',
       SIN_ASIGNAR_LABEL,
+      '', 'Estudiante', 'Presencial', '02/09/2026', '', '', '8',
     ];
     const ws = XLSX.utils.aoa_to_sheet([COLUMN_HEADERS, exampleRow]);
     ws['!cols'] = COLUMN_HEADERS.map(() => ({ wch: 28 }));
@@ -156,6 +201,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
 
     const statusValues = BULK_STATUS_KEYS.map(k => PATIENT_STATUS_LABELS[k]).join(' / ');
     const psicologoNames = [SIN_ASIGNAR_LABEL, ...specialists.map(s => s.name)];
+    const tipoConvenioNames = agreementTypes.map(t => t.name);
     const instructions: (string | number)[][] = [
       ['Instrucciones para llenar la plantilla'],
       [''],
@@ -177,15 +223,38 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       [COL_EC_TEL, 'No', 'Exactamente 10 dígitos si se llena'],
       [COL_EC_PARENTESCO, 'No', PARENTESCO_OPTIONS.join(' / ')],
       [COL_PSICOLOGO, 'No', `Nombre exacto de la lista de abajo, o "${SIN_ASIGNAR_LABEL}"`],
+      [COL_TIPO_CONVENIO, 'No', tipoConvenioNames.length > 0 ? 'Nombre exacto de la lista de abajo' : 'Este convenio todavía no tiene tipos configurados'],
+      [COL_RELACION, 'No', RELACION_OPTIONS.join(' / ')],
+      [COL_TIPO_ATENCION, 'No', TIPO_ATENCION_LABELS.join(' / ')],
+      [COL_FECHA_SOLICITUD, 'No', 'Formato dd/mm/aaaa — si se deja vacía, se usa la fecha de hoy'],
+      [COL_FECHA_AGENDAMIENTO, 'No', 'Formato dd/mm/aaaa — normalmente se deja vacía, la completa el sistema al agendar la primera cita'],
+      [COL_FECHA_FINALIZACION, 'No', 'Formato dd/mm/aaaa — normalmente se deja vacía, la completa el sistema al cerrar el proceso'],
+      [COL_SESIONES_APROBADAS, 'No', 'Un número entero mayor a 0, o "Libres" (sin tope) — abre el cupo inicial del paciente con el convenio del lote'],
       [''],
       ['Psicólogos disponibles en tu clínica:'],
       ...psicologoNames.map(n => [n]),
+      [''],
+      [`Tipos de convenio disponibles en ${selectedCompanyName}:`],
+      ...(tipoConvenioNames.length > 0 ? tipoConvenioNames.map(n => [n]) : [['(ninguno configurado — deja la columna vacía)']]),
     ];
     const wsInstr = XLSX.utils.aoa_to_sheet(instructions);
     wsInstr['!cols'] = [{ wch: 45 }, { wch: 14 }, { wch: 65 }];
     XLSX.utils.book_append_sheet(wb, wsInstr, 'Instrucciones');
 
     XLSX.writeFile(wb, `plantilla-pacientes-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  }
+
+  // Misma lógica de parseo dd/mm/aaaa que ya usaba solo COL_FECHA_NAC — ahora
+  // reutilizada para las tres fechas del proceso, que llegan en el mismo
+  // formato de celda (texto "dd/mm/aaaa" o Date real si Excel lo autodetectó).
+  function parseDateCell(raw: any, rowNumber: number, field: string, label: string, errors: RowError[]): string {
+    if (raw instanceof Date) return raw.toISOString().slice(0, 10);
+    if (typeof raw === 'string' && raw.trim()) {
+      const m = raw.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+      errors.push({ row: rowNumber, field, message: `${label} debe tener formato dd/mm/aaaa.` });
+    }
+    return '';
   }
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -209,6 +278,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       }
 
       const specialistByName = new Map(specialists.map(s => [s.name.trim().toLowerCase(), s.id]));
+      const agreementTypeByName = new Map(agreementTypes.map(t => [t.name.trim().toLowerCase(), t.name]));
       const errors: RowError[] = [];
 
       const rows: ParsedRow[] = raw.map((r, idx) => {
@@ -236,14 +306,52 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           }
         }
 
-        const fechaRaw = r[COL_FECHA_NAC];
-        let birthDate = '';
-        if (fechaRaw instanceof Date) {
-          birthDate = fechaRaw.toISOString().slice(0, 10);
-        } else if (typeof fechaRaw === 'string' && fechaRaw.trim()) {
-          const m = fechaRaw.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-          if (m) birthDate = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
-          else errors.push({ row: rowNumber, field: 'birthDate', message: 'Fecha de nacimiento debe tener formato dd/mm/aaaa.' });
+        const birthDate = parseDateCell(r[COL_FECHA_NAC], rowNumber, 'birthDate', 'Fecha de nacimiento', errors);
+
+        const tipoConvenioRaw = String(r[COL_TIPO_CONVENIO] || '').trim();
+        let agreementType = '';
+        if (tipoConvenioRaw) {
+          const match = agreementTypeByName.get(tipoConvenioRaw.toLowerCase());
+          if (!match) {
+            errors.push({ row: rowNumber, field: 'agreementType', message: `Tipo de convenio "${tipoConvenioRaw}" no reconocido — usa el nombre exacto de la hoja Instrucciones.` });
+          } else {
+            agreementType = match;
+          }
+        }
+
+        const relacion = String(r[COL_RELACION] || '').trim();
+        if (relacion && !RELACION_OPTIONS.includes(relacion)) {
+          errors.push({ row: rowNumber, field: 'relacion', message: `Relación "${relacion}" no reconocida — usa uno de los valores exactos de la hoja Instrucciones.` });
+        }
+
+        const tipoAtencionRaw = String(r[COL_TIPO_ATENCION] || '').trim();
+        let tipoAtencion = '';
+        if (tipoAtencionRaw) {
+          const match = TIPO_ATENCION_LABEL_TO_VALUE[tipoAtencionRaw.toLowerCase()];
+          if (!match) {
+            errors.push({ row: rowNumber, field: 'tipoAtencion', message: `Tipo de atención "${tipoAtencionRaw}" no reconocido — usa uno de los valores exactos de la hoja Instrucciones.` });
+          } else {
+            tipoAtencion = match;
+          }
+        }
+
+        const fechaSolicitud = parseDateCell(r[COL_FECHA_SOLICITUD], rowNumber, 'fechaSolicitud', 'Fecha de solicitud', errors);
+        const fechaAgendamiento = parseDateCell(r[COL_FECHA_AGENDAMIENTO], rowNumber, 'fechaAgendamiento', 'Fecha de agendamiento', errors);
+        const fechaFinalizacion = parseDateCell(r[COL_FECHA_FINALIZACION], rowNumber, 'fechaFinalizacion', 'Fecha de finalización', errors);
+
+        const sesionesRaw = String(r[COL_SESIONES_APROBADAS] || '').trim();
+        let sessionsAuthorized = '';
+        if (sesionesRaw) {
+          if (sesionesRaw.toLowerCase() === LIBRES_LABEL.toLowerCase()) {
+            sessionsAuthorized = LIBRES_LABEL;
+          } else {
+            const n = Number(sesionesRaw);
+            if (!Number.isInteger(n) || n <= 0) {
+              errors.push({ row: rowNumber, field: 'sessionsAuthorized', message: `Sesiones aprobadas debe ser un número entero mayor a 0, o "${LIBRES_LABEL}".` });
+            } else {
+              sessionsAuthorized = String(n);
+            }
+          }
         }
 
         return {
@@ -261,6 +369,13 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           emergencyContactTelefono: String(r[COL_EC_TEL] || '').trim(),
           emergencyContactParentesco: String(r[COL_EC_PARENTESCO] || '').trim(),
           psychologistId,
+          agreementType,
+          relacion,
+          tipoAtencion,
+          fechaSolicitud,
+          fechaAgendamiento,
+          fechaFinalizacion,
+          sessionsAuthorized,
         };
       });
 
