@@ -223,25 +223,39 @@ export default function InitialAssessmentWizard({
     try {
       const res = await fetch(`${apiBase()}/api/initial-assessment/${patientId}`, { headers: authHeaders() });
       if (res.ok) {
-        const { assessment } = await res.json();
+        const { assessment, patientDefaults } = await res.json();
         if (assessment) {
           setForm({
             ...EMPTY_FORM,
             ...assessment,
             // Si la valoración aún no tiene su propio dato editado, se
-            // prellena con lo YA REGISTRADO al crear el paciente (antes solo
-            // se hacía con nombre/documento — fecha de nacimiento, correo y
-            // teléfono quedaban en blanco aunque ya existieran).
-            nombresPaciente: assessment.nombresPaciente || patientFirstName || '',
-            apellidosPaciente: assessment.apellidosPaciente || patientLastName || '',
-            numeroDocumento: assessment.numeroDocumento || patientDocumentId || '',
-            tipoDocumento: assessment.tipoDocumento || patientDocumentType || '',
+            // prellena con lo YA REGISTRADO al crear/editar el paciente desde
+            // CreatePatientModal (patientDefaults, ver getAssessment) — antes
+            // esto solo cubría 6 campos sueltos, ahora también EPS, régimen,
+            // estado civil, sexo biológico, género, lugar de nacimiento y
+            // residencia completa.
+            nombresPaciente: assessment.nombresPaciente || patientDefaults?.nombresPaciente || patientFirstName || '',
+            apellidosPaciente: assessment.apellidosPaciente || patientDefaults?.apellidosPaciente || patientLastName || '',
+            numeroDocumento: assessment.numeroDocumento || patientDefaults?.numeroDocumento || patientDocumentId || '',
+            tipoDocumento: assessment.tipoDocumento || patientDefaults?.tipoDocumento || patientDocumentType || '',
             fechaNacimiento: assessment.fechaNacimiento
               ? assessment.fechaNacimiento.slice(0, 10)
-              : (patientBirthDate ? patientBirthDate.slice(0, 10) : ''),
-            correoElectronico: assessment.correoElectronico || patientEmail || '',
-            telefono: assessment.telefono || patientPhone || '',
-            estrato: assessment.estrato?.toString() || '',
+              : (patientDefaults?.fechaNacimiento || (patientBirthDate ? patientBirthDate.slice(0, 10) : '')),
+            correoElectronico: assessment.correoElectronico || patientDefaults?.correoElectronico || patientEmail || '',
+            telefono: assessment.telefono || patientDefaults?.telefono || patientPhone || '',
+            estrato: assessment.estrato?.toString() || patientDefaults?.estrato || '',
+            epsCodigo: assessment.epsCodigo || patientDefaults?.epsCodigo || '',
+            epsNombre: assessment.epsNombre || patientDefaults?.epsNombre || '',
+            regimenSalud: assessment.regimenSalud || patientDefaults?.regimenSalud || '',
+            estadoCivil: assessment.estadoCivil || patientDefaults?.estadoCivil || '',
+            sexoBiologico: assessment.sexoBiologico || patientDefaults?.sexoBiologico || '',
+            genero: assessment.genero || patientDefaults?.genero || '',
+            departamentoNacimiento: assessment.departamentoNacimiento || patientDefaults?.departamentoNacimiento || '',
+            ciudadNacimiento: assessment.ciudadNacimiento || patientDefaults?.ciudadNacimiento || '',
+            direccionResidencia: assessment.direccionResidencia || patientDefaults?.direccionResidencia || '',
+            departamentoResidencia: assessment.departamentoResidencia || patientDefaults?.departamentoResidencia || '',
+            ciudadResidencia: assessment.ciudadResidencia || patientDefaults?.ciudadResidencia || '',
+            barrio: assessment.barrio || patientDefaults?.barrio || '',
             poblacionDiferencial: assessment.poblacionDiferencial || [],
             instrumentosAplicados: assessment.instrumentosAplicados || [],
           });
@@ -249,13 +263,14 @@ export default function InitialAssessmentWizard({
         } else {
           setForm({
             ...EMPTY_FORM,
-            nombresPaciente: patientFirstName || '',
-            apellidosPaciente: patientLastName || '',
-            numeroDocumento: patientDocumentId || '',
-            tipoDocumento: patientDocumentType || '',
-            fechaNacimiento: patientBirthDate ? patientBirthDate.slice(0, 10) : '',
-            correoElectronico: patientEmail || '',
-            telefono: patientPhone || '',
+            ...(patientDefaults || {}),
+            nombresPaciente: patientDefaults?.nombresPaciente || patientFirstName || '',
+            apellidosPaciente: patientDefaults?.apellidosPaciente || patientLastName || '',
+            numeroDocumento: patientDefaults?.numeroDocumento || patientDocumentId || '',
+            tipoDocumento: patientDefaults?.tipoDocumento || patientDocumentType || '',
+            fechaNacimiento: patientDefaults?.fechaNacimiento || (patientBirthDate ? patientBirthDate.slice(0, 10) : ''),
+            correoElectronico: patientDefaults?.correoElectronico || patientEmail || '',
+            telefono: patientDefaults?.telefono || patientPhone || '',
           });
         }
       }

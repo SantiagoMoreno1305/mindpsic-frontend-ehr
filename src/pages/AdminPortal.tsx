@@ -139,6 +139,7 @@ export default function AdminPortal() {
   const emptyStaffForm = {
     firstName: '', lastName: '', email: '',
     role: 'ESPECIALISTA_B2B' as 'ESPECIALISTA_B2B' | 'OPERATIVO',
+    documentType: 'CC', documentId: '',
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
     dataConsentAccepted: false,
   };
@@ -212,6 +213,10 @@ export default function AdminPortal() {
       setStaffError('Debes marcar la autorización de tratamiento de datos personales.');
       return;
     }
+    if (f.documentId.trim() && f.documentId.trim().length > 10) {
+      setStaffError('El documento debe tener máximo 10 dígitos.');
+      return;
+    }
 
     setIsCreatingStaff(true);
     setStaffError(null);
@@ -232,6 +237,8 @@ export default function AdminPortal() {
           lastName: f.lastName.trim(),
           email: f.email.trim().toLowerCase(),
           role: f.role,
+          documentType: f.documentId.trim() ? f.documentType : undefined,
+          documentId: f.documentId.trim() || undefined,
           professionalCard: f.professionalCard.trim() || undefined,
           specialtyId: f.specialtyId || undefined,
           academicLevel: f.academicLevel || undefined,
@@ -278,6 +285,8 @@ export default function AdminPortal() {
     email: string;
     role: string;
     status: 'active' | 'inactive';
+    documentType: string | null;
+    documentId: string | null;
     professionalCard: string | null;
     academicLevel: string | null;
     experienceYears: number | null;
@@ -385,6 +394,7 @@ export default function AdminPortal() {
   // ── Edición de colaborador (nombres/apellidos + ficha profesional) ──
   const emptyEditStaffForm = {
     firstName: '', lastName: '',
+    documentType: 'CC', documentId: '',
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
   };
   const [showEditStaffModal, setShowEditStaffModal] = useState(false);
@@ -404,6 +414,8 @@ export default function AdminPortal() {
     setEditStaffForm({
       firstName: member.firstName || fallbackFirstName || '',
       lastName: member.lastName || fallbackLastNameParts.join(' '),
+      documentType: member.documentType || 'CC',
+      documentId: member.documentId || '',
       professionalCard: member.professionalCard || '',
       specialtyId: member.specialtyId || '',
       academicLevel: member.academicLevel || '',
@@ -422,6 +434,10 @@ export default function AdminPortal() {
     if (!editingStaffId) return;
     const f = editStaffForm;
     if (!f.firstName.trim() || !f.lastName.trim()) return;
+    if (f.documentId.trim() && f.documentId.trim().length > 10) {
+      setEditStaffError('El documento debe tener máximo 10 dígitos.');
+      return;
+    }
 
     setSavingStaff(true);
     setEditStaffError(null);
@@ -433,6 +449,8 @@ export default function AdminPortal() {
         body: JSON.stringify({
           firstName: f.firstName.trim(),
           lastName: f.lastName.trim(),
+          documentType: f.documentId.trim() ? f.documentType : null,
+          documentId: f.documentId.trim() || null,
           professionalCard: f.professionalCard.trim() || null,
           specialtyId: f.specialtyId || null,
           academicLevel: f.academicLevel || null,
@@ -522,10 +540,11 @@ export default function AdminPortal() {
   const [newLocationAddress, setNewLocationAddress] = useState('');
   const [savingLocation, setSavingLocation] = useState(false);
 
-  // Catálogo de "Tipo de convenio" — a diferencia de Ubicaciones (anidadas
-  // bajo un companyId), este es un catálogo propio del tenant (como EPS,
-  // pero por tenant en vez de global) — se puede gestionar y usar aunque
-  // todavía se esté CREANDO el convenio, no hace falta guardarlo primero.
+  // Catálogo de "Tipo de convenio" — igual que Ubicaciones, es propio de
+  // CADA convenio (companyId), no compartido por todo el tenant. Por eso
+  // exige guardar el convenio primero (necesita un companyId real) — mismo
+  // criterio que ya rige Ubicaciones, ver el mensaje "Guarda el convenio
+  // primero..." más abajo.
   const [agreementTypes, setAgreementTypes] = useState<{ id: string; name: string }[]>([]);
   const [newAgreementTypeName, setNewAgreementTypeName] = useState('');
   const [savingAgreementType, setSavingAgreementType] = useState(false);
@@ -539,20 +558,27 @@ export default function AdminPortal() {
   const [catalogTab, setCatalogTab] = useState<'locations' | 'types'>('locations');
   const [agreementTypeDropdownOpen, setAgreementTypeDropdownOpen] = useState(false);
 
-  const fetchAgreementTypes = async () => {
+  const fetchAgreementTypes = async (companyId: string) => {
     try {
       const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
-      const res = await fetch(`${apiUrl}/api/agreement-types`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const res = await fetch(`${apiUrl}/api/agreement-types?companyId=${companyId}`, { headers: { 'Authorization': `Bearer ${token}` } });
       if (res.ok) setAgreementTypes(await res.json());
     } catch {
       // Fallo silencioso — el <select> simplemente queda con la lista vacía/vieja
     }
   };
 
+  // Se recarga cada vez que cambia el convenio que se está editando — sin
+  // esto, al pasar de editar un convenio a otro se seguían viendo (y se
+  // podían reasignar) los tipos del convenio anterior.
   useEffect(() => {
-    fetchAgreementTypes();
+    if (editingCompanyId) {
+      fetchAgreementTypes(editingCompanyId);
+    } else {
+      setAgreementTypes([]);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [editingCompanyId]);
 
   const openCreateCompanyModal = () => {
     setEditingCompanyId(null);
@@ -629,14 +655,14 @@ export default function AdminPortal() {
   };
 
   const handleAddAgreementType = async () => {
-    if (!newAgreementTypeName.trim()) return;
+    if (!newAgreementTypeName.trim() || !editingCompanyId) return;
     setSavingAgreementType(true);
     try {
       const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
       const res = await fetch(`${apiUrl}/api/agreement-types`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ name: newAgreementTypeName.trim() }),
+        body: JSON.stringify({ name: newAgreementTypeName.trim(), companyId: editingCompanyId }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -2520,6 +2546,29 @@ export default function AdminPortal() {
                   </div>
                 </div>
 
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Documento de identidad</label>
+                    <div className="flex gap-2">
+                      <select
+                        value={newStaffForm.documentType}
+                        onChange={e => setNewStaffForm({ ...newStaffForm, documentType: e.target.value })}
+                        className="w-20 shrink-0 border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      >
+                        {['CC', 'TI', 'PEP', 'PA', 'CE'].map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={newStaffForm.documentId}
+                        onChange={e => setNewStaffForm({ ...newStaffForm, documentId: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                        placeholder="Ej. 1024556778"
+                        className="w-full min-w-0 border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 {newStaffForm.role === 'ESPECIALISTA_B2B' && (
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -2821,6 +2870,29 @@ export default function AdminPortal() {
                       onChange={e => setEditStaffForm({ ...editStaffForm, lastName: e.target.value })}
                       className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
                     />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Documento de identidad</label>
+                    <div className="flex gap-2">
+                      <select
+                        value={editStaffForm.documentType}
+                        onChange={e => setEditStaffForm({ ...editStaffForm, documentType: e.target.value })}
+                        className="w-20 shrink-0 border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      >
+                        {['CC', 'TI', 'PEP', 'PA', 'CE'].map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={editStaffForm.documentId}
+                        onChange={e => setEditStaffForm({ ...editStaffForm, documentId: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                        placeholder="Ej. 1024556778"
+                        className="w-full min-w-0 border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -3305,6 +3377,8 @@ export default function AdminPortal() {
                         </button>
                       </>
                     )
+                  ) : !editingCompanyId ? (
+                    <p className="text-xs text-slate-400">Guarda el convenio primero para poder agregar tipos de convenio.</p>
                   ) : (
                     <>
                       {agreementTypes.length > 0 && (

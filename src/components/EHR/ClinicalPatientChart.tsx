@@ -3,7 +3,7 @@ import { toast } from 'react-hot-toast';
 import {
   ArrowLeft, Phone, Mail, CalendarClock, ClipboardList,
   Plus, Trash2, Loader2, Pencil, X, AlertTriangle,
-  TrendingUp, TrendingDown, Minus, ChevronDown,
+  TrendingUp, TrendingDown, Minus, ChevronDown, Lock, KeyRound,
 } from 'lucide-react';
 import ClinicalHistoryEditor from './ClinicalHistoryEditor';
 import ClinicalAttachments from './ClinicalAttachments';
@@ -220,6 +220,12 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
   }, [tab]);
   const [data, setData] = useState<ChartResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // Historia asignada a otro profesional, sin acceso todavía — se muestra el
+  // gate (botón "Solicitar acceso" + verificación de código) en vez de la
+  // ficha. `readOnlyAccess` distingue acceso propio de un acceso prestado ya
+  // vigente (para el banner de solo lectura una vez adentro).
+  const [accessDenied, setAccessDenied] = useState(false);
+  const [readOnlyAccess, setReadOnlyAccess] = useState(false);
 
   useEffect(() => {
     fetchChart();
@@ -230,8 +236,23 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
     setLoading(true);
     try {
       const res = await fetch(`${apiBase()}/api/patients/${patientId}/chart`, { headers: authHeaders() });
-      if (res.ok) setData(await res.json());
-      else toast.error('Error al cargar la ficha clínica');
+      if (res.ok) {
+        setAccessDenied(false);
+        setData(await res.json());
+        // No bloquea el render de la ficha: solo determina si se muestra el
+        // banner de solo lectura (acceso prestado) una vez cargada.
+        fetch(`${apiBase()}/api/patients/${patientId}/clinical-access/status`, { headers: authHeaders() })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((s) => setReadOnlyAccess(Boolean(s && s.hasAccess && !s.isOwner)))
+          .catch(() => {});
+      } else {
+        const errBody = await res.json().catch(() => ({}));
+        if (res.status === 403 && errBody.code === 'CLINICAL_ACCESS_REQUIRED') {
+          setAccessDenied(true);
+        } else {
+          toast.error(errBody.error || 'Error al cargar la ficha clínica');
+        }
+      }
     } catch {
       toast.error('Error de red al cargar la ficha clínica');
     } finally {
@@ -244,9 +265,12 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
       const res = await fetch(`${apiBase()}/api/patients/${patientId}/chart`, {
         method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload),
       });
-      if (!res.ok) throw new Error('failed');
-    } catch {
-      toast.error('Error al guardar los cambios');
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || 'failed');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Error al guardar los cambios');
     }
   };
 
@@ -271,10 +295,28 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
     const res = await fetch(`${apiBase()}/api/patients/${patientId}/chart`, {
       method: 'PUT', headers: authHeaders(), body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error('failed');
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || 'failed');
+    }
     const { patient: updated } = await res.json();
     updateLocalPatient(updated);
   };
+
+  if (accessDenied) {
+    return (
+      <div className="space-y-4">
+        <button
+          onClick={onBack}
+          className="flex items-center text-sm font-semibold text-slate-400 transition-colors hover:text-slate-900"
+        >
+          <ArrowLeft className="mr-2 h-4 w-4" />
+          Volver a la bandeja de pacientes
+        </button>
+        <ClinicalAccessGate patientId={patientId} onGranted={fetchChart} />
+      </div>
+    );
+  }
 
   if (loading || !data) {
     return (
@@ -322,6 +364,13 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
         <ArrowLeft className="mr-2 h-4 w-4" />
         Volver a la bandeja de pacientes
       </button>
+
+      {readOnlyAccess && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-600/30 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          Estás viendo esta historia con un acceso temporal de solo lectura — no puedes editarla, firmar evoluciones, asignar pruebas ni subir anexos.
+        </div>
+      )}
 
       {/* ═══ Encabezado persistente del paciente ═══ */}
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
@@ -418,6 +467,146 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
         )}
         {tab === 'anexos' && <ClinicalAttachments patientId={patientId} />}
       </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ClinicalAccessGate — se muestra en vez de la ficha cuando el paciente está
+// asignado a otro profesional. El código lo dicta el dueño de la historia por
+// fuera de la app (no hay botón de "aprobar" acá); esta pantalla solo pide el
+// acceso y, una vez hay una solicitud pendiente, deja el formulario de código
+// listo — se recupera del backend en cada montaje (GET .../status), así que
+// sigue ahí aunque se recargue la página mientras el colega dicta el código.
+// ═══════════════════════════════════════════════════════════════════════════
+function ClinicalAccessGate({ patientId, onGranted }: { patientId: string; onGranted: () => void }) {
+  const [checking, setChecking] = useState(true);
+  const [pendingRequestId, setPendingRequestId] = useState<string | null>(null);
+  const [pendingExpiresAt, setPendingExpiresAt] = useState<string | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const [code, setCode] = useState('');
+  const [verifying, setVerifying] = useState(false);
+
+  const loadStatus = useCallback(async () => {
+    setChecking(true);
+    try {
+      const res = await fetch(`${apiBase()}/api/patients/${patientId}/clinical-access/status`, { headers: authHeaders() });
+      if (res.ok) {
+        const s = await res.json();
+        setPendingRequestId(s.pendingRequestId || null);
+        setPendingExpiresAt(s.pendingExpiresAt || null);
+      }
+    } catch {
+      // silencioso — el botón de "Solicitar acceso" sigue disponible igual
+    } finally {
+      setChecking(false);
+    }
+  }, [patientId]);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  const requestAccess = async () => {
+    setRequesting(true);
+    try {
+      const res = await fetch(`${apiBase()}/api/patients/${patientId}/clinical-access/request`, {
+        method: 'POST', headers: authHeaders(),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || 'Error al solicitar el acceso');
+        return;
+      }
+      toast.success('Código enviado al correo del profesional a cargo. Pídeselo y escríbelo abajo.');
+      setPendingRequestId(body.requestId);
+      setPendingExpiresAt(null);
+    } catch {
+      toast.error('Error de red al solicitar el acceso');
+    } finally {
+      setRequesting(false);
+    }
+  };
+
+  const verify = async () => {
+    if (!pendingRequestId || code.trim().length !== 6) return;
+    setVerifying(true);
+    try {
+      const res = await fetch(`${apiBase()}/api/patients/${patientId}/clinical-access/verify`, {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ requestId: pendingRequestId, code: code.trim() }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || 'Código incorrecto');
+        return;
+      }
+      toast.success('Acceso concedido por 2 horas, en modo solo lectura.');
+      onGranted();
+    } catch {
+      toast.error('Error de red al verificar el código');
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  if (checking) {
+    return (
+      <div className="flex min-h-[300px] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-toast-500" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm sm:p-8">
+      <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-toast-100">
+        <Lock className="h-6 w-6 text-toast-500" />
+      </div>
+      <h2 className="text-lg font-bold text-slate-900">Historia clínica de otro profesional</h2>
+      <p className="mt-1 text-sm text-slate-400">
+        Este paciente está asignado a otro especialista. Para verla necesitas un código de acceso temporal.
+      </p>
+
+      {!pendingRequestId ? (
+        <button
+          onClick={requestAccess}
+          disabled={requesting}
+          className="mt-5 inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-toast-600 disabled:opacity-60"
+        >
+          {requesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <KeyRound className="h-4 w-4" />}
+          Solicitar acceso a historia clínica
+        </button>
+      ) : (
+        <div className="mt-5 space-y-3 text-left">
+          <p className="text-center text-xs font-medium text-slate-400">
+            Le llegó un código de 6 dígitos al correo del profesional a cargo{pendingExpiresAt ? ` (vence ${new Date(pendingExpiresAt).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })})` : ''}. Pídeselo y escríbelo aquí.
+          </p>
+          <input
+            type="text"
+            inputMode="numeric"
+            maxLength={6}
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            onKeyDown={(e) => e.key === 'Enter' && verify()}
+            placeholder="000000"
+            className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-center text-2xl font-bold tracking-[0.5em] outline-none focus:border-toast-500"
+            autoFocus
+          />
+          <button
+            onClick={verify}
+            disabled={verifying || code.length !== 6}
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-toast-500 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-toast-600 disabled:opacity-60"
+          >
+            {verifying ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            Verificar código
+          </button>
+          <button
+            onClick={requestAccess}
+            disabled={requesting}
+            className="w-full text-center text-xs font-semibold text-slate-400 hover:text-toast-500"
+          >
+            Pedir un código nuevo
+          </button>
+        </div>
+      )}
     </div>
   );
 }
