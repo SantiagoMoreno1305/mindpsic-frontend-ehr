@@ -299,11 +299,23 @@ export interface BackendPatient {
   fechaSolicitud?: string | null;
   fechaAgendamiento?: string | null;
   fechaFinalizacion?: string | null;
+  gender?: string | null;
+  sexoBiologico?: string | null;
+  departamentoNacimiento?: string | null;
+  ciudadNacimiento?: string | null;
+  epsCodigo?: string | null;
+  epsNombre?: string | null;
+  regimenSalud?: string | null;
+  estadoCivil?: string | null;
+  direccionResidencia?: string | null;
+  departamentoResidencia?: string | null;
+  ciudadResidencia?: string | null;
+  barrio?: string | null;
 }
 
 export interface BackendAppointment {
   id: string;
-  patient: { id: string; firstName: string; lastName: string; documentId?: string; phone?: string | null; corporateClient?: string | null };
+  patient: { id: string; firstName: string; lastName: string; documentId?: string; documentType?: string | null; phone?: string | null; corporateClient?: string | null };
   psychologist: { id: string; name: string };
   specialty?: { id: string; name: string } | null;
   dateTime: string;
