@@ -37,6 +37,14 @@ interface PatientOption {
   lastName: string;
   documentId: string;
   email?: string | null;
+  // Ya vienen en la respuesta de /api/appointments/patients?q=… y de
+  // /api/patients/:id (PUT/POST) — antes esta interfaz los ocultaba y
+  // "Corregir datos de este paciente" los reseteaba en blanco (o, peor,
+  // reenviaba documentType='CC' fijo aunque el paciente real fuera TI/CE/…),
+  // pisando en silencio un dato que nunca se había tocado.
+  phone?: string | null;
+  documentType?: string | null;
+  birthDate?: string | null;
 }
 
 
@@ -71,6 +79,7 @@ interface ScheduleSummary {
     firstName: string;
     lastName: string;
     documentId: string;
+    documentType: string | null;
     phone: string | null;
     companyName: string | null;
   };
@@ -82,6 +91,20 @@ interface ScheduleSummary {
   sessionsTaken: number;
   sessionsRemaining: number | null;
   appointments: ScheduleSummaryAppointment[];
+}
+
+// Un ESPECIALISTA_B2B que entra a agendar solo puede quedar asignado a sí
+// mismo — no debe ver (ni poder elegir) a los demás psicólogos del tenant en
+// el selector. Mismo patrón de lectura de rol que ya usa este archivo para
+// canAuthorizeSessions (localStorage.mind_user, sin prop nuevo desde los dos
+// portales que montan este modal).
+function getStoredUser(): { id: string; role: string } | null {
+  try {
+    const userStr = localStorage.getItem('mind_user');
+    return userStr ? JSON.parse(userStr) : null;
+  } catch {
+    return null;
+  }
 }
 
 const PARENTESCO_OPTIONS = ['Madre', 'Padre', 'Hermano/a', 'Cónyuge / Pareja', 'Hijo/a', 'Abuelo/a', 'Tutor legal', 'Otro'];
@@ -155,7 +178,6 @@ interface SelectoresData {
   specialists: Specialist[];
   companies: CompanyRecord[];
   specialties: SpecialtyOption[];
-  agreementTypes: { id: string; name: string }[];
 }
 
 let selectoresCache: (SelectoresData & { ts: number }) | null = null;
@@ -177,7 +199,7 @@ async function cargarSelectores(): Promise<SelectoresData> {
   if (cargaEnVuelo) return cargaEnVuelo;
 
   cargaEnVuelo = (async () => {
-    const [specialists, companies, specialtyRes, agreementTypeRes] = await Promise.all([
+    const [specialists, companies, specialtyRes] = await Promise.all([
       apiFetch('/api/users/specialists'),
       // Reutiliza la misma caché compartida que PacientesPanel/CreatePatientModal/
       // el panel de Convenios de AdminPortal (ver src/hooks/useCompanies.ts) — así
@@ -185,7 +207,6 @@ async function cargarSelectores(): Promise<SelectoresData> {
       // esos consumidores ya la trajo recientemente.
       getCompaniesCached(),
       apiFetch('/api/specialties/options'),
-      apiFetch('/api/agreement-types'),
     ]);
 
     const leer = async <T,>(res: Response): Promise<T[]> => {
@@ -198,7 +219,6 @@ async function cargarSelectores(): Promise<SelectoresData> {
       specialists:  await leer<Specialist>(specialists),
       companies,
       specialties:  await leer<SpecialtyOption>(specialtyRes),
-      agreementTypes: await leer<{ id: string; name: string }>(agreementTypeRes),
     };
 
     selectoresCache = { ...frescos, ts: Date.now() };
@@ -416,6 +436,11 @@ export default function DelegatedAppointmentModal({
 
   // Si initialData cambia, actualizar el form
   useEffect(() => {
+    const storedUser = getStoredUser();
+    // Un especialista solo puede agendarse a sí mismo — se precarga de una
+    // vez para que no tenga que buscarse en un selector que de todos modos
+    // solo lo va a mostrar a él (ver visibleSpecialists más abajo).
+    const ownIdIfSpecialist = storedUser?.role === 'ESPECIALISTA_B2B' ? storedUser.id : '';
     if (initialData) {
       const initialDateTime = initialData.date ? (() => {
         const d = new Date(initialData.date);
@@ -424,7 +449,7 @@ export default function DelegatedAppointmentModal({
       })() : '';
       originalDateTimeRef.current = initialDateTime;
       setForm({
-        userId: initialData.psychologist?.id || initialData.userId || '',
+        userId: initialData.psychologist?.id || initialData.userId || ownIdIfSpecialist,
         patientId: initialData.patient?.id || initialData.patientId || '',
         specialtyId: initialData.specialtyId || '',
         dateTime: initialDateTime,
@@ -447,13 +472,16 @@ export default function DelegatedAppointmentModal({
           lastName: initialData.patient.lastName,
           documentId: initialData.patient.documentId || '',
           email: initialData.patient.email,
+          phone: initialData.patient.phone,
+          documentType: initialData.patient.documentType,
+          birthDate: initialData.patient.birthDate,
         });
       } else {
         setSelectedPatientFull(null);
       }
     } else {
       setForm({
-        userId: '', patientId: '', specialtyId: '', dateTime: '', timeSlot: '',
+        userId: ownIdIfSpecialist, patientId: '', specialtyId: '', dateTime: '', timeSlot: '',
         appointmentType: 'clinico', modality: 'Virtual', location: '', notes: '',
         corporateClient: '', locationId: '', agreementType: '',
       });
@@ -496,7 +524,6 @@ export default function DelegatedAppointmentModal({
     setSpecialists(d.specialists);
     setCompanies(d.companies);
     setSpecialties(d.specialties);
-    setAgreementTypes(d.agreementTypes);
   };
 
   const fetchSelectorsData = async () => {
@@ -516,6 +543,24 @@ export default function DelegatedAppointmentModal({
       setIsLoadingData(false);
     }
   };
+
+  // "Tipo de convenio" es propio de CADA convenio (companyId) — no un
+  // catálogo compartido de todo el tenant (ver comentario en schema.prisma).
+  // Se recarga cada vez que cambia el convenio resuelto de la cita
+  // (form.corporateClient), sea porque el usuario lo eligió a mano o porque
+  // ya vino fijo del paciente seleccionado. No toca form.agreementType acá
+  // a propósito — eso se limpia en el momento exacto en que el usuario
+  // cambia de convenio (ver los setForm de arriba), no en este efecto.
+  useEffect(() => {
+    const selectedCompany = companies.find((c) => c.name === form.corporateClient);
+    if (!selectedCompany) { setAgreementTypes([]); return; }
+    let cancelled = false;
+    apiFetch(`/api/agreement-types?companyId=${selectedCompany.id}`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => { if (!cancelled) setAgreementTypes(Array.isArray(data) ? data : []); })
+      .catch(() => { if (!cancelled) setAgreementTypes([]); });
+    return () => { cancelled = true; };
+  }, [form.corporateClient, companies]);
 
   // ── Ficha del paciente: se recarga cada vez que cambia el paciente seleccionado ──
   useEffect(() => {
@@ -800,6 +845,9 @@ export default function DelegatedAppointmentModal({
         lastName: newPatient.lastName,
         documentId: newPatient.documentId,
         email: newPatient.email,
+        phone: newPatient.phone,
+        documentType: newPatient.documentType,
+        birthDate: newPatient.birthDate,
       };
 
       setSelectedPatientFull(newOption);
@@ -913,12 +961,13 @@ export default function DelegatedAppointmentModal({
     setNewPatientLastName(selectedPatientFull.lastName);
     setNewPatientDocument(selectedPatientFull.documentId);
     setNewPatientEmail(selectedPatientFull.email || '');
-    // Teléfono, tipo de documento y fecha de nacimiento no vienen en
-    // PatientOption (el listado de selección no los trae) — quedan en su
-    // valor por defecto / en blanco para completar o corregir.
-    setNewPatientPhone('');
-    setNewPatientDocumentType('CC');
-    setNewPatientBirthDate('');
+    // Precargados con el dato REAL del paciente cuando está disponible (ver
+    // PatientOption) — antes siempre quedaban en blanco/'CC' por defecto,
+    // así que guardar sin tocarlos de verdad SOBRESCRIBÍA en silencio el
+    // teléfono/tipo de documento/fecha de nacimiento reales del paciente.
+    setNewPatientPhone(selectedPatientFull.phone || '');
+    setNewPatientDocumentType(selectedPatientFull.documentType || 'CC');
+    setNewPatientBirthDate(selectedPatientFull.birthDate ? selectedPatientFull.birthDate.slice(0, 10) : '');
     setIsEditingPatient(true);
   };
 
@@ -970,6 +1019,9 @@ export default function DelegatedAppointmentModal({
         lastName: updatedPatient.lastName,
         documentId: updatedPatient.documentId,
         email: updatedPatient.email,
+        phone: updatedPatient.phone,
+        documentType: updatedPatient.documentType,
+        birthDate: updatedPatient.birthDate,
       });
 
       setIsEditingPatient(false);
@@ -1006,15 +1058,15 @@ export default function DelegatedAppointmentModal({
   // todos modos va a fallar. Mismo patrón de lectura de rol que el resto
   // del EHR (localStorage.mind_user), sin necesidad de pasar un prop nuevo
   // desde los dos portales que usan este modal.
-  const canAuthorizeSessions = (() => {
-    try {
-      const userStr = localStorage.getItem('mind_user');
-      const role = userStr ? JSON.parse(userStr).role : null;
-      return role === 'CEO' || role === 'DIRECTIVO';
-    } catch {
-      return false;
-    }
-  })();
+  const storedUser = getStoredUser();
+  const canAuthorizeSessions = storedUser?.role === 'CEO' || storedUser?.role === 'DIRECTIVO';
+  // Un especialista solo puede agendarse a sí mismo — nunca debe ver (ni
+  // poder elegir) a los demás psicólogos del tenant en este selector, aunque
+  // el endpoint /api/users/specialists sí le traiga la lista completa (la
+  // usa igual el buscador de disponibilidad de otros roles).
+  const visibleSpecialists = storedUser?.role === 'ESPECIALISTA_B2B'
+    ? specialists.filter((s) => s.id === storedUser.id)
+    : specialists;
   // Mismo estilo "bloqueado" que la caja de Convenio / Cliente Corporativo —
   // misma altura, color y fuente en cualquier caja de solo lectura.
   const lockedBoxClass = 'flex min-h-[42px] w-full items-center border border-slate-200 rounded-lg p-2.5 text-sm bg-slate-100 text-slate-600';
@@ -1120,10 +1172,12 @@ export default function DelegatedAppointmentModal({
                     required
                     value={form.userId}
                     onChange={(e) => setForm({ ...form, userId: e.target.value })}
-                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    disabled={storedUser?.role === 'ESPECIALISTA_B2B'}
+                    title={storedUser?.role === 'ESPECIALISTA_B2B' ? 'Solo puedes agendarte a ti mismo.' : undefined}
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-600"
                   >
                     <option value="" disabled>Seleccione un especialista</option>
-                    {specialists.map((s) => (
+                    {visibleSpecialists.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
                         {s.specialty ? ` – ${s.specialty}` : ''}
@@ -1275,9 +1329,9 @@ export default function DelegatedAppointmentModal({
                       <input
                         type="text"
                         required={!form.patientId}
-                        value={form.patientId ? `${selectedPatientFull?.firstName || ''} ${selectedPatientFull?.lastName || ''} — CC ${selectedPatientFull?.documentId || ''}` : patientSearchTerm}
+                        value={form.patientId ? `${selectedPatientFull?.firstName || ''} ${selectedPatientFull?.lastName || ''} — ${selectedPatientFull?.documentType || 'CC'} ${selectedPatientFull?.documentId || ''}` : patientSearchTerm}
                         onChange={(e) => {
-                          if (form.patientId) setForm(prev => ({ ...prev, patientId: '', corporateClient: '' }));
+                          if (form.patientId) setForm(prev => ({ ...prev, patientId: '', corporateClient: '', agreementType: '' }));
                           setSelectedPatientFull(null);
                           setPatientSearchTerm(e.target.value);
                           setShowPatientResults(true);
@@ -1306,13 +1360,13 @@ export default function DelegatedAppointmentModal({
                                   // así el clic registra aunque el blur cierre el dropdown.
                                   onMouseDown={() => {
                                     setSelectedPatientFull(p);
-                                    setForm(prev => ({ ...prev, patientId: p.id, corporateClient: '' }));
+                                    setForm(prev => ({ ...prev, patientId: p.id, corporateClient: '', agreementType: '' }));
                                     setPatientSearchTerm('');
                                     setShowPatientResults(false);
                                   }}
                                   className="block w-full border-b border-slate-100 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-indigo-50"
                                 >
-                                  {p.firstName} {p.lastName} — CC {p.documentId}
+                                  {p.firstName} {p.lastName} — {p.documentType || 'CC'} {p.documentId}
                                 </button>
                               ))}
                               {patientSearchResults.length >= 20 && (
@@ -1353,7 +1407,7 @@ export default function DelegatedAppointmentModal({
                     <select
                       required
                       value={form.corporateClient}
-                      onChange={(e) => setForm({ ...form, corporateClient: e.target.value, locationId: '' })}
+                      onChange={(e) => setForm({ ...form, corporateClient: e.target.value, locationId: '', agreementType: '' })}
                       className="min-h-[42px] w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
                     >
                       <option value="" disabled>Seleccione un convenio</option>
@@ -1398,11 +1452,13 @@ export default function DelegatedAppointmentModal({
                 </div>
               </div>
 
-              {/* ── Tipo de convenio — catálogo del tenant (ver AdminPortal → Editar
-                  convenio/cliente → "Tipos de convenio"). Se copia como texto plano
-                  a la cita al agendar/reprogramar, igual que Company.agreementType,
-                  para que quede fijo en el historial aunque el catálogo cambie
-                  después. Opcional: no todos los convenios distinguen tipos. ── */}
+              {/* ── Tipo de convenio — catálogo propio del convenio elegido arriba
+                  (ver AdminPortal → Editar convenio/cliente → "Tipos de convenio").
+                  Se copia como texto plano a la cita al agendar/reprogramar, igual
+                  que Company.agreementType, para que quede fijo en el historial
+                  aunque el catálogo cambie después. Opcional: no todos los
+                  convenios distinguen tipos, así que el bloque entero se oculta
+                  si el convenio elegido no tiene ninguno registrado. ── */}
               {agreementTypes.length > 0 && (
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
@@ -1741,7 +1797,7 @@ export default function DelegatedAppointmentModal({
                       <User className="h-4 w-4 text-slate-400" /> {scheduleSummary.patient.firstName} {scheduleSummary.patient.lastName}
                     </p>
                     <p className="text-[11px] text-slate-500">
-                      CC {scheduleSummary.patient.documentId}{scheduleSummary.patient.phone ? ` · ${scheduleSummary.patient.phone}` : ''}
+                      {scheduleSummary.patient.documentType || 'CC'} {scheduleSummary.patient.documentId}{scheduleSummary.patient.phone ? ` · ${scheduleSummary.patient.phone}` : ''}
                     </p>
                     {scheduleSummary.patient.companyName && (
                       <span className="mt-1.5 inline-block rounded-md bg-toast-100 px-2 py-0.5 text-[10px] font-bold text-charcoal-900">
