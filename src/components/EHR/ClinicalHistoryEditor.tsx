@@ -93,6 +93,11 @@ const SESSION_TYPES = [
   'Sesión de intervención o tratamiento',
   'Sesiones de seguimiento',
   'Sesión de cierre o finalización',
+  // Debe coincidir exactamente con SESSION_TYPE_CRISIS en
+  // clinical-history.controller.js -- firmar una nota con este tipo
+  // autoasigna al paciente sin tratante, o avisa al tratante real si ya
+  // tenía uno distinto (ver signHistory).
+  'Atención de crisis (línea24x7)',
 ];
 
 function formatDateTime(iso?: string | null) {
@@ -150,6 +155,15 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
   const [uploadingDocument, setUploadingDocument] = useState(false);
   const [deletingDocumentId, setDeletingDocumentId] = useState<string | null>(null);
   const [confirmSign, setConfirmSign] = useState(false);
+  // Firmar ahora es un paso de dos etapas: se pide un código de 6 dígitos al
+  // correo de quien firma (confirma que sigue siendo esa persona) y solo con
+  // ese código se firma de verdad — ver requestSignatureCode/confirmSignature
+  // en clinical-history.controller.js. `signRequestId` es null en la etapa 1
+  // (aviso) y se llena en la etapa 2 (ingresar código).
+  const [signRequestId, setSignRequestId] = useState<string | null>(null);
+  const [signCode, setSignCode] = useState('');
+  const [requestingCode, setRequestingCode] = useState(false);
+  const [signCodeExpiresIn, setSignCodeExpiresIn] = useState<number | null>(null);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Estado de auditoría ─────────────────────────────────────────────────
@@ -330,9 +344,11 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
 
   const isComplete = datos.trim() && analisis.trim() && plan.trim();
 
-  // ── Firmar y Congelar (irreversible) ────────────────────────────────────
-  const handleSign = async () => {
-    setSigning(true);
+  // ── Firmar y Congelar (irreversible) — dos pasos ────────────────────────
+  // Paso 1: guarda el borrador y pide el código de 6 dígitos al correo de
+  // quien firma. Nada se firma todavía.
+  const handleRequestSignCode = async () => {
+    setRequestingCode(true);
     try {
       const token = localStorage.getItem('mind_token');
       const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
@@ -343,18 +359,50 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
         body: JSON.stringify({ sessionType, sessionDate, datos, analisis, plan, anexosNota, sinAnexos }),
       });
 
-      const res = await fetch(`${apiBase}/api/clinical-history/${patientId}/sign`, {
+      const res = await fetch(`${apiBase}/api/clinical-history/${patientId}/sign/request-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
       });
 
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const errBody = await res.json().catch(() => ({}));
-        toast.error(errBody.error || 'Error al firmar la evolución');
+        toast.error(body.error || 'Error al solicitar el código de confirmación');
         return;
       }
 
-      setConfirmSign(false);
+      setSignRequestId(body.requestId);
+      setSignCodeExpiresIn(body.expiresInMinutes ?? null);
+      setSignCode('');
+      toast.success('Te enviamos un código a tu correo.');
+    } catch (error) {
+      console.error('Error requesting signature code:', error);
+      toast.error('Error de red al solicitar el código de confirmación');
+    } finally {
+      setRequestingCode(false);
+    }
+  };
+
+  // Paso 2: verifica el código y, si coincide, firma de verdad.
+  const handleConfirmSign = async () => {
+    if (!signRequestId || signCode.trim().length !== 6) return;
+    setSigning(true);
+    try {
+      const token = localStorage.getItem('mind_token');
+      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+
+      const res = await fetch(`${apiBase}/api/clinical-history/${patientId}/sign/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ requestId: signRequestId, code: signCode.trim() }),
+      });
+
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || 'Error al firmar la evolución');
+        return;
+      }
+
+      closeSignModal();
       await fetchHistory();
       toast.success('✅ Evolución firmada y congelada exitosamente');
     } catch (error) {
@@ -363,6 +411,13 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     } finally {
       setSigning(false);
     }
+  };
+
+  const closeSignModal = () => {
+    setConfirmSign(false);
+    setSignRequestId(null);
+    setSignCode('');
+    setSignCodeExpiresIn(null);
   };
 
   // ── Nueva Nota de Evolución ──────────────────────────────────────────────
@@ -1305,39 +1360,88 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
           />
       </div>
 
-      {/* ═══ MODAL: Confirmar firma ═══ */}
+      {/* ═══ MODAL: Confirmar firma (dos pasos: aviso -> código por correo) ═══ */}
       {confirmSign && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="h-5 w-5 text-toast-500" />
-                <h4 className="text-base font-semibold text-slate-900">Firmar digitalmente</h4>
+                <h4 className="text-base font-semibold text-slate-900">
+                  {signRequestId ? 'Confirma tu identidad' : 'Firmar digitalmente'}
+                </h4>
               </div>
-              <button onClick={() => setConfirmSign(false)} className="text-slate-400 hover:text-slate-900">
+              <button onClick={closeSignModal} className="text-slate-400 hover:text-slate-900">
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <p className="text-sm text-slate-400">
-              Al firmar, esta nota quedará bloqueada y no podrá editarse. Se registrará con su nombre y la fecha y hora actuales.
-              Solo podrá agregar anexos posteriores.
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                onClick={() => setConfirmSign(false)}
-                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={handleSign}
-                disabled={signing}
-                className="inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
-              >
-                {signing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-                Confirmar firma
-              </button>
-            </div>
+
+            {!signRequestId ? (
+              <>
+                <p className="text-sm text-slate-400">
+                  Al firmar, esta nota quedará bloqueada y no podrá editarse. Se registrará con su nombre y la fecha y hora actuales.
+                  Solo podrá agregar anexos posteriores. Antes de firmar, te enviaremos un código de confirmación a tu correo.
+                </p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    onClick={closeSignModal}
+                    className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={handleRequestSignCode}
+                    disabled={requestingCode}
+                    className="inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {requestingCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                    Enviarme el código
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-slate-400">
+                  Te enviamos un código de 6 dígitos a tu correo{signCodeExpiresIn ? ` (vence en ${signCodeExpiresIn} minutos)` : ''}.
+                  Escríbelo para confirmar la firma.
+                </p>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  autoFocus
+                  value={signCode}
+                  onChange={(e) => setSignCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && signCode.trim().length === 6) handleConfirmSign(); }}
+                  placeholder="000000"
+                  className="mt-4 w-full rounded-lg border border-slate-200 px-4 py-3 text-center font-mono text-2xl tracking-[0.5em] text-slate-900 outline-none focus:border-toast-400 focus:ring-2 focus:ring-toast-500/20"
+                />
+                <button
+                  type="button"
+                  onClick={handleRequestSignCode}
+                  disabled={requestingCode}
+                  className="mt-3 text-xs font-semibold text-toast-500 hover:underline disabled:opacity-50 cursor-pointer"
+                >
+                  {requestingCode ? 'Reenviando...' : 'Reenviar código'}
+                </button>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    onClick={closeSignModal}
+                    className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={handleConfirmSign}
+                    disabled={signing || signCode.trim().length !== 6}
+                    className="inline-flex items-center gap-2 rounded-lg bg-toast-500 px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {signing ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                    Verificar y firmar
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
