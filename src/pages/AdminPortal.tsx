@@ -283,6 +283,7 @@ export default function AdminPortal() {
     firstName: string | null;
     lastName: string | null;
     email: string;
+    phone: string | null;
     role: string;
     status: 'active' | 'inactive';
     documentType: string | null;
@@ -393,7 +394,7 @@ export default function AdminPortal() {
 
   // ── Edición de colaborador (nombres/apellidos + ficha profesional) ──
   const emptyEditStaffForm = {
-    firstName: '', lastName: '',
+    firstName: '', lastName: '', phone: '',
     documentType: 'CC', documentId: '',
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
   };
@@ -414,6 +415,7 @@ export default function AdminPortal() {
     setEditStaffForm({
       firstName: member.firstName || fallbackFirstName || '',
       lastName: member.lastName || fallbackLastNameParts.join(' '),
+      phone: member.phone || '',
       documentType: member.documentType || 'CC',
       documentId: member.documentId || '',
       professionalCard: member.professionalCard || '',
@@ -449,6 +451,7 @@ export default function AdminPortal() {
         body: JSON.stringify({
           firstName: f.firstName.trim(),
           lastName: f.lastName.trim(),
+          phone: f.phone.trim() || null,
           documentType: f.documentId.trim() ? f.documentType : null,
           documentId: f.documentId.trim() || null,
           professionalCard: f.professionalCard.trim() || null,
@@ -2871,6 +2874,16 @@ export default function AdminPortal() {
                       className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
                     />
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Celular (WhatsApp)</label>
+                  <input
+                    type="tel" value={editStaffForm.phone}
+                    onChange={e => setEditStaffForm({ ...editStaffForm, phone: e.target.value })}
+                    placeholder="3001234567"
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  />
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">

@@ -246,6 +246,13 @@ export default function App() {
           if (notif.type === 'ASSESSMENT_CRITICAL_ALERT') {
             toast.error(notif.message, { duration: 15000, position: 'top-right', icon: '⚠️' });
           }
+          // Igual criterio que la alerta de evaluación: tu paciente tuvo una
+          // atención de crisis por línea24x7 con riesgo alto y no fuiste vos
+          // quien lo atendió -- es una urgencia clínica que no debería
+          // esperar a que abras la campana por otro motivo.
+          if (notif.type === 'CRISIS_ENCOUNTER_CRITICAL') {
+            toast.error(notif.message, { duration: 15000, position: 'top-right', icon: '⚠️' });
+          }
         });
       } catch {
         // Fallo silencioso — un poll perdido no debe interrumpir la sesión
