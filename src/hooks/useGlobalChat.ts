@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { toast } from 'react-hot-toast';
+import { getApiBase } from '../lib/apiClient';
 
 export function useGlobalChat() {
   const [unreadCount, setUnreadCount] = useState<number>(0);
@@ -13,7 +14,7 @@ export function useGlobalChat() {
       if (!token) return;
 
       try {
-        const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+        const apiBase = getApiBase();
         const res = await fetch(`${apiBase}/api/chat/unread`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });

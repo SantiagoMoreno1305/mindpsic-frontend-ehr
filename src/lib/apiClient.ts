@@ -15,7 +15,30 @@
  *   const data = await apiFetch('/patients');
  */
 
-const API_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9000';
+// La URL del backend se resuelve sola en dev: se deriva del propio hostname
+// con el que se cargó esta página (window.location.hostname) en vez de una
+// IP fija en .env — así, sea que abras el EHR por `localhost` (mismo PC) o
+// por la IP LAN del PC (celular/tablet en la misma red), apunta al backend
+// correcto SIN que nadie tenga que editar `.env` cada vez que el router
+// reasigna otra IP por DHCP (mismo problema, y misma solución, que ya se
+// aplicó en mindhealth-mobile/src/services/api.client.ts). VITE_API_URL
+// sigue existiendo como override explícito para casos que sí lo necesitan:
+// apuntar a un backend remoto/staging, o cuando no hay window (SSR/build).
+// Exportada porque decenas de archivos en este repo todavía arman su propia
+// URL de fetch a mano (`${import.meta.env.VITE_API_URL}/api/...`) en vez de
+// pasar por apiFetch — hasta que se migren todos a apiFetch, al menos
+// comparten este mismo resolver en vez de repetir la lógica (y el bug) cada
+// uno por su cuenta.
+export function getApiBase(): string {
+  const explicit = import.meta.env.VITE_API_URL as string | undefined;
+  if (explicit) return explicit.replace(/\/$/, '');
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    return `http://${window.location.hostname}:3001`;
+  }
+  return 'http://localhost:9000';
+}
+
+const API_BASE = getApiBase();
 
 // ────────────────────────────────────────────────────────────────────────────
 // EVENTO GLOBAL — 403 Forbidden

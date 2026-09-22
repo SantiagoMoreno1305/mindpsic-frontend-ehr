@@ -20,8 +20,9 @@
 
 import { useEffect, useState } from 'react';
 import { ShieldCheck, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { getApiBase } from '../lib/apiClient';
 
-const API_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9000';
+const API_BASE = getApiBase();
 
 type ContentBlock = { h: string } | { list: string[] } | string;
 

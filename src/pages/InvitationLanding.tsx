@@ -22,8 +22,9 @@
 
 import { useEffect, useState } from 'react';
 import { Smartphone, Loader2, AlertTriangle, Copy, Check, ShieldCheck } from 'lucide-react';
+import { getApiBase } from '../lib/apiClient';
 
-const API_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9000';
+const API_BASE = getApiBase();
 
 /** Esquema declarado en app.json de la app móvil. */
 const APP_SCHEME = 'mindhealth';

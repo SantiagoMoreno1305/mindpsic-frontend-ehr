@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, FileText, Users, ChevronLeft, ChevronRight, ClipboardX, X } from 'lucide-react';
+import { getApiBase } from '../../lib/apiClient';
 
 const PAGE_SIZE = 10;
 
@@ -55,7 +56,7 @@ export default function ClinicalRecordsList({
 
   useEffect(() => {
     const token = localStorage.getItem('mind_token');
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+    const apiBase = getApiBase();
     const headers = { 'Authorization': `Bearer ${token}` };
 
     const fetchSummary = async () => {

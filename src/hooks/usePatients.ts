@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { BackendPatient } from '../types';
+import { getApiBase } from '../lib/apiClient';
 
 export function usePatients(token: string | null) {
   const [patients, setPatients] = useState<BackendPatient[]>([]);
@@ -13,7 +14,7 @@ export function usePatients(token: string | null) {
     }
     try {
       setLoading(true);
-      const apiUrl = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/patients`, {
         headers: { Authorization: `Bearer ${token}` },
       });
