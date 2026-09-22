@@ -263,8 +263,6 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   // formulario general — ver comentario en updatePatient). Mismo gate de rol
   // que exige el backend en authorizeSessions.
   const canAuthorizeSessions = userRole === 'CEO' || userRole === 'DIRECTIVO';
-  const [initialSessions, setInitialSessions] = useState('');
-  const [initialSessionsLibres, setInitialSessionsLibres] = useState(false);
 
   // ── Datos personales ──
   const [firstName, setFirstName] = useState('');
@@ -527,8 +525,6 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setFechaAgendamiento('');
     setFechaFinalizacion('');
     setSessionStats(null);
-    setInitialSessions('');
-    setInitialSessionsLibres(false);
     setError(null);
     setDuplicatePatient(null);
   }
@@ -565,15 +561,6 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
       setError('El teléfono del representante legal debe tener exactamente 10 dígitos.');
       return;
     }
-    if (!isEditMode && canAuthorizeSessions && !initialSessionsLibres && initialSessions.trim()) {
-      const n = Number(initialSessions.trim());
-      if (!Number.isInteger(n) || n <= 0) {
-        setActiveTab('convenio');
-        setError('Las sesiones aprobadas deben ser un número entero mayor a 0.');
-        return;
-      }
-    }
-
     setSubmitting(true);
     setError(null);
     setDuplicatePatient(null);
@@ -719,26 +706,6 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
       }
 
       const created = await res.json();
-
-      // Cupo inicial de sesiones — best-effort aparte, no bloquea la
-      // creación del paciente si falla (mismo criterio que el contacto de
-      // emergencia en modo edición). Usa el companyId REALMENTE resuelto por
-      // el backend (created.companyId), no el que se envió — createPatient
-      // cae al convenio por defecto del tenant si no se elige ninguno, y ese
-      // es el convenio real contra el que debe quedar la autorización.
-      if (canAuthorizeSessions && (initialSessionsLibres || initialSessions.trim())) {
-        const authRes = await apiFetch(`/api/patients/${created.id}/authorize-sessions`, {
-          method: 'POST',
-          body: JSON.stringify({
-            companyId: created.companyId,
-            unlimited: initialSessionsLibres,
-            sessionsAuthorized: initialSessionsLibres ? undefined : Number(initialSessions.trim()),
-          }),
-        }).catch(() => null);
-        if (!authRes?.ok) {
-          console.warn('[CreatePatientModal] No se pudo autorizar el cupo inicial de sesiones.');
-        }
-      }
 
       onCreated?.(created);
       reset();
@@ -1120,33 +1087,8 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                 </div>
                 {!isEditMode && canAuthorizeSessions && (
                   <div className="sm:col-span-2">
-                    <FieldLabel>Sesiones aprobadas</FieldLabel>
-                    <div className="flex items-center gap-2">
-                      {initialSessionsLibres ? (
-                        <div className="flex-1 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700">
-                          Libres (sin tope)
-                        </div>
-                      ) : (
-                        <input
-                          type="number"
-                          min={1}
-                          value={initialSessions}
-                          onChange={(e) => setInitialSessions(e.target.value)}
-                          placeholder="Ej. 8"
-                          className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
-                        />
-                      )}
-                      <label className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-slate-500">
-                        <input
-                          type="checkbox"
-                          checked={initialSessionsLibres}
-                          onChange={(e) => { setInitialSessionsLibres(e.target.checked); if (e.target.checked) setInitialSessions(''); }}
-                        />
-                        Sin tope
-                      </label>
-                    </div>
-                    <p className="mt-1 text-[10.5px] text-slate-400">
-                      Opcional — abre el cupo inicial de sesiones con el convenio elegido arriba. Si lo dejas vacío, se autoriza después desde el agendamiento.
+                    <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-2.5 text-[10.5px] leading-relaxed text-slate-400">
+                      El cupo de sesiones se autoriza después de crear el paciente, desde "Agendar cita" — requiere un código de confirmación de un aprobador (control de dos personas).
                     </p>
                   </div>
                 )}
