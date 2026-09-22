@@ -17,8 +17,11 @@ import ForcePasswordChange from './pages/ForcePasswordChange';
 import Navbar from './components/Navbar';
 import DrMindChat from './components/DrMindChat';
 import { Bot, ShieldAlert, AlertTriangle } from 'lucide-react';
-import { FORBIDDEN_ACCESS_EVENT, NEW_APPOINTMENT_EVENT } from './lib/apiClient';
+import { FORBIDDEN_ACCESS_EVENT, NEW_APPOINTMENT_EVENT, getApiBase } from './lib/apiClient';
+import { playNotificationChime } from './lib/notificationSound';
 import { Toaster, toast } from 'react-hot-toast';
+import { invalidateCompaniesCache } from './hooks/useCompanies';
+import { invalidateSelectoresCache } from './components/DelegatedAppointmentModal';
 
 // Restaura la sesión guardada de forma SÍNCRONA, en la inicialización del
 // estado — no dentro de un useEffect. Si currentUser arrancara en null y se
@@ -82,7 +85,7 @@ export default function App() {
   // tenantId, specialty, level) lleguen sin necesidad de recargar la página.
   // ============================================================================
   const syncUserFromBackend = (token: string) => {
-    const apiBase = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9000';
+    const apiBase = getApiBase();
     fetch(`${apiBase}/auth/sync`, {
       method: 'GET',
       headers: {
@@ -170,6 +173,11 @@ export default function App() {
     localStorage.removeItem('mind_token');
     localStorage.removeItem('mind_user');
     localStorage.removeItem('mind_must_change_pwd');
+    // Catálogos de convenios/especialistas/especialidades en caché de módulo
+    // — si no se limpian acá, la próxima cuenta que entre en esta misma
+    // pestaña (de OTRO tenant) puede seguir viéndolos hasta por 5 minutos.
+    invalidateCompaniesCache();
+    invalidateSelectoresCache();
     setCurrentUser(null);
     setIsDrMindOpen(false);
     setDrMindContextPatient(null);
@@ -185,6 +193,8 @@ export default function App() {
       // Limpiar sesión pero mantener isSuspended=true para mostrar el banner
       localStorage.removeItem('mind_token');
       localStorage.removeItem('mind_user');
+      invalidateCompaniesCache();
+      invalidateSelectoresCache();
       setCurrentUser(null);
       setIsDrMindOpen(false);
       setDrMindContextPatient(null);
@@ -212,6 +222,11 @@ export default function App() {
   // cada poll, y se ignoran las que ya llegan marcadas leídas (historial).
   const [staffNotifications, setStaffNotifications] = useState<any[]>([]);
   const toastedIdsRef = useRef<Set<string>>(new Set());
+  // El primer poll (al cargar la página) puede traer varias no leídas de
+  // antes — no deben sonar todas de golpe como si acabaran de llegar.
+  // Sonido solo a partir del segundo poll en adelante, cuando una
+  // notificación realmente aparece nueva en la ventana de 45s.
+  const firstNotifLoadRef = useRef(true);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -221,7 +236,7 @@ export default function App() {
         const token = localStorage.getItem('mind_token');
         if (!token) return;
 
-        const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+        const apiBase = getApiBase();
         const res = await fetch(`${apiBase}/api/notifications/recent`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -229,9 +244,13 @@ export default function App() {
         const recent = await res.json();
         setStaffNotifications(recent);
 
+        const isFirstLoad = firstNotifLoadRef.current;
+        firstNotifLoadRef.current = false;
+
         recent.forEach((notif: any) => {
           if (notif.read || toastedIdsRef.current.has(notif.id)) return;
           toastedIdsRef.current.add(notif.id);
+          if (!isFirstLoad) playNotificationChime();
 
           // El resto de tipos (nueva cita, consentimiento firmado, cita
           // cancelada por el paciente, evaluación asignada/completada) ya NO
@@ -274,7 +293,7 @@ export default function App() {
     setStaffNotifications((prev) => prev.map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)));
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
       await fetch(`${apiBase}/api/notifications/mark-read`, {
         method: 'POST',
         body: JSON.stringify({ ids }),
@@ -290,7 +309,7 @@ export default function App() {
   const handleDeleteNotification = (id: string) => {
     setStaffNotifications((prev) => prev.filter((n) => n.id !== id));
     const token = localStorage.getItem('mind_token');
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+    const apiBase = getApiBase();
     fetch(`${apiBase}/api/notifications/${id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
@@ -303,7 +322,7 @@ export default function App() {
     if (!window.confirm('¿Eliminar todas las notificaciones? Esta acción no se puede deshacer.')) return;
     setStaffNotifications([]);
     const token = localStorage.getItem('mind_token');
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+    const apiBase = getApiBase();
     fetch(`${apiBase}/api/notifications`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },

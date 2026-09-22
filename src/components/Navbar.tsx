@@ -49,16 +49,18 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
   const [notifOpen, setNotifOpen] = useState(false);
   const unreadCount = notifications.filter((n) => !n.read).length;
 
-  // Se marcan como leídas al ABRIR la campana (no al recibirlas) — mismo
-  // patrón que la campana de AdminCenter (src/App.tsx): quedan atenuadas
-  // (no desaparecen) mientras siguen dentro de la ventana de 7 días.
+  // Ya NO se marcan como leídas solo por abrir la campana — así, si llega
+  // una nueva mientras el usuario mira la lista, sigue distinguiéndose de
+  // las que ya vio (antes se opacaban TODAS de golpe al abrir, sin darle
+  // tiempo a notar cuál era la reciente). Ahora "leída" pasa por una acción
+  // real: hacer clic en la notificación, o el botón "Marcar todas como leídas".
   const handleToggleNotifications = () => {
-    const willOpen = !notifOpen;
-    setNotifOpen(willOpen);
-    if (willOpen) {
-      const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
-      if (unreadIds.length > 0) onMarkNotificationsRead(unreadIds);
-    }
+    setNotifOpen((prev) => !prev);
+  };
+
+  const handleMarkAllRead = () => {
+    const unreadIds = notifications.filter((n) => !n.read).map((n) => n.id);
+    if (unreadIds.length > 0) onMarkNotificationsRead(unreadIds);
   };
 
   const handleDeleteClick = (e: React.MouseEvent, id: string) => {
@@ -70,7 +72,10 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
   // avisa (evento global, ver OPEN_APPOINTMENT_EVENT) para que quien esté
   // montado (PsychologistPortal.tsx) abra el modal de esa cita directamente,
   // en vez de dejar al usuario "perdido" con solo el texto del mensaje.
+  // Cualquier clic (tenga o no cita asociada) marca esa notificación como
+  // leída — es la señal real de que el usuario ya la vio.
   const handleNotificationClick = (n: StaffNotification) => {
+    if (!n.read) onMarkNotificationsRead([n.id]);
     if (!n.data?.appointmentId) return;
     window.dispatchEvent(new CustomEvent(OPEN_APPOINTMENT_EVENT, { detail: n.data }));
     setNotifOpen(false);
@@ -171,8 +176,14 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
                 >
                   <Bell className="w-4 h-4" />
                   {unreadCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full border border-white bg-toast-500 px-1 text-[9px] font-bold leading-none text-white">
-                      {unreadCount > 9 ? '9+' : unreadCount}
+                    <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center">
+                      {/* Aro pulsante mientras haya algo sin leer — el número
+                          va en un badge sólido aparte encima, para que se
+                          mantenga legible mientras el aro se anima. */}
+                      <span className="absolute inset-0 rounded-full bg-toast-400 animate-ping" />
+                      <span className="relative flex h-4 min-w-[16px] items-center justify-center rounded-full border border-white bg-toast-500 px-1 text-[9px] font-bold leading-none text-white">
+                        {unreadCount > 9 ? '9+' : unreadCount}
+                      </span>
                     </span>
                   )}
                 </button>
@@ -183,15 +194,26 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
                     <div className="absolute right-0 top-full mt-2 w-80 bg-white border border-stone-200 rounded-xl shadow-lg z-50 overflow-hidden">
                       <div className="px-4 py-3 border-b border-stone-100 flex items-center justify-between">
                         <p className="text-xs font-bold text-stone-900">Notificaciones</p>
-                        {notifications.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={onDeleteAllNotifications}
-                            className="text-[10px] font-semibold text-stone-400 hover:text-rose-600 cursor-pointer"
-                          >
-                            Eliminar todas
-                          </button>
-                        )}
+                        <div className="flex items-center gap-3">
+                          {unreadCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={handleMarkAllRead}
+                              className="text-[10px] font-semibold text-toast-500 hover:opacity-80 cursor-pointer"
+                            >
+                              Marcar todas como leídas
+                            </button>
+                          )}
+                          {notifications.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={onDeleteAllNotifications}
+                              className="text-[10px] font-semibold text-stone-400 hover:text-rose-600 cursor-pointer"
+                            >
+                              Eliminar todas
+                            </button>
+                          )}
+                        </div>
                       </div>
                       <div className="max-h-96 overflow-y-auto">
                         {notifications.length === 0 ? (
@@ -202,11 +224,14 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
                             return (
                               <div
                                 key={n.id}
-                                onClick={isAppointment ? () => handleNotificationClick(n) : undefined}
-                                className={`group px-4 py-3 border-b border-stone-100 last:border-b-0 flex items-start gap-2 ${isAppointment ? 'cursor-pointer hover:bg-stone-50' : ''} ${n.read ? 'opacity-50' : ''}`}
+                                onClick={() => handleNotificationClick(n)}
+                                className={`group px-4 py-3 border-b border-stone-100 last:border-b-0 flex items-start gap-2 cursor-pointer hover:bg-stone-50 ${n.read ? 'opacity-50' : ''}`}
                               >
+                                {/* Punto de "no leída" — mismo rol que el azul de Facebook, en
+                                    rojo/rose para que salte a la vista de inmediato. */}
+                                <span className="mt-1.5 shrink-0 w-1.5 h-1.5 rounded-full bg-rose-500" style={{ visibility: n.read ? 'hidden' : 'visible' }} />
                                 <div className="flex-1 min-w-0">
-                                  <p className="text-xs text-stone-700 leading-relaxed">{n.message}</p>
+                                  <p className={`text-xs leading-relaxed ${n.read ? 'text-stone-700' : 'font-semibold text-stone-900'}`}>{n.message}</p>
                                   <div className="flex items-center justify-between mt-1">
                                     <p className="text-[10px] text-stone-400">
                                       {new Date(n.createdAt).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })}
