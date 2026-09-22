@@ -28,6 +28,8 @@ interface Item {
   itemId: string;
   number: number;
   text: string;
+  /** Criterio de calificación del manual. Solo llega al profesional. */
+  description?: string | null;
   responseType: 'OPCION_UNICA' | 'NUMERO' | 'TIEMPO_SEG' | 'CONTEO' | 'TEXTO';
   responseSetId: string | null;
   valueMin: number | null;
@@ -473,6 +475,22 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
                   )}
                 </p>
               </div>
+
+              {/* El manual define qué abarca cada ítem: en el MADRS, "Tensión
+                  interna" incluye pánico y malestar difuso, y sin esa definición
+                  dos clínicos puntúan cosas distintas. Va plegado porque se
+                  consulta al dudar, no en cada ítem, y solo en heteroaplicadas
+                  —en una autoaplicada el criterio de calificación no se muestra. */}
+              {esHetero && item.description && (
+                <details className="mt-2 pl-8">
+                  <summary className="cursor-pointer text-xs font-semibold text-slate-500 hover:text-slate-700">
+                    Criterio de calificación
+                  </summary>
+                  <p className="mt-1.5 rounded-lg bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-700">
+                    {item.description}
+                  </p>
+                </details>
+              )}
 
               {/* Un ítem inverso está redactado al revés que los demás: estar de
                   acuerdo indica MENOS del constructo. El sistema lo recodifica al
