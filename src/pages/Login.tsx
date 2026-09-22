@@ -25,12 +25,14 @@ import {
   FileText
 } from 'lucide-react';
 import ForgotPasswordModal from '../components/ForgotPasswordModal';
+import { getApiBase } from '../lib/apiClient';
+import { invalidateCompaniesCache } from '../hooks/useCompanies';
+import { invalidateSelectoresCache } from '../components/DelegatedAppointmentModal';
 
 // ---------------------------------------------------------------------------
 // Configuración del backend
 // ---------------------------------------------------------------------------
-const API_BASE_URL =
-  import.meta.env.VITE_API_URL || 'http://localhost:9000';
+const API_BASE_URL = getApiBase();
 
 // ---------------------------------------------------------------------------
 // Props
@@ -80,6 +82,13 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
     localStorage.setItem('mind_user', JSON.stringify(data.user));
     console.log('[Login] 💾 Token y usuario guardados en localStorage.');
     console.log('[Login] 👤 Rol del usuario:', data.user.role);
+
+    // Sin esto, entrar con una cuenta de OTRO tenant en la misma pestaña
+    // (sin recargar la página) podía seguir mostrando convenios/especialistas
+    // del tenant anterior durante hasta 5 minutos — esos catálogos viven en
+    // caché a nivel de módulo, no se limpian solos con un login nuevo.
+    invalidateCompaniesCache();
+    invalidateSelectoresCache();
 
     // ── Detección de Primer Ingreso (Contraseña Temporal) ────────────────
     // El backend genera contraseñas temporales con el patrón:
