@@ -15,8 +15,12 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, Loader2, Lock, LifeBuoy, AlertCircle } from 'lucide-react';
+// Solo se importa el resolver de URL (getApiBase), NUNCA apiFetch — ese sí
+// adjunta el mind_token del profesional y dispara el interceptor global de
+// 403, que en esta pantalla pública no aplica (ver comentario de arriba).
+import { getApiBase } from '../lib/apiClient';
 
-const API_BASE = (import.meta.env.VITE_API_URL as string) || 'http://localhost:3001';
+const API_BASE = getApiBase();
 
 interface ResponseOption { value: number; label: string; order: number }
 interface Item {

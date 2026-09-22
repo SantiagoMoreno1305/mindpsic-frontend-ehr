@@ -3,6 +3,7 @@ import { toast } from 'react-hot-toast';
 import { Loader2, ShieldCheck, Plus, Trash2, ChevronLeft, ChevronRight, Upload, Send, CheckCircle2, RefreshCw } from 'lucide-react';
 import { COLOMBIA_DEPARTAMENTOS, DEPARTAMENTOS_ORDENADOS } from '../../data/colombiaData';
 import { confirmToast } from '../../lib/confirmToast';
+import { getApiBase } from '../../lib/apiClient';
 
 interface HouseholdMember {
   id: string;
@@ -144,7 +145,7 @@ const REQUIRED_FIELD_MAP: Record<string, { formFields: (keyof AssessmentForm)[];
 };
 
 function apiBase() {
-  return import.meta.env.VITE_API_URL || 'http://localhost:9000';
+  return getApiBase();
 }
 
 // Mismo límite y catálogo que valida el backend (ALLOWED_ATTACHMENT_MIME_TYPES

@@ -7,6 +7,7 @@ import {
   Paperclip, Eye, Download, ClipboardCheck, Trash2,
 } from 'lucide-react';
 import SesionesAccordion, { type SesionData, type SesionAnexo, type SesionEvaluacion } from './SesionesAccordion';
+import { getApiBase } from '../../lib/apiClient';
 
 interface Addendum {
   id: string;
@@ -182,7 +183,7 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     setLoading(true);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
       const res = await fetch(`${apiBase}/api/clinical-history/${patientId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -245,7 +246,7 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     setSaving(true);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
       const res = await fetch(`${apiBase}/api/clinical-history/${patientId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -320,7 +321,7 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     setLinkingAssessmentId(assessmentId);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
       const res = await fetch(`${apiBase}/api/patients/assessments/${assessmentId}/link`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -351,7 +352,7 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     setRequestingCode(true);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
 
       await fetch(`${apiBase}/api/clinical-history/${patientId}`, {
         method: 'PUT',
@@ -388,7 +389,7 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     setSigning(true);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
 
       const res = await fetch(`${apiBase}/api/clinical-history/${patientId}/sign/confirm`, {
         method: 'POST',
@@ -432,7 +433,7 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     setCreatingNew(true);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
       const res = await fetch(`${apiBase}/api/clinical-history/${patientId}/new`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -472,7 +473,7 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     setAddingAddendum(true);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
 
       let fileFields: { fileS3Key?: string; fileName?: string; fileType?: string; fileSize?: number } = {};
 
@@ -588,7 +589,7 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     setUploadingDocument(true);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
 
       const presignedRes = await fetch(`${apiBase}/api/clinical-history/upload`, {
         method: 'POST',
@@ -634,7 +635,7 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
     setDeletingDocumentId(doc.id);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
       const res = await fetch(`${apiBase}/api/clinical-history/documents/${doc.id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` },
