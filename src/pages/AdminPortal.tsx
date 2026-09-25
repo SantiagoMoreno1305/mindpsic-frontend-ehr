@@ -87,6 +87,20 @@ type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clin
 
 export default function AdminPortal() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // Permiso del socio para crear códigos de acceso (Tenant.allowAccessCodes,
+  // lo habilita MindPsic desde AdminCenter). null = aún no se sabe: mientras
+  // tanto no se oculta nada (el backend igual rechaza la creación).
+  const [accessCodesCap, setAccessCodesCap] = useState<{ tenantEnabled: boolean; canCreate: boolean; hasCodes: boolean } | null>(null);
+  useEffect(() => {
+    if (!currentUser) return;
+    apiFetch('/api/access-codes/capability')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (data) setAccessCodesCap(data); })
+      .catch(() => { /* sin dato: se deja todo visible */ });
+  }, [currentUser?.id]);
+  // Sin permiso Y sin códigos previos, la sección no tiene nada que ofrecer.
+  // Con códigos ya emitidos se deja visible para poder cerrarlos/recordarlos.
+  const showAccessCodesTab = !(accessCodesCap && !accessCodesCap.tenantEnabled && !accessCodesCap.hasCodes);
   const [authLoading, setAuthLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
   const [showDelegatedModal, setShowDelegatedModal] = useState(false);
@@ -1869,19 +1883,21 @@ export default function AdminPortal() {
           </button>
 
           {/* Códigos de acceso — línea24/7 y campañas de evaluación */}
-          <button
-            onClick={() => setActiveTab('access_codes')}
-            id="tab-adm-access-codes"
-            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
-              activeTab === 'access_codes'
-                ? 'bg-charcoal-900 text-white font-semibold'
-                : 'hover:bg-slate-800 hover:text-white'
-            }`}
-          >
-            <KeyRound className="w-5 h-5 shrink-0" />
-            <span className="ml-3 text-xs hidden md:block">Códigos de acceso</span>
-            {activeTab === 'access_codes' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
-          </button>
+          {showAccessCodesTab && (
+            <button
+              onClick={() => setActiveTab('access_codes')}
+              id="tab-adm-access-codes"
+              className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+                activeTab === 'access_codes'
+                  ? 'bg-charcoal-900 text-white font-semibold'
+                  : 'hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <KeyRound className="w-5 h-5 shrink-0" />
+              <span className="ml-3 text-xs hidden md:block">Códigos de acceso</span>
+              {activeTab === 'access_codes' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+            </button>
+          )}
 
           {/* Tarifas por sesión — por convenio y por estrato (particular) */}
           <button
@@ -3629,7 +3645,7 @@ export default function AdminPortal() {
         )}
 
         {/* VIEW: CÓDIGOS DE ACCESO — línea24/7 y campañas de evaluación */}
-        {activeTab === 'access_codes' && <AccessCodesPanel />}
+        {activeTab === 'access_codes' && <AccessCodesPanel canCreate={accessCodesCap?.canCreate ?? true} />}
 
         {/* VIEW: TARIFAS — por convenio y por estrato (particular) */}
         {activeTab === 'tariffs' && <TariffsPanel />}

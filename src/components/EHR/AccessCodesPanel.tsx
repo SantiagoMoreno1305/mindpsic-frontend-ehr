@@ -96,6 +96,8 @@ const EVAL_STATE_STYLES: Record<EvalState, { label: string; badge: string }> = {
 };
 
 type Filter = 'TODOS' | Lifecycle | 'PENDIENTES';
+type Purpose = AccessCodeRecord['purpose'];
+type TypeFilter = 'ALL' | Purpose;
 
 const formatDate = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('es-CO', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
 
@@ -104,7 +106,7 @@ const PURPOSE_LABELS: Record<string, string> = {
   EVALUATION_CAMPAIGN: 'Campaña de evaluación',
 };
 
-export default function AccessCodesPanel() {
+export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boolean }) {
   const { companies } = useCompanies();
   const [codes, setCodes] = useState<AccessCodeRecord[]>([]);
   const [instruments, setInstruments] = useState<InstrumentOption[]>([]);
@@ -125,6 +127,9 @@ export default function AccessCodesPanel() {
   const [formError, setFormError] = useState<string | null>(null);
   const [evaluationDeadline, setEvaluationDeadline] = useState('');
   const [filter, setFilter] = useState<Filter>('TODOS');
+  // Primer nivel de organización: el TIPO de código (para qué sirve). El
+  // estado (activo/vencido/...) se combina con este, no lo reemplaza.
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -165,6 +170,8 @@ export default function AccessCodesPanel() {
 
   function openForm() {
     resetForm();
+    // Si ya estás viendo un tipo, "Nuevo código" arranca con ese tipo elegido.
+    if (typeFilter !== 'ALL') setPurpose(typeFilter);
     setShowForm(true);
   }
 
@@ -221,17 +228,40 @@ export default function AccessCodesPanel() {
     });
   }
 
+  const inType = (c: AccessCodeRecord) => typeFilter === 'ALL' || c.purpose === typeFilter;
+  const matchesStatus = (c: AccessCodeRecord, f: Filter) =>
+    f === 'TODOS' ? true : f === 'PENDIENTES' ? c.progress.pending > 0 : c.lifecycle === f;
+
+  // "Con pendientes" solo existe para campañas (las de Línea 24/7 no tienen evaluación).
   const FILTERS: { id: Filter; label: string }[] = [
     { id: 'TODOS', label: 'Todos' },
     { id: 'ACTIVO', label: 'Activos' },
     { id: 'AGOTADO', label: 'Agotados' },
     { id: 'VENCIDO', label: 'Vencidos' },
     { id: 'CERRADO', label: 'Cerrados' },
-    { id: 'PENDIENTES', label: 'Con pendientes' },
+    ...(typeFilter === 'LINEA247' ? [] : [{ id: 'PENDIENTES' as Filter, label: 'Con pendientes' }]),
   ];
-  const countFor = (f: Filter) =>
-    codes.filter((c) => (f === 'TODOS' ? true : f === 'PENDIENTES' ? c.progress.pending > 0 : c.lifecycle === f)).length;
-  const visibleCodes = codes.filter((c) => (filter === 'TODOS' ? true : filter === 'PENDIENTES' ? c.progress.pending > 0 : c.lifecycle === filter));
+  const countFor = (f: Filter) => codes.filter((c) => inType(c) && matchesStatus(c, f)).length;
+  const visibleCodes = codes.filter((c) => inType(c) && matchesStatus(c, filter));
+
+  const TYPE_TABS: { id: TypeFilter; label: string; icon: typeof KeyRound }[] = [
+    { id: 'ALL', label: 'Todos los tipos', icon: KeyRound },
+    { id: 'LINEA247', label: PURPOSE_LABELS.LINEA247, icon: Building2 },
+    { id: 'EVALUATION_CAMPAIGN', label: 'Campañas de evaluación', icon: ClipboardList },
+  ];
+  const typeCount = (t: TypeFilter) => codes.filter((c) => t === 'ALL' || c.purpose === t).length;
+  const typeActiveCount = (t: TypeFilter) => codes.filter((c) => (t === 'ALL' || c.purpose === t) && c.lifecycle === 'ACTIVO').length;
+  const selectType = (t: TypeFilter) => {
+    setTypeFilter(t);
+    if (t === 'LINEA247' && filter === 'PENDIENTES') setFilter('TODOS');
+    setExpandedId(null);
+  };
+
+  // Columnas que aplican al tipo visible: Línea 24/7 no tiene evaluación, así
+  // que ni "Avance" ni el instrumento tienen qué mostrar.
+  const showPurposeCol = typeFilter !== 'LINEA247';
+  const showAvanceCol = typeFilter !== 'LINEA247';
+  const colCount = 6 + (showPurposeCol ? 1 : 0) + (showAvanceCol ? 1 : 0);
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 text-left">
@@ -247,12 +277,21 @@ export default function AccessCodesPanel() {
         </div>
         <button
           onClick={openForm}
-          className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-charcoal-800 cursor-pointer shrink-0"
+          disabled={!canCreate}
+          title={canCreate ? undefined : 'Tu clínica no tiene habilitada la creación de códigos'}
+          className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-charcoal-800 cursor-pointer shrink-0 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-charcoal-900"
         >
           <Plus className="h-4 w-4" />
           Nuevo código
         </button>
       </div>
+
+      {!canCreate && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+          Tu clínica no tiene habilitada la creación de códigos de acceso — contacta a MindPsic para activarla.
+          Los códigos que ya existen siguen funcionando y puedes cerrarlos o enviar recordatorios.
+        </p>
+      )}
 
       {error && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">{error}</p>}
 
@@ -267,6 +306,41 @@ export default function AccessCodesPanel() {
         </div>
       ) : (
         <>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3" role="tablist" aria-label="Tipo de código">
+            {TYPE_TABS.map((t) => {
+              const active = typeFilter === t.id;
+              const Icon = t.icon;
+              const activos = typeActiveCount(t.id);
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => selectType(t.id)}
+                  className={`flex items-center gap-3 rounded-xl border p-3.5 text-left transition-all cursor-pointer ${
+                    active
+                      ? 'border-toast-400 bg-toast-50 ring-2 ring-toast-500/20'
+                      : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${active ? 'bg-toast-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="flex items-baseline gap-2">
+                      <span className="text-xl font-black leading-none text-slate-900">{typeCount(t.id)}</span>
+                      <span className="truncate text-sm font-bold text-slate-900">{t.label}</span>
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-slate-400">
+                      {activos === 0 ? 'Ninguno activo' : `${activos} activo${activos === 1 ? '' : 's'}`}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
           <div className="flex flex-wrap items-center gap-2">
             {FILTERS.map((f) => {
               const count = countFor(f.id);
@@ -293,10 +367,12 @@ export default function AccessCodesPanel() {
               <thead>
                 <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-400">
                   <th className="px-4 py-3 font-semibold">Código</th>
-                  <th className="px-4 py-3 font-semibold">Propósito</th>
+                  {showPurposeCol && (
+                    <th className="px-4 py-3 font-semibold">{typeFilter === 'ALL' ? 'Propósito' : 'Evaluación'}</th>
+                  )}
                   <th className="px-4 py-3 font-semibold">Convenio</th>
                   <th className="px-4 py-3 font-semibold">Canjes</th>
-                  <th className="px-4 py-3 font-semibold">Avance</th>
+                  {showAvanceCol && <th className="px-4 py-3 font-semibold">Avance</th>}
                   <th className="px-4 py-3 font-semibold">Vence</th>
                   <th className="px-4 py-3 font-semibold">Estado</th>
                   <th className="px-4 py-3 text-right font-semibold">Acción</th>
@@ -304,7 +380,9 @@ export default function AccessCodesPanel() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {visibleCodes.length === 0 && (
-                  <tr><td colSpan={8} className="px-4 py-10 text-center text-sm text-slate-400">Ningún código en este filtro.</td></tr>
+                  <tr><td colSpan={colCount} className="px-4 py-10 text-center text-sm text-slate-400">
+                    {typeCount(typeFilter) === 0 ? 'Aún no has creado códigos de este tipo.' : 'Ningún código en este filtro.'}
+                  </td></tr>
                 )}
                 {visibleCodes.map((c) => {
                   const style = LIFECYCLE_STYLES[c.lifecycle];
@@ -327,17 +405,26 @@ export default function AccessCodesPanel() {
                           </button>
                           {c.name && <span className="mt-1 block text-[10.5px] text-slate-400">{c.name}</span>}
                         </td>
-                        <td className="px-4 py-3">
-                          <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
-                            {c.purpose === 'LINEA247' ? <Building2 className="h-3.5 w-3.5 text-toast-500" /> : <ClipboardList className="h-3.5 w-3.5 text-toast-500" />}
-                            {PURPOSE_LABELS[c.purpose] || c.purpose}
-                          </span>
-                          {c.instrument && <span className="mt-0.5 block text-[10.5px] text-slate-400">{c.instrument.name}</span>}
-                        </td>
+                        {showPurposeCol && (
+                          <td className="px-4 py-3">
+                            {typeFilter === 'ALL' ? (
+                              <>
+                                <span className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+                                  {c.purpose === 'LINEA247' ? <Building2 className="h-3.5 w-3.5 text-toast-500" /> : <ClipboardList className="h-3.5 w-3.5 text-toast-500" />}
+                                  {PURPOSE_LABELS[c.purpose] || c.purpose}
+                                </span>
+                                {c.instrument && <span className="mt-0.5 block text-[10.5px] text-slate-400">{c.instrument.name}</span>}
+                              </>
+                            ) : (
+                              <span className="text-xs text-slate-600">{c.instrument?.name || '—'}</span>
+                            )}
+                          </td>
+                        )}
                         <td className="px-4 py-3 text-slate-600">{c.company.name}</td>
                         <td className="px-4 py-3 font-mono text-xs text-slate-600">
                           {c.usedCount}{c.maxUses != null ? ` / ${c.maxUses}` : ' / ∞'}
                         </td>
+                        {showAvanceCol && (
                         <td className="px-4 py-3 text-xs">
                           {isCampaign ? (
                             c.progress.redeemed === 0 ? (
@@ -362,6 +449,7 @@ export default function AccessCodesPanel() {
                             <span className="mt-0.5 block text-[10.5px] text-slate-400">Plazo: {formatDate(c.evaluationDeadline)}</span>
                           )}
                         </td>
+                        )}
                         <td className="px-4 py-3 text-xs text-slate-500">{formatDate(c.expiresAt)}</td>
                         <td className="px-4 py-3">
                           <span title={style.hint} className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${style.badge}`}>
@@ -394,7 +482,7 @@ export default function AccessCodesPanel() {
                       </tr>
                       {expanded && (
                         <tr className="bg-slate-50/60">
-                          <td colSpan={8} className="px-4 py-4">
+                          <td colSpan={colCount} className="px-4 py-4">
                             <RedemptionsPanel
                               code={c}
                               onChanged={(msg) => { if (msg) { setNotice(msg); setTimeout(() => setNotice(null), 4000); } fetchCodes(); }}

@@ -205,6 +205,22 @@ function readStoredTab(): PanelTab | null | undefined {
   return undefined;
 }
 
+// El área llega como slug sin tildes ("depresion") porque es la llave con la
+// que se agrupa y se filtra; la tilde vive aquí, en lo que se muestra. Un área
+// nueva que no esté en el diccionario se pinta capitalizada: aparece en el
+// filtro sin tocar código, solo sin acento.
+const ETIQUETA_AREA: Record<string, string> = {
+  depresion: 'Depresión',
+  ansiedad: 'Ansiedad',
+  transdiagnostico: 'Transdiagnóstico',
+  neuropsicologia: 'Neuropsicología',
+  psicooncologia: 'Psicooncología',
+};
+
+function etiquetaArea(slug: string): string {
+  return ETIQUETA_AREA[slug] || (slug.charAt(0).toUpperCase() + slug.slice(1));
+}
+
 function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
   return (
     <button
@@ -239,6 +255,7 @@ export default function AssessmentsPanel() {
   const [administrations, setAdministrations] = useState<AdministrationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
+  const [areaFilter, setAreaFilter] = useState<string>('all');
   const [runnerId, setRunnerId] = useState<string | null>(null);
   const [assignTarget, setAssignTarget] = useState<CatalogItem | null>(null);
   const [linkTarget, setLinkTarget] = useState<AdministrationRow | null>(null);
@@ -262,17 +279,32 @@ export default function AssessmentsPanel() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Las áreas se derivan del catálogo, no se declaran: al publicar un
+  // instrumento de un área nueva aparece sola en el filtro.
+  const areas = useMemo(() => {
+    const cuenta = new Map<string, number>();
+    catalog.forEach((t) => cuenta.set(t.area, (cuenta.get(t.area) || 0) + 1));
+    return [...cuenta.entries()]
+      .map(([slug, n]) => ({ slug, n, label: etiquetaArea(slug) }))
+      .sort((a, b) => b.n - a.n || a.label.localeCompare(b.label));
+  }, [catalog]);
+
+  // Área y búsqueda se combinan: filtrar por Depresión y escribir "beck"
+  // busca dentro de esa área, no en todo el catálogo.
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return catalog;
-    return catalog.filter((t) =>
-      t.code.toLowerCase().includes(q) ||
-      t.name.toLowerCase().includes(q) ||
-      (t.nameEs || '').toLowerCase().includes(q) ||
-      t.area.toLowerCase().includes(q) ||
-      t.construct.toLowerCase().includes(q)
-    );
-  }, [catalog, query]);
+    return catalog.filter((t) => {
+      if (areaFilter !== 'all' && t.area !== areaFilter) return false;
+      if (!q) return true;
+      return (
+        t.code.toLowerCase().includes(q) ||
+        t.name.toLowerCase().includes(q) ||
+        (t.nameEs || '').toLowerCase().includes(q) ||
+        t.area.toLowerCase().includes(q) ||
+        t.construct.toLowerCase().includes(q)
+      );
+    });
+  }, [catalog, query, areaFilter]);
 
   const pending = administrations.filter((a) => a.status !== 'COMPLETED');
   const completed = administrations.filter((a) => a.status === 'COMPLETED');
@@ -411,7 +443,29 @@ export default function AssessmentsPanel() {
                   </>
                 )}
                 {shownTab === 'catalog' && (
-                  <h2 className="text-sm font-bold text-slate-900">Catálogo de Pruebas Psicotécnicas</h2>
+                  <>
+                    <h2 className="text-sm font-bold text-slate-900">Catálogo de Pruebas Psicotécnicas</h2>
+                    {/* Con una sola área el filtro no filtra nada: no se pinta. */}
+                    {areas.length > 1 && (
+                      <>
+                        <FilterChip
+                          active={areaFilter === 'all'}
+                          onClick={() => { setAreaFilter('all'); setVisible(PAGE_SIZE); }}
+                        >
+                          Todas ({catalog.length})
+                        </FilterChip>
+                        {areas.map((a) => (
+                          <FilterChip
+                            key={a.slug}
+                            active={areaFilter === a.slug}
+                            onClick={() => { setAreaFilter(a.slug); setVisible(PAGE_SIZE); }}
+                          >
+                            {a.label} ({a.n})
+                          </FilterChip>
+                        ))}
+                      </>
+                    )}
+                  </>
                 )}
               </div>
               <div className="relative">
@@ -488,7 +542,9 @@ export default function AssessmentsPanel() {
                 <p className="py-10 text-center text-sm text-slate-400">
                   {catalog.length === 0
                     ? 'Aún no hay instrumentos publicados. Cárgalos con scripts/seed-instruments.js.'
-                    : 'Ningún instrumento coincide con la búsqueda.'}
+                    : areaFilter !== 'all' && query.trim()
+                      ? `Ningún instrumento de ${etiquetaArea(areaFilter)} coincide con la búsqueda.`
+                      : 'Ningún instrumento coincide con la búsqueda.'}
                 </p>
               ) : (
                 <div className="space-y-4">
