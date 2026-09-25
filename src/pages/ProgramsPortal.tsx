@@ -65,29 +65,59 @@ function CopyLink({ url }: { url: string }) {
   );
 }
 
-// Descarga autenticada: el enlace directo no lleva el token, así que se pide como blob.
+// Descarga autenticada. El archivo llega como JSON con el contenido en base64 (encoding=base64):
+// un binario (xlsx) directo a través de API Gateway/Lambda se corrompe si el gateway no tiene
+// tipos binarios configurados, y así no dependemos de eso.
 function ExportButtons({ waveId }: { waveId: string }) {
   const [busy, setBusy] = useState<'xlsx' | 'csv' | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [withId, setWithId] = useState(false);
+
   const download = async (format: 'xlsx' | 'csv') => {
     setBusy(format); setErr(null);
     try {
-      const res = await apiFetch(`/api/programs/waves/${waveId}/export?format=${format}`);
-      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Error ${res.status}`);
-      const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1] || `corte.${format}`;
-      const url = URL.createObjectURL(await res.blob());
+      const res = await apiFetch(`/api/programs/waves/${waveId}/export?format=${format}&encoding=base64${withId ? '&identified=1' : ''}`);
+      let bytes: Uint8Array;
+      let filename = `corte.${format}`;
+      let contentType = format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'text/csv;charset=utf-8';
+      if ((res.headers.get('Content-Type') || '').includes('application/json')) {
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || `Error ${res.status}`);
+        if (typeof body.base64 !== 'string') throw new Error('La respuesta del servidor no trae el archivo.');
+        const bin = atob(body.base64);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        filename = body.filename || filename;
+        contentType = body.contentType || contentType;
+      } else {
+        // Servidor sin soporte de base64 (versión anterior): llega el binario directo.
+        if (!res.ok) throw new Error(`Error ${res.status}`);
+        bytes = new Uint8Array(await res.arrayBuffer());
+      }
+      // Un .xlsx es un ZIP: siempre empieza por 'PK'. Si no, el archivo llegó dañado y Excel
+      // no lo abriría — se avisa en vez de descargar algo inservible.
+      if (format === 'xlsx' && !(bytes[0] === 0x50 && bytes[1] === 0x4b)) {
+        throw new Error('El archivo llegó dañado desde el servidor. Vuelve a intentarlo; si persiste, avisa a soporte.');
+      }
+      const url = URL.createObjectURL(new Blob([bytes], { type: contentType }));
       const a = document.createElement('a');
-      a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) { setErr((e as Error).message); } finally { setBusy(null); }
   };
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      {(['xlsx', 'csv'] as const).map((f) => (
-        <button key={f} disabled={busy !== null} onClick={() => void download(f)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium hover:bg-slate-50 disabled:opacity-50">
-          {busy === f ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} {f === 'xlsx' ? 'Excel' : 'CSV'}
-        </button>
-      ))}
+    <div className="flex flex-col items-end gap-1.5">
+      <div className="flex flex-wrap items-center gap-2">
+        {(['xlsx', 'csv'] as const).map((f) => (
+          <button key={f} disabled={busy !== null} onClick={() => void download(f)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium hover:bg-slate-50 disabled:opacity-50">
+            {busy === f ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} {f === 'xlsx' ? 'Excel' : 'CSV'}
+          </button>
+        ))}
+      </div>
+      <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600">
+        <input type="checkbox" checked={withId} onChange={(e) => setWithId(e.target.checked)} />
+        Incluir número de cédula <span className="text-slate-400">(uso interno, no compartir con Obreval)</span>
+      </label>
       {err && <span role="alert" className="text-xs text-red-700">{err}</span>}
     </div>
   );
