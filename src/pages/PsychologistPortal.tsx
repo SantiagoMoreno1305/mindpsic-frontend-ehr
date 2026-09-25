@@ -17,7 +17,7 @@ import { useAppointments } from '../hooks/useAppointments';
 import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
 import { toast } from 'react-hot-toast';
-import { NEW_APPOINTMENT_EVENT, OPEN_APPOINTMENT_EVENT } from '../lib/apiClient';
+import { NEW_APPOINTMENT_EVENT, OPEN_APPOINTMENT_EVENT, getApiBase } from '../lib/apiClient';
 import {
   User,
   Patient,
@@ -386,7 +386,7 @@ export default function PsychologistPortal({
     let cancelled = false;
     setLoadingSessionDetail(true);
     const token = localStorage.getItem('mind_token');
-    const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+    const apiUrl = getApiBase();
     fetch(`${apiUrl}/api/patients/${selectedSessionForModal.patientId}/schedule-summary`, {
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -420,7 +420,7 @@ export default function PsychologistPortal({
     if (!selectedSessionForModal) return;
     try {
       const token = localStorage.getItem('mind_token');
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/appointments/${selectedSessionForModal.id}`, {
         method: 'PUT',
         headers: {
@@ -446,7 +446,7 @@ export default function PsychologistPortal({
     if (!window.confirm('¿Cancelar esta cita? Esta acción no se puede deshacer.')) return;
     try {
       const token = localStorage.getItem('mind_token');
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       // No existe DELETE /api/appointments/:id — cancelar es un cambio de
       // estado (igual que "No asistió"), no un borrado físico del registro.
       const res = await fetch(`${apiUrl}/api/appointments/${selectedSessionForModal.id}`, {
@@ -578,7 +578,7 @@ export default function PsychologistPortal({
   const fetchDocuments = async (type: 'clinico' | 'investigacion' = 'clinico') => {
     try {
       const token = localStorage.getItem('mind_token');
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:9000'}/api/documents/list?type=${type}`, {
+      const res = await fetch(`${getApiBase()}/api/documents/list?type=${type}`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       if (res.ok) {
@@ -596,7 +596,7 @@ export default function PsychologistPortal({
     formData.append('file', file);
     formData.append('type', type);
     try {
-      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:9000'}/api/documents/upload`, {
+      await fetch(`${getApiBase()}/api/documents/upload`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
@@ -612,7 +612,7 @@ export default function PsychologistPortal({
   const processDocument = async (documentId: string) => {
     const token = localStorage.getItem('mind_token');
     try {
-      await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:9000'}/api/documents/process`, {
+      await fetch(`${getApiBase()}/api/documents/process`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

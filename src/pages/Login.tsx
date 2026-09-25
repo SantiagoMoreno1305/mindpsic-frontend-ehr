@@ -25,12 +25,14 @@ import {
   FileText
 } from 'lucide-react';
 import ForgotPasswordModal from '../components/ForgotPasswordModal';
+import { getApiBase } from '../lib/apiClient';
+import { invalidateCompaniesCache } from '../hooks/useCompanies';
+import { invalidateSelectoresCache } from '../components/DelegatedAppointmentModal';
 
 // ---------------------------------------------------------------------------
 // Configuración del backend
 // ---------------------------------------------------------------------------
-const API_BASE_URL =
-  import.meta.env.VITE_API_URL || 'http://localhost:9000';
+const API_BASE_URL = getApiBase();
 
 // ---------------------------------------------------------------------------
 // Props
@@ -44,12 +46,14 @@ interface LoginProps {
    * @param isTempPassword  true si se detectó que el usuario usó una contraseña
    *                        temporal (patrón Mind_<hex>#) — indica primer ingreso.
    */
-  onLoginSuccess?: (user: User, isTempPassword: boolean) => void;
+  onLoginSuccess?: (user: User, isTempPassword: boolean, portal?: PortalChoice) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Componente
 // ---------------------------------------------------------------------------
+export type PortalChoice = 'clinical' | 'programs';
+
 export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) {
 
   // ── Estados del formulario ──
@@ -68,18 +72,52 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
   interface TenantOption { tenantId: string; tenantName: string; role: string; }
   const [tenantSelection, setTenantSelection] = useState<{ preAuthToken: string; memberships: TenantOption[] } | null>(null);
 
+  // ── Selección de portal (Programas de medición) ──────────────────────────
+  // Solo para cuentas con User.programsAccess = BOTH sobre un socio que tiene
+  // los programas habilitados: tras validar las credenciales, en esta misma
+  // pantalla se elige a qué portal entrar. La sesión NO se guarda hasta que se
+  // confirma (si no, recargar la página saltaría la elección). Se preselecciona
+  // el último portal usado con este correo.
+  const [portalSelection, setPortalSelection] = useState<{ data: any; password: string } | null>(null);
+  const [selectedPortal, setSelectedPortal] = useState<PortalChoice>('clinical');
+  const lastPortalKey = (mail: string) => `mind_last_portal:${mail.trim().toLowerCase()}`;
+
   // Común a /auth/login (cuando ya trae token directo) y /auth/select-tenant
   // — mismo shape de respuesta { token, user } en ambos casos.
-  function completeLogin(data: any, plainPassword: string) {
+  function completeLogin(data: any, plainPassword: string, portalChoice?: PortalChoice) {
     if (!data.token || !data.user) {
       console.error('[Login] ⚠️ Respuesta incompleta — falta token o user:', data);
       throw new Error('Respuesta inesperada del servidor.');
+    }
+
+    const access = data.user.programsAccess;
+    const programsEnabled = !!data.user.programsEnabled;
+    if (access === 'ONLY' && !programsEnabled) {
+      throw new Error('Tu cuenta es solo de Programas de medición, pero tu organización no lo tiene habilitado. Contacta a MindPsic.');
+    }
+    if (access === 'BOTH' && programsEnabled && !portalChoice) {
+      let last: string | null = null;
+      try { last = localStorage.getItem(lastPortalKey(email)); } catch { /* sin almacenamiento */ }
+      setSelectedPortal(last === 'programs' ? 'programs' : 'clinical');
+      setPortalSelection({ data, password: plainPassword });
+      return;
+    }
+    const portal: PortalChoice = access === 'ONLY' ? 'programs' : (access === 'BOTH' && programsEnabled ? (portalChoice ?? 'clinical') : 'clinical');
+    if (access === 'BOTH' && programsEnabled) {
+      try { localStorage.setItem(lastPortalKey(email), portal); } catch { /* sin almacenamiento */ }
     }
 
     localStorage.setItem('mind_token', data.token);
     localStorage.setItem('mind_user', JSON.stringify(data.user));
     console.log('[Login] 💾 Token y usuario guardados en localStorage.');
     console.log('[Login] 👤 Rol del usuario:', data.user.role);
+
+    // Sin esto, entrar con una cuenta de OTRO tenant en la misma pestaña
+    // (sin recargar la página) podía seguir mostrando convenios/especialistas
+    // del tenant anterior durante hasta 5 minutos — esos catálogos viven en
+    // caché a nivel de módulo, no se limpian solos con un login nuevo.
+    invalidateCompaniesCache();
+    invalidateSelectoresCache();
 
     // ── Detección de Primer Ingreso (Contraseña Temporal) ────────────────
     // El backend genera contraseñas temporales con el patrón:
@@ -101,7 +139,7 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
     // llamar a onLoginSuccess es suficiente para mostrar el portal correcto.
     if (onLoginSuccess) {
       console.log('[Login] 🎯 Llamando onLoginSuccess — el portal se renderizará según el rol.');
-      onLoginSuccess(data.user as User, isTempPassword);
+      onLoginSuccess(data.user as User, isTempPassword, portal);
     } else {
       console.warn('[Login] ⚠️ onLoginSuccess no fue provisto — revisa App.tsx.');
     }
@@ -408,7 +446,56 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
             </div>
 
             <div className="px-6 py-6 space-y-5">
-            {tenantSelection ? (
+            {portalSelection ? (
+              <>
+                {/* ── Elección de portal — cuenta con acceso a Programas de medición ── */}
+                <div>
+                  <h2 className="text-stone-900 font-bold mb-1" style={{ fontFamily: 'Georgia, serif', fontSize: '15px' }}>
+                    ¿A qué portal quieres entrar?
+                  </h2>
+                  <p className="text-xs text-stone-500 leading-relaxed">
+                    Tus credenciales son correctas. Elige el portal para continuar.
+                  </p>
+                </div>
+
+                <select
+                  value={selectedPortal}
+                  onChange={(e) => setSelectedPortal(e.target.value as PortalChoice)}
+                  className="w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-xs font-semibold text-stone-900 outline-none focus:border-stone-900 cursor-pointer"
+                >
+                  <option value="clinical">Portal clínico</option>
+                  <option value="programs">Programas de medición</option>
+                </select>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sel = portalSelection;
+                    setPortalSelection(null);
+                    try { completeLogin(sel.data, sel.password, selectedPortal); }
+                    catch (error: any) { setErrorMessage(error.message || 'No se pudo completar el inicio de sesión.'); }
+                  }}
+                  className="w-full py-3 px-4 bg-stone-950 hover:bg-stone-800 text-white text-xs font-bold tracking-wide rounded-xl transition-all cursor-pointer"
+                >
+                  Continuar
+                </button>
+
+                {errorMessage && (
+                  <div className="flex items-start gap-2 p-3 rounded-xl bg-stone-950 text-white text-xs">
+                    <LockKeyhole className="w-4 h-4 shrink-0 mt-0.5 text-stone-400" />
+                    <span>{errorMessage}</span>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => { setPortalSelection(null); setErrorMessage(''); }}
+                  className="text-[11px] text-stone-500 hover:text-stone-800 transition-colors cursor-pointer"
+                >
+                  ← Volver
+                </button>
+              </>
+            ) : tenantSelection ? (
               <>
                 {/* ── Selección de tenant — cuenta con 2+ TenantMembership ── */}
                 <div>

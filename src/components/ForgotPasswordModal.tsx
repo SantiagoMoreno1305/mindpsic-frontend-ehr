@@ -12,8 +12,9 @@
  */
 import { useState } from 'react';
 import { Mail, KeyRound, Lock, Eye, EyeOff, ArrowLeft, CheckCircle2, X, LockKeyhole } from 'lucide-react';
+import { getApiBase } from '../lib/apiClient';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+const API_BASE_URL = getApiBase();
 const MIN_PASSWORD_LENGTH = 8;
 
 type Step = 'email' | 'code' | 'success';

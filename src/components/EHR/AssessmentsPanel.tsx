@@ -11,11 +11,11 @@
  * aquí solo se registra el puntaje — capar el catálogo escondería instrumentos
  * que el psicólogo sí usa en consulta.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { toast } from 'react-hot-toast';
 import {
   ClipboardList, Search, X, Loader2, CheckCircle2, AlertTriangle,
-  ShieldAlert, Lock, Send, Stethoscope,
+  ShieldAlert, Lock, Send, Stethoscope, Clock, BookOpen, ChevronDown,
 } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
@@ -192,11 +192,70 @@ function LinkExpiryFields({ expiry, autoFocus }: {
   );
 }
 
+type PanelTab = 'pending' | 'completed' | 'catalog';
+const TAB_STORAGE_KEY = 'mind_assessments_panel_tab';
+const PAGE_SIZE = 6;
+
+function readStoredTab(): PanelTab | null | undefined {
+  try {
+    const v = sessionStorage.getItem(TAB_STORAGE_KEY);
+    if (v === 'none') return null;
+    if (v === 'pending' || v === 'completed' || v === 'catalog') return v;
+  } catch { /* sin sessionStorage */ }
+  return undefined;
+}
+
+// El área llega como slug sin tildes ("depresion") porque es la llave con la
+// que se agrupa y se filtra; la tilde vive aquí, en lo que se muestra. Un área
+// nueva que no esté en el diccionario se pinta capitalizada: aparece en el
+// filtro sin tocar código, solo sin acento.
+const ETIQUETA_AREA: Record<string, string> = {
+  depresion: 'Depresión',
+  ansiedad: 'Ansiedad',
+  transdiagnostico: 'Transdiagnóstico',
+  neuropsicologia: 'Neuropsicología',
+  psicooncologia: 'Psicooncología',
+};
+
+function etiquetaArea(slug: string): string {
+  return ETIQUETA_AREA[slug] || (slug.charAt(0).toUpperCase() + slug.slice(1));
+}
+
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full border px-3 py-1 text-[11px] font-semibold transition-colors ${
+        active
+          ? 'border-toast-400 bg-toast-50 text-toast-500'
+          : 'border-slate-200 text-slate-500 hover:border-slate-300 hover:text-slate-700'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ShowMore({ total, visible, onMore }: { total: number; visible: number; onMore: () => void }) {
+  if (total <= visible) return null;
+  return (
+    <button
+      type="button"
+      onClick={onMore}
+      className="w-full rounded-lg border border-dashed border-slate-300 py-2 text-xs font-semibold text-slate-500 transition-colors hover:border-toast-400 hover:text-toast-500"
+    >
+      Ver {Math.min(PAGE_SIZE, total - visible)} más · mostrando {visible} de {total}
+    </button>
+  );
+}
+
 export default function AssessmentsPanel() {
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [administrations, setAdministrations] = useState<AdministrationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
+  const [areaFilter, setAreaFilter] = useState<string>('all');
   const [runnerId, setRunnerId] = useState<string | null>(null);
   const [assignTarget, setAssignTarget] = useState<CatalogItem | null>(null);
   const [linkTarget, setLinkTarget] = useState<AdministrationRow | null>(null);
@@ -220,20 +279,79 @@ export default function AssessmentsPanel() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Las áreas se derivan del catálogo, no se declaran: al publicar un
+  // instrumento de un área nueva aparece sola en el filtro.
+  const areas = useMemo(() => {
+    const cuenta = new Map<string, number>();
+    catalog.forEach((t) => cuenta.set(t.area, (cuenta.get(t.area) || 0) + 1));
+    return [...cuenta.entries()]
+      .map(([slug, n]) => ({ slug, n, label: etiquetaArea(slug) }))
+      .sort((a, b) => b.n - a.n || a.label.localeCompare(b.label));
+  }, [catalog]);
+
+  // Área y búsqueda se combinan: filtrar por Depresión y escribir "beck"
+  // busca dentro de esa área, no en todo el catálogo.
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return catalog;
-    return catalog.filter((t) =>
-      t.code.toLowerCase().includes(q) ||
-      t.name.toLowerCase().includes(q) ||
-      (t.nameEs || '').toLowerCase().includes(q) ||
-      t.area.toLowerCase().includes(q) ||
-      t.construct.toLowerCase().includes(q)
-    );
-  }, [catalog, query]);
+    return catalog.filter((t) => {
+      if (areaFilter !== 'all' && t.area !== areaFilter) return false;
+      if (!q) return true;
+      return (
+        t.code.toLowerCase().includes(q) ||
+        t.name.toLowerCase().includes(q) ||
+        (t.nameEs || '').toLowerCase().includes(q) ||
+        t.area.toLowerCase().includes(q) ||
+        t.construct.toLowerCase().includes(q)
+      );
+    });
+  }, [catalog, query, areaFilter]);
 
   const pending = administrations.filter((a) => a.status !== 'COMPLETED');
   const completed = administrations.filter((a) => a.status === 'COMPLETED');
+  const inProgress = pending.filter((a) => a.status === 'IN_PROGRESS').length;
+  const criticalCount = completed.filter((a) => a.firedAlerts.some((x) => x.severity === 'CRITICA')).length;
+
+  // undefined = el usuario aún no eligió (se abre "Pendientes" si hay, si no
+  // el catálogo); null = eligió ocultar todo.
+  const [openTab, setOpenTab] = useState<PanelTab | null | undefined>(readStoredTab);
+  const [pendingFilter, setPendingFilter] = useState<'all' | 'ASSIGNED' | 'IN_PROGRESS'>('all');
+  const [completedFilter, setCompletedFilter] = useState<'all' | 'critical'>('all');
+  const [visible, setVisible] = useState(PAGE_SIZE);
+  const lastTab = useRef<PanelTab>('pending');
+
+  const activeTab: PanelTab | null = openTab === undefined
+    ? (pending.length > 0 ? 'pending' : 'catalog')
+    : openTab;
+  // Al ocultar, el contenido sigue pintado mientras se pliega (si no, la
+  // animación de cierre mostraría un recuadro vacío).
+  if (activeTab) lastTab.current = activeTab;
+  const shownTab = activeTab ?? lastTab.current;
+
+  const selectTab = (tab: PanelTab) => {
+    const next = activeTab === tab ? null : tab;
+    setOpenTab(next);
+    setVisible(PAGE_SIZE);
+    try { sessionStorage.setItem(TAB_STORAGE_KEY, next ?? 'none'); } catch { /* sin sessionStorage: solo no se recuerda */ }
+  };
+
+  const q = query.trim().toLowerCase();
+  const matchesAdministration = (a: AdministrationRow) =>
+    !q ||
+    a.instrument.code.toLowerCase().includes(q) ||
+    `${a.patient.firstName} ${a.patient.lastName}`.toLowerCase().includes(q) ||
+    (a.companyName || '').toLowerCase().includes(q);
+  const pendingView = pending.filter((a) =>
+    (pendingFilter === 'all' || a.status === pendingFilter) && matchesAdministration(a));
+  const completedView = completed.filter((a) =>
+    (completedFilter === 'all' || a.firedAlerts.some((x) => x.severity === 'CRITICA')) && matchesAdministration(a));
+
+  const tabs: { id: PanelTab; label: string; count: number; hint: string; icon: typeof Clock; danger?: boolean }[] = [
+    { id: 'pending', label: 'Pendientes', count: pending.length, icon: Clock,
+      hint: inProgress > 0 ? `${inProgress} en progreso` : 'Por resolver' },
+    { id: 'completed', label: 'Calificadas', count: completed.length, icon: CheckCircle2,
+      hint: criticalCount > 0 ? `${criticalCount} con alerta crítica` : 'Con resultado', danger: criticalCount > 0 },
+    { id: 'catalog', label: 'Catálogo', count: catalog.length, icon: BookOpen, hint: 'Asignar una prueba' },
+  ];
 
   if (runnerId) {
     return (
@@ -246,159 +364,278 @@ export default function AssessmentsPanel() {
   }
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 text-left">
-      {/* ── Pendientes ──────────────────────────────────────────────── */}
-      {pending.length > 0 && (
-        <section className="rounded-xl border border-slate-100 bg-white p-5">
-          <h2 className="mb-4 text-sm font-bold text-slate-900">
-            Pruebas pendientes ({pending.length})
-          </h2>
-          <div className="space-y-2">
-            {pending.map((a) => (
-              <div
-                key={a.id}
-                className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 p-3"
-              >
-                <button
-                  onClick={() => setRunnerId(a.id)}
-                  className="min-w-0 flex-1 text-left"
-                >
-                  <p className="truncate text-sm font-semibold text-slate-900 hover:text-toast-500">
-                    {a.instrument.code} · {a.patient.firstName} {a.patient.lastName}
-                  </p>
-                  <p className="truncate text-xs text-slate-500">
-                    Asignada {formatDate(a.assignedAt)}
-                    {a.companyName && ` · ${a.companyName}`}
-                  </p>
-                </button>
-                <div className="flex shrink-0 items-center gap-2">
-                  {a.instrument.modality === 'heteroaplicada' ? (
-                    <span
-                      title="Escala heteroaplicada: la puntúa el profesional en consulta"
-                      className="inline-flex items-center gap-1 rounded-md bg-toast-50 px-2 py-1 text-[10px] font-bold uppercase text-toast-500"
-                    >
-                      <Stethoscope className="h-3 w-3" /> En consulta
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => setLinkTarget(a)}
-                      title="Enviar enlace al paciente"
-                      className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold uppercase text-slate-600 hover:border-toast-500 hover:text-toast-500"
-                    >
-                      <Send className="h-3 w-3" /> Enlace
-                    </button>
-                  )}
-                  <span className={`rounded-md px-2 py-1 text-[10px] font-bold uppercase ${STATUS_STYLE[a.status]}`}>
-                    {STATUS_LABEL[a.status]}
-                  </span>
-                </div>
+    <div className="mx-auto max-w-7xl space-y-4 text-left">
+      {/* ── Menú: las tarjetas son las pestañas ─────────────────────────
+          Cada una muestra su conteo y, al tocar la que ya está abierta, el
+          contenido se pliega — así la pantalla no arranca con tres listas
+          largas apiladas. La elección se recuerda mientras dure la pestaña. */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3" role="tablist" aria-label="Pruebas y evaluaciones">
+        {tabs.map((t) => {
+          const active = activeTab === t.id;
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => selectTab(t.id)}
+              className={`group flex items-center gap-3 rounded-xl border p-4 text-left transition-all ${
+                active
+                  ? 'border-toast-400 bg-toast-50 ring-2 ring-toast-500/20'
+                  : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+                active ? 'bg-toast-500 text-white' : 'bg-slate-100 text-slate-500'
+              }`}>
+                <Icon className="h-5 w-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-baseline gap-2">
+                  <span className="text-2xl font-black leading-none text-slate-900">{t.count}</span>
+                  <span className="text-sm font-bold text-slate-900">{t.label}</span>
+                </span>
+                <span className={`mt-1 block truncate text-[11px] ${t.danger ? 'font-semibold text-red-600' : 'text-slate-400'}`}>
+                  {active ? 'Toca para ocultar' : t.hint}
+                </span>
+              </span>
+              <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform duration-300 ${active ? 'rotate-180' : ''}`} />
+            </button>
+          );
+        })}
+      </div>
+
+      {/* ── Contenido plegable ──────────────────────────────────────── */}
+      <div
+        className={`grid transition-[grid-template-rows,opacity] duration-300 ease-out ${
+          activeTab ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'
+        }`}
+        aria-hidden={!activeTab}
+        inert={!activeTab}
+      >
+        <div className="overflow-hidden">
+          <section className="rounded-xl border border-slate-100 bg-white p-5">
+            {/* Barra de herramientas: buscador + filtros de la pestaña abierta */}
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-1.5">
+                {shownTab === 'pending' && (
+                  <>
+                    <FilterChip active={pendingFilter === 'all'} onClick={() => { setPendingFilter('all'); setVisible(PAGE_SIZE); }}>
+                      Todas ({pending.length})
+                    </FilterChip>
+                    <FilterChip active={pendingFilter === 'ASSIGNED'} onClick={() => { setPendingFilter('ASSIGNED'); setVisible(PAGE_SIZE); }}>
+                      Asignadas ({pending.length - inProgress})
+                    </FilterChip>
+                    <FilterChip active={pendingFilter === 'IN_PROGRESS'} onClick={() => { setPendingFilter('IN_PROGRESS'); setVisible(PAGE_SIZE); }}>
+                      En progreso ({inProgress})
+                    </FilterChip>
+                  </>
+                )}
+                {shownTab === 'completed' && (
+                  <>
+                    <FilterChip active={completedFilter === 'all'} onClick={() => { setCompletedFilter('all'); setVisible(PAGE_SIZE); }}>
+                      Todas ({completed.length})
+                    </FilterChip>
+                    <FilterChip active={completedFilter === 'critical'} onClick={() => { setCompletedFilter('critical'); setVisible(PAGE_SIZE); }}>
+                      Alerta crítica ({criticalCount})
+                    </FilterChip>
+                  </>
+                )}
+                {shownTab === 'catalog' && (
+                  <>
+                    <h2 className="text-sm font-bold text-slate-900">Catálogo de Pruebas Psicotécnicas</h2>
+                    {/* Con una sola área el filtro no filtra nada: no se pinta. */}
+                    {areas.length > 1 && (
+                      <>
+                        <FilterChip
+                          active={areaFilter === 'all'}
+                          onClick={() => { setAreaFilter('all'); setVisible(PAGE_SIZE); }}
+                        >
+                          Todas ({catalog.length})
+                        </FilterChip>
+                        {areas.map((a) => (
+                          <FilterChip
+                            key={a.slug}
+                            active={areaFilter === a.slug}
+                            onClick={() => { setAreaFilter(a.slug); setVisible(PAGE_SIZE); }}
+                          >
+                            {a.label} ({a.n})
+                          </FilterChip>
+                        ))}
+                      </>
+                    )}
+                  </>
+                )}
               </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* ── Catálogo ────────────────────────────────────────────────── */}
-      <section className="rounded-xl border border-slate-100 bg-white p-5">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-sm font-bold text-slate-900">Catálogo de Pruebas Psicotécnicas</h2>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Buscar por sigla, nombre o constructo…"
-              className="w-72 rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm text-slate-900 outline-none focus:border-toast-500"
-            />
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="flex justify-center py-10 text-slate-400">
-            <Loader2 className="h-5 w-5 animate-spin" />
-          </div>
-        ) : filtered.length === 0 ? (
-          <p className="py-10 text-center text-sm text-slate-400">
-            {catalog.length === 0
-              ? 'Aún no hay instrumentos publicados. Cárgalos con scripts/seed-instruments.js.'
-              : 'Ningún instrumento coincide con la búsqueda.'}
-          </p>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {filtered.map((test) => (
-              <div key={test.id} className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 p-3">
-                <div className="min-w-0">
-                  <p className="font-semibold text-slate-900">
-                    {test.code}
-                    <span className="ml-2 text-xs font-normal text-slate-400">v{test.version}</span>
-                  </p>
-                  <p className="truncate text-xs text-slate-500">{test.nameEs || test.name}</p>
-                  <p className="mt-1 text-xs text-slate-400">
-                    {test.area} · {test.itemCount} ítems · {test.minAge}-{test.maxAge} años
-                    {test.durationMin && ` · ~${test.durationMin} min`}
-                  </p>
-                  {!test.applicable && (
-                    <p className="mt-1.5 inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
-                      <Lock className="h-3 w-3" />
-                      {test.license === 'propietaria' ? 'Licencia propietaria — solo registro' : 'Solo catálogo'}
-                    </p>
-                  )}
-                </div>
-                <button
-                  onClick={() => setAssignTarget(test)}
-                  className="shrink-0 text-xs font-bold text-toast-500 hover:underline"
-                >
-                  Asignar
-                </button>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={query}
+                  onChange={(e) => { setQuery(e.target.value); setVisible(PAGE_SIZE); }}
+                  placeholder={shownTab === 'catalog' ? 'Buscar por sigla, nombre o constructo…' : 'Buscar por prueba, paciente o convenio…'}
+                  className="w-72 max-w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm text-slate-900 outline-none focus:border-toast-500"
+                />
               </div>
-            ))}
-          </div>
-        )}
-      </section>
+            </div>
 
-      {/* ── Calificadas ─────────────────────────────────────────────── */}
-      {completed.length > 0 && (
-        <section className="rounded-xl border border-slate-100 bg-white p-5">
-          <h2 className="mb-4 text-sm font-bold text-slate-900">
-            Aplicaciones calificadas ({completed.length})
-          </h2>
-          <div className="space-y-2">
-            {completed.map((a) => {
-              // La escala principal, no la primera por orden alfabético: para
-              // el BDI-II eso mostraba la dimensión cognitiva (x/39) en lugar
-              // de la puntuación total (x/63).
-              const primary = a.results.find((r) => r.isPrimary) || a.results[0];
-              const critical = a.firedAlerts.some((x) => x.severity === 'CRITICA');
-              return (
-                <button
-                  key={a.id}
-                  onClick={() => setRunnerId(a.id)}
-                  className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-left transition-colors hover:border-slate-300 hover:bg-slate-50"
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    {critical
-                      ? <ShieldAlert className="h-5 w-5 shrink-0 text-red-600" />
-                      : <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />}
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-semibold text-slate-900">
-                        {a.instrument.code} · {a.patient.firstName} {a.patient.lastName}
-                      </p>
-                      <p className="truncate text-xs text-slate-500">
-                        {formatDate(a.completedAt)}
-                        {primary?.label && ` · ${primary.label}`}
-                      </p>
+            {/* ── Pendientes ─────────────────────────────────────────── */}
+            {shownTab === 'pending' && (
+              pendingView.length === 0 ? (
+                <p className="py-10 text-center text-sm text-slate-400">
+                  {pending.length === 0 ? 'No hay pruebas pendientes.' : 'Ninguna prueba pendiente coincide con el filtro.'}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {pendingView.slice(0, visible).map((a) => (
+                    <div
+                      key={a.id}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 p-3"
+                    >
+                      <button
+                        onClick={() => setRunnerId(a.id)}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <p className="truncate text-sm font-semibold text-slate-900 hover:text-toast-500">
+                          {a.instrument.code} · {a.patient.firstName} {a.patient.lastName}
+                        </p>
+                        <p className="truncate text-xs text-slate-500">
+                          Asignada {formatDate(a.assignedAt)}
+                          {a.companyName && ` · ${a.companyName}`}
+                        </p>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {a.instrument.modality === 'heteroaplicada' ? (
+                          <span
+                            title="Escala heteroaplicada: la puntúa el profesional en consulta"
+                            className="inline-flex items-center gap-1 rounded-md bg-toast-50 px-2 py-1 text-[10px] font-bold uppercase text-toast-500"
+                          >
+                            <Stethoscope className="h-3 w-3" /> En consulta
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setLinkTarget(a)}
+                            title="Enviar enlace al paciente"
+                            className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[10px] font-bold uppercase text-slate-600 hover:border-toast-500 hover:text-toast-500"
+                          >
+                            <Send className="h-3 w-3" /> Enlace
+                          </button>
+                        )}
+                        <span className={`rounded-md px-2 py-1 text-[10px] font-bold uppercase ${STATUS_STYLE[a.status]}`}>
+                          {STATUS_LABEL[a.status]}
+                        </span>
+                      </div>
                     </div>
+                  ))}
+                  <ShowMore total={pendingView.length} visible={visible} onMore={() => setVisible((v) => v + PAGE_SIZE)} />
+                </div>
+              )
+            )}
+
+            {/* ── Catálogo ───────────────────────────────────────────── */}
+            {shownTab === 'catalog' && (
+              loading ? (
+                <div className="flex justify-center py-10 text-slate-400">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                </div>
+              ) : filtered.length === 0 ? (
+                <p className="py-10 text-center text-sm text-slate-400">
+                  {catalog.length === 0
+                    ? 'Aún no hay instrumentos publicados. Cárgalos con scripts/seed-instruments.js.'
+                    : areaFilter !== 'all' && query.trim()
+                      ? `Ningún instrumento de ${etiquetaArea(areaFilter)} coincide con la búsqueda.`
+                      : 'Ningún instrumento coincide con la búsqueda.'}
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    {filtered.slice(0, visible).map((test) => (
+                      <div key={test.id} className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 p-3">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-slate-900">
+                            {test.code}
+                            <span className="ml-2 text-xs font-normal text-slate-400">v{test.version}</span>
+                          </p>
+                          <p className="truncate text-xs text-slate-500">{test.nameEs || test.name}</p>
+                          <p className="mt-1 text-xs text-slate-400">
+                            {test.area} · {test.itemCount} ítems · {test.minAge}-{test.maxAge} años
+                            {test.durationMin && ` · ~${test.durationMin} min`}
+                          </p>
+                          {!test.applicable && (
+                            <p className="mt-1.5 inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
+                              <Lock className="h-3 w-3" />
+                              {test.license === 'propietaria' ? 'Licencia propietaria — solo registro' : 'Solo catálogo'}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => setAssignTarget(test)}
+                          className="shrink-0 text-xs font-bold text-toast-500 hover:underline"
+                        >
+                          Asignar
+                        </button>
+                      </div>
+                    ))}
                   </div>
-                  {primary && (
-                    <span className="shrink-0 rounded-lg bg-toast-100 px-3 py-1 text-sm font-bold text-toast-500">
-                      {primary.rawScore} / {primary.maxTheoretical}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </section>
+                  <ShowMore total={filtered.length} visible={visible} onMore={() => setVisible((v) => v + PAGE_SIZE)} />
+                </div>
+              )
+            )}
+
+            {/* ── Calificadas ────────────────────────────────────────── */}
+            {shownTab === 'completed' && (
+              completedView.length === 0 ? (
+                <p className="py-10 text-center text-sm text-slate-400">
+                  {completed.length === 0 ? 'Aún no hay aplicaciones calificadas.' : 'Ninguna aplicación coincide con el filtro.'}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {completedView.slice(0, visible).map((a) => {
+                    // La escala principal, no la primera por orden alfabético: para
+                    // el BDI-II eso mostraba la dimensión cognitiva (x/39) en lugar
+                    // de la puntuación total (x/63).
+                    const primary = a.results.find((r) => r.isPrimary) || a.results[0];
+                    const critical = a.firedAlerts.some((x) => x.severity === 'CRITICA');
+                    return (
+                      <button
+                        key={a.id}
+                        onClick={() => setRunnerId(a.id)}
+                        className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 p-3 text-left transition-colors hover:border-slate-300 hover:bg-slate-50"
+                      >
+                        <div className="flex min-w-0 items-center gap-3">
+                          {critical
+                            ? <ShieldAlert className="h-5 w-5 shrink-0 text-red-600" />
+                            : <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />}
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold text-slate-900">
+                              {a.instrument.code} · {a.patient.firstName} {a.patient.lastName}
+                            </p>
+                            <p className="truncate text-xs text-slate-500">
+                              {formatDate(a.completedAt)}
+                              {primary?.label && ` · ${primary.label}`}
+                            </p>
+                          </div>
+                        </div>
+                        {primary && (
+                          <span className="shrink-0 rounded-lg bg-toast-100 px-3 py-1 text-sm font-bold text-toast-500">
+                            {primary.rawScore} / {primary.maxTheoretical}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                  <ShowMore total={completedView.length} visible={visible} onMore={() => setVisible((v) => v + PAGE_SIZE)} />
+                </div>
+              )
+            )}
+          </section>
+        </div>
+      </div>
+
+      {!activeTab && (
+        <p className="py-6 text-center text-xs text-slate-400">
+          Listados ocultos — toca una tarjeta para volver a verlos.
+        </p>
       )}
 
       {linkTarget && (

@@ -136,7 +136,7 @@ export default function UserProfileModal({ isOpen, onClose, user, onUserUpdated 
           </div>
           <div>
             <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Correo electrónico</p>
-            <p className="text-sm text-charcoal-900">{user.email}</p>
+            <p className="break-all text-sm text-charcoal-900">{user.email}</p>
           </div>
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-500" />

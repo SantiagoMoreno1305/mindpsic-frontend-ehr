@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import { UploadCloud, FileText, Loader2, Eye, Download } from 'lucide-react';
+import { getApiBase } from '../../lib/apiClient';
 
 interface ClinicalDocumentEntry {
   id: string;
@@ -60,7 +61,7 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
     setLoading(true);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
       // Este endpoint (a diferencia de GET /api/clinical-history/:patientId)
       // devuelve cada documento con una downloadUrl pre-firmada de S3 lista
       // para ver/descargar — sin ella los anexos quedaban listados pero inertes.
@@ -88,7 +89,7 @@ export default function ClinicalAttachments({ patientId }: { patientId: string }
     setUploading(true);
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
 
       const presignedRes = await fetch(`${apiBase}/api/clinical-history/upload`, {
         method: 'POST',

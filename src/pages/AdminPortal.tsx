@@ -21,6 +21,9 @@ import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
+import AccessCodesPanel from '../components/EHR/AccessCodesPanel';
+import TariffsPanel from '../components/EHR/TariffsPanel';
+import ApprovalsPanel from '../components/EHR/ApprovalsPanel';
 import AssessmentsPanel from '../components/EHR/AssessmentsPanel';
 import CalendarPanel, {
   type CalendarAppointment,
@@ -30,7 +33,7 @@ import CalendarPanel, {
   CalendarFilterGroup,
   CalendarFilterSelect,
 } from '../components/EHR/CalendarPanel';
-import { apiFetch } from '../lib/apiClient';
+import { apiFetch, getApiBase } from '../lib/apiClient';
 import { 
   Patient, 
   PsychologistPerformance,
@@ -74,13 +77,30 @@ import {
   Clock,
   User2,
   ChevronDown,
-  Check
+  Check,
+  KeyRound,
+  Tag,
+  Inbox
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'billing_rips' | 'chat';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'approvals' | 'billing_rips' | 'chat';
 
 export default function AdminPortal() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // Permiso del socio para crear códigos de acceso (Tenant.allowAccessCodes,
+  // lo habilita MindPsic desde AdminCenter). null = aún no se sabe: mientras
+  // tanto no se oculta nada (el backend igual rechaza la creación).
+  const [accessCodesCap, setAccessCodesCap] = useState<{ tenantEnabled: boolean; canCreate: boolean; hasCodes: boolean } | null>(null);
+  useEffect(() => {
+    if (!currentUser) return;
+    apiFetch('/api/access-codes/capability')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (data) setAccessCodesCap(data); })
+      .catch(() => { /* sin dato: se deja todo visible */ });
+  }, [currentUser?.id]);
+  // Sin permiso Y sin códigos previos, la sección no tiene nada que ofrecer.
+  // Con códigos ya emitidos se deja visible para poder cerrarlos/recordarlos.
+  const showAccessCodesTab = !(accessCodesCap && !accessCodesCap.tenantEnabled && !accessCodesCap.hasCodes);
   const [authLoading, setAuthLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
   const [showDelegatedModal, setShowDelegatedModal] = useState(false);
@@ -137,7 +157,7 @@ export default function AdminPortal() {
   const ACADEMIC_LEVEL_OPTIONS = ['Técnico', 'Tecnólogo', 'Pregrado', 'Especialización', 'Maestría', 'Doctorado'];
 
   const emptyStaffForm = {
-    firstName: '', lastName: '', email: '',
+    firstName: '', lastName: '', email: '', phone: '',
     role: 'ESPECIALISTA_B2B' as 'ESPECIALISTA_B2B' | 'OPERATIVO',
     documentType: 'CC', documentId: '',
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
@@ -223,7 +243,7 @@ export default function AdminPortal() {
     setStaffSuccess(null);
 
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/users/provision`, {
         method: 'POST',
         headers: {
@@ -236,6 +256,7 @@ export default function AdminPortal() {
           firstName: f.firstName.trim(),
           lastName: f.lastName.trim(),
           email: f.email.trim().toLowerCase(),
+          phone: f.phone.trim() || undefined,
           role: f.role,
           documentType: f.documentId.trim() ? f.documentType : undefined,
           documentId: f.documentId.trim() || undefined,
@@ -297,6 +318,7 @@ export default function AdminPortal() {
     epsName: string | null;
     /** "YYYY-MM-DD" — ya viene calculado del backend (users.routes.js GET /). */
     joinedDate: string;
+    canApproveSessionChanges: boolean;
   }
 
   const [teamUsers, setTeamUsers] = useState<TeamUser[]>([]);
@@ -332,7 +354,7 @@ export default function AdminPortal() {
     setTeamUsersLoading(true);
     setTeamUsersError(null);
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/users`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
@@ -355,7 +377,7 @@ export default function AdminPortal() {
     }
     setDeletingStaffId(member.id);
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/users/${member.id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` },
@@ -375,7 +397,7 @@ export default function AdminPortal() {
 
   const handleToggleStaffActive = async (member: TeamUser) => {
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/users/${member.id}/active`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -397,6 +419,7 @@ export default function AdminPortal() {
     firstName: '', lastName: '', phone: '',
     documentType: 'CC', documentId: '',
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
+    canApproveSessionChanges: false,
   };
   const [showEditStaffModal, setShowEditStaffModal] = useState(false);
   const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
@@ -424,6 +447,7 @@ export default function AdminPortal() {
       experienceYears: member.experienceYears?.toString() || '',
       epsCode: member.epsCode || '',
       epsLabel: member.epsName || '',
+      canApproveSessionChanges: member.canApproveSessionChanges || false,
     });
     editStaffEpsSearch.setQuery('');
     editStaffEpsSearch.setResults([]);
@@ -444,7 +468,7 @@ export default function AdminPortal() {
     setSavingStaff(true);
     setEditStaffError(null);
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/users/${editingStaffId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -459,6 +483,11 @@ export default function AdminPortal() {
           academicLevel: f.academicLevel || null,
           experienceYears: f.experienceYears || null,
           epsCode: f.epsCode || null,
+          // Solo se manda si YO puedo tocarlo (ver canGrantSessionChangePermission
+          // más abajo) — el backend rechaza el PUT COMPLETO si este campo viene
+          // presente y el caller no tiene autoridad, así que un DIRECTIVO sin el
+          // permiso no debe ni enviarlo al editar cualquier otro dato del colaborador.
+          ...(canGrantSessionChangePermission ? { canApproveSessionChanges: f.canApproveSessionChanges } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -474,6 +503,12 @@ export default function AdminPortal() {
       setSavingStaff(false);
     }
   };
+
+  // Quién puede otorgar/quitar el permiso de aprobador de cambios de cupo a
+  // OTRO colaborador — más estricto que "puede editar staff" (CEO/DIRECTIVO):
+  // solo CEO (rol de MindPsic) o quien YA tiene el permiso, mismo gate exacto
+  // que ya aplica el backend en PUT /api/users/:userId.
+  const canGrantSessionChangePermission = currentUser?.role === 'CEO' || !!currentUser?.canApproveSessionChanges;
 
   // ── Historial de cambios de la ficha profesional ──
   interface StaffHistoryEntry {
@@ -492,7 +527,7 @@ export default function AdminPortal() {
     setShowStaffHistoryModal(true);
     setStaffHistoryLoading(true);
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/users/${member.id}/professional-profile/history`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
@@ -563,7 +598,7 @@ export default function AdminPortal() {
 
   const fetchAgreementTypes = async (companyId: string) => {
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/agreement-types?companyId=${companyId}`, { headers: { 'Authorization': `Bearer ${token}` } });
       if (res.ok) setAgreementTypes(await res.json());
     } catch {
@@ -620,7 +655,7 @@ export default function AdminPortal() {
     if (!editingCompanyId || !newLocationName.trim()) return;
     setSavingLocation(true);
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/companies/${editingCompanyId}/locations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -644,7 +679,7 @@ export default function AdminPortal() {
 
   const handleRemoveLocation = async (locationId: string) => {
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/companies/locations/${locationId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` },
@@ -661,7 +696,7 @@ export default function AdminPortal() {
     if (!newAgreementTypeName.trim() || !editingCompanyId) return;
     setSavingAgreementType(true);
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/agreement-types`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -685,7 +720,7 @@ export default function AdminPortal() {
 
   const handleRemoveAgreementType = async (id: string) => {
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/agreement-types/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` },
@@ -700,7 +735,7 @@ export default function AdminPortal() {
   const handleRenameAgreementType = async (id: string, newName: string) => {
     if (!newName.trim()) return;
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/agreement-types/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -728,7 +763,7 @@ export default function AdminPortal() {
     setSavingCompany(true);
     setCompanyFormError(null);
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const isEditing = !!editingCompanyId;
       const res = await fetch(`${apiUrl}/api/companies${isEditing ? `/${editingCompanyId}` : ''}`, {
         method: isEditing ? 'PUT' : 'POST',
@@ -765,7 +800,7 @@ export default function AdminPortal() {
   const handleToggleCompanyStatus = async (c: CompanyRecord) => {
     const nextStatus = c.status === 'activo' ? 'inactivo' : 'activo';
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/companies/${c.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -781,7 +816,7 @@ export default function AdminPortal() {
   const handleDeleteCompany = async (c: CompanyRecord) => {
     if (!(await confirmToast(`¿Eliminar el convenio/cliente "${c.name}"? Esta acción no se puede deshacer.`))) return;
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/companies/${c.id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` },
@@ -1221,7 +1256,7 @@ export default function AdminPortal() {
   useEffect(() => {
     const fetchRipsPeriods = async () => {
       try {
-        const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+        const apiUrl = getApiBase();
         const res = await fetch(`${apiUrl}/api/rips-diagnosis/periods`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -1265,7 +1300,7 @@ export default function AdminPortal() {
   const handleExportPatientsExcel = async () => {
     setIsExportingReport(true);
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const params = new URLSearchParams();
       if (reportDateFrom) params.set('dateFrom', reportDateFrom);
       if (reportDateTo) params.set('dateTo', reportDateTo);
@@ -1495,7 +1530,7 @@ export default function AdminPortal() {
   const handleGenerateRips = async () => {
     setIsGeneratingRips(true);
     try {
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/rips-diagnosis/export?year=${ripsYear}&month=${ripsMonth}&companyId=${ripsCompanyId}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -1847,6 +1882,56 @@ export default function AdminPortal() {
             {activeTab === 'convenios' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
+          {/* Códigos de acceso — línea24/7 y campañas de evaluación */}
+          {showAccessCodesTab && (
+            <button
+              onClick={() => setActiveTab('access_codes')}
+              id="tab-adm-access-codes"
+              className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+                activeTab === 'access_codes'
+                  ? 'bg-charcoal-900 text-white font-semibold'
+                  : 'hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <KeyRound className="w-5 h-5 shrink-0" />
+              <span className="ml-3 text-xs hidden md:block">Códigos de acceso</span>
+              {activeTab === 'access_codes' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+            </button>
+          )}
+
+          {/* Tarifas por sesión — por convenio y por estrato (particular) */}
+          <button
+            onClick={() => setActiveTab('tariffs')}
+            id="tab-adm-tariffs"
+            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+              activeTab === 'tariffs'
+                ? 'bg-charcoal-900 text-white font-semibold'
+                : 'hover:bg-slate-800 hover:text-white'
+            }`}
+          >
+            <Tag className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Tarifas</span>
+            {activeTab === 'tariffs' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+          </button>
+
+          {/* Bandeja de aprobación de cambios de cupo — solo visible para
+              quien tiene el permiso (o CEO, respaldo de MindPsic) */}
+          {canGrantSessionChangePermission && (
+            <button
+              onClick={() => setActiveTab('approvals')}
+              id="tab-adm-approvals"
+              className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+                activeTab === 'approvals'
+                  ? 'bg-charcoal-900 text-white font-semibold'
+                  : 'hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <Inbox className="w-5 h-5 shrink-0" />
+              <span className="ml-3 text-xs hidden md:block">Aprobaciones</span>
+              {activeTab === 'approvals' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+            </button>
+          )}
+
           {/* Billing & RIPS configurations */}
           <button
             onClick={() => setActiveTab('billing_rips')}
@@ -2161,7 +2246,7 @@ export default function AdminPortal() {
                                   if (await confirmToast('¿Estás seguro de eliminar esta cita?')) {
                                     try {
                                       const t = localStorage.getItem('mind_token');
-                                      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+                                      const apiUrl = getApiBase();
                                       await fetch(`${apiUrl}/api/appointments/${app.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
                                       toast.success('Cita eliminada');
                                     } catch(e: any) { toast.error(e.message); }
@@ -2247,7 +2332,7 @@ export default function AdminPortal() {
                                   if (await confirmToast('¿Estás seguro de eliminar esta cita?')) {
                                     try {
                                       const t = localStorage.getItem('mind_token');
-                                      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+                                      const apiUrl = getApiBase();
                                       await fetch(`${apiUrl}/api/appointments/${app.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${t}` } });
                                       toast.success('Cita eliminada');
                                     } catch(e: any) { toast.error(e.message); }
@@ -2547,6 +2632,17 @@ export default function AdminPortal() {
                       <option value="OPERATIVO">Soporte Operativo / Auxiliar</option>
                     </select>
                   </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Celular (WhatsApp)</label>
+                  <input
+                    type="tel"
+                    value={newStaffForm.phone}
+                    onChange={e => setNewStaffForm({ ...newStaffForm, phone: e.target.value })}
+                    placeholder="3001234567"
+                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                  />
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -2981,6 +3077,23 @@ export default function AdminPortal() {
                     </ul>
                   )}
                 </div>
+
+                {canGrantSessionChangePermission && (
+                  <label className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editStaffForm.canApproveSessionChanges}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, canApproveSessionChanges: e.target.checked })}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      <span className="block text-xs font-bold text-slate-700">Puede aprobar cambios de cupo de sesiones</span>
+                      <span className="block text-[10.5px] text-slate-400 mt-0.5">
+                        Recibe el código de confirmación cuando alguien pide agregar o restar sesiones autorizadas de un paciente (control de dos personas). Solo tú puedes otorgar o quitar este permiso porque ya lo tienes.
+                      </span>
+                    </span>
+                  </label>
+                )}
 
                 {editStaffError && (
                   <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700">⚠️ {editStaffError}</div>
@@ -3530,6 +3643,15 @@ export default function AdminPortal() {
             </div>
           </div>
         )}
+
+        {/* VIEW: CÓDIGOS DE ACCESO — línea24/7 y campañas de evaluación */}
+        {activeTab === 'access_codes' && <AccessCodesPanel canCreate={accessCodesCap?.canCreate ?? true} />}
+
+        {/* VIEW: TARIFAS — por convenio y por estrato (particular) */}
+        {activeTab === 'tariffs' && <TariffsPanel />}
+
+        {/* VIEW: APROBACIONES — bandeja del aprobador de cambios de cupo */}
+        {activeTab === 'approvals' && canGrantSessionChangePermission && <ApprovalsPanel />}
 
         {/* VIEW: BILLING & INSURANCE AGREEMENTS, RIPS GENERATOR & PATIENT DATABASE CONTACTS */}
         {activeTab === 'billing_rips' && (

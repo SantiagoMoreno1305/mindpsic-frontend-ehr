@@ -104,8 +104,9 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   const [sendingLinea247Id, setSendingLinea247Id] = useState<string | null>(null);
   const [resendingConfirmationId, setResendingConfirmationId] = useState<string | null>(null);
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
-  // Menú "más acciones" (Editar/Agendar/Línea 24-7/Reenviar confirmación) —
-  // reemplaza los 4 botones sueltos de antes, que hacían la tabla demasiado
+  // Menú "más acciones" (Editar/Historial de estados/Línea 24-7/Reenviar
+  // confirmación) — "Agendar cita" se quitó de acá, se agenda desde el botón
+  // "Agendar paciente" de la barra superior. Reemplaza los botones sueltos de antes, que hacían la tabla demasiado
   // ancha. Se renderiza en un portal a document.body con posición fija
   // calculada del botón (ver actionMenu.top/bottom/right) — si viviera dentro
   // de la tabla, el contenedor "overflow-x-auto" de la tabla (que por CSS
@@ -268,11 +269,6 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const rangeEnd = Math.min(page * PAGE_SIZE, total);
-
-  function openScheduleFor(patient: BackendPatient) {
-    setScheduleForPatient(patient);
-    setScheduleOpen(true);
-  }
 
   function openScheduleGeneral() {
     setScheduleForPatient(null);
@@ -558,13 +554,6 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
                             ...(actionMenu.top !== undefined ? { top: actionMenu.top } : { bottom: actionMenu.bottom }),
                           }}
                         >
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setActionMenu(null); openScheduleFor(p); }}
-                            className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm font-medium text-charcoal-900 transition-colors hover:bg-toast-50 cursor-pointer"
-                          >
-                            <CalendarPlus className="h-3.5 w-3.5 shrink-0 text-toast-500" />
-                            Agendar cita
-                          </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); setActionMenu(null); openEditFor(p); }}
                             className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-charcoal-900 transition-colors hover:bg-slate-50 cursor-pointer"

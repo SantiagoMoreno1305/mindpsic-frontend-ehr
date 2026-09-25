@@ -73,6 +73,13 @@ export interface User {
   tenantId?: string; // Identificador del tenant/clínica al que pertenece el usuario
   specialty?: string; // Especialidad clínica (ej. 'Psicología Clínica')
   level?: string;     // Nivel del especialista (ej. 'Nivel 2')
+  // Permiso de aprobador de cambios de cupo de sesiones (ver
+  // session-change.service.js en el backend) — controla si ve el toggle en
+  // Equipo y Accesos y el ítem de menú "Aprobaciones".
+  canApproveSessionChanges?: boolean;
+  // Acceso a Programas de medición (lo otorga un CEO) y si el socio los tiene habilitados.
+  programsAccess?: 'NONE' | 'BOTH' | 'ONLY';
+  programsEnabled?: boolean;
 }
 
 export interface Patient {

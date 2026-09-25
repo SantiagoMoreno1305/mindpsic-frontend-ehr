@@ -21,6 +21,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { User, UserRole } from '../types';
 import { toast } from 'react-hot-toast';
+import { getApiBase } from '../lib/apiClient';
 
 // ── Intervalo del Long Polling (ms) ─────────────────────────────────────────
 const POLL_INTERVAL_MS = 4000; // 4 segundos — balance entre latencia y carga del servidor
@@ -151,7 +152,7 @@ export const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
 
 // ── Hook principal ────────────────────────────────────────────────────────────
 export function useChatModel(currentUser: User | null) {
-  const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+  const apiUrl = getApiBase();
 
   const [contacts, setContacts]           = useState<ChatContact[]>([]);
   const [activeContact, setActiveContact]  = useState<ChatContact | null>(null);

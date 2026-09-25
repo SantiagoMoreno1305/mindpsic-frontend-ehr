@@ -10,6 +10,8 @@ import Login from './pages/Login';
 import SignConsent from './pages/SignConsent';
 import CancelAppointment from './pages/CancelAppointment';
 import InvitationLanding from './pages/InvitationLanding';
+import ProgramParticipant from './pages/ProgramParticipant';
+import ProgramsPortal from './pages/ProgramsPortal';
 import AnswerAssessment from './pages/AnswerAssessment';
 import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
@@ -17,8 +19,11 @@ import ForcePasswordChange from './pages/ForcePasswordChange';
 import Navbar from './components/Navbar';
 import DrMindChat from './components/DrMindChat';
 import { Bot, ShieldAlert, AlertTriangle } from 'lucide-react';
-import { FORBIDDEN_ACCESS_EVENT, NEW_APPOINTMENT_EVENT } from './lib/apiClient';
+import { FORBIDDEN_ACCESS_EVENT, NEW_APPOINTMENT_EVENT, getApiBase } from './lib/apiClient';
+import { playNotificationChime } from './lib/notificationSound';
 import { Toaster, toast } from 'react-hot-toast';
+import { invalidateCompaniesCache } from './hooks/useCompanies';
+import { invalidateSelectoresCache } from './components/DelegatedAppointmentModal';
 
 // Restaura la sesión guardada de forma SÍNCRONA, en la inicialización del
 // estado — no dentro de un useEffect. Si currentUser arrancara en null y se
@@ -45,6 +50,22 @@ export default function App() {
 
   // Workspace Context State — Hybrid Clinical + Research
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>('clinical');
+
+  // Programas de medición: acceso POR PERSONA (User.programsAccess, lo otorga un
+  // CEO desde AdminCenter) sobre un socio con Tenant.allowMeasurementPrograms.
+  //   NONE = solo clínico · BOTH = elige portal en el login · ONLY = solo programas.
+  // El servidor es quien manda (403 si no corresponde); esto solo decide qué pintar.
+  const programsAccess: 'NONE' | 'BOTH' | 'ONLY' =
+    currentUser?.programsEnabled ? (currentUser.programsAccess ?? 'NONE') : 'NONE';
+  const programsBlocked = currentUser?.programsAccess === 'ONLY' && !currentUser.programsEnabled;
+  const [portal, setPortal] = useState<'clinical' | 'programs' | null>(() => {
+    try { const v = sessionStorage.getItem('mind_portal'); return v === 'clinical' || v === 'programs' ? v : null; } catch { return null; }
+  });
+
+  const choosePortal = (p: 'clinical' | 'programs') => {
+    setPortal(p);
+    try { sessionStorage.setItem('mind_portal', p); } catch { /* sin almacenamiento */ }
+  };
 
   // AI Assistant Drawer management
   const [isDrMindOpen, setIsDrMindOpen] = useState(false);
@@ -82,7 +103,7 @@ export default function App() {
   // tenantId, specialty, level) lleguen sin necesidad de recargar la página.
   // ============================================================================
   const syncUserFromBackend = (token: string) => {
-    const apiBase = (import.meta.env.VITE_API_URL as string) || 'http://localhost:9000';
+    const apiBase = getApiBase();
     fetch(`${apiBase}/auth/sync`, {
       method: 'GET',
       headers: {
@@ -115,6 +136,8 @@ export default function App() {
             specialty: syncData.specialty ?? prev.specialty,
             level: syncData.level ?? prev.level,
             avatarUrl: syncData.avatarUrl ?? undefined,
+            programsAccess: syncData.programsAccess ?? prev.programsAccess,
+            programsEnabled: syncData.programsEnabled ?? prev.programsEnabled,
           };
           // Persistir el usuario actualizado en localStorage
           localStorage.setItem('mind_user', JSON.stringify(updatedUser));
@@ -170,6 +193,13 @@ export default function App() {
     localStorage.removeItem('mind_token');
     localStorage.removeItem('mind_user');
     localStorage.removeItem('mind_must_change_pwd');
+    try { sessionStorage.removeItem('mind_portal'); } catch { /* sin almacenamiento */ }
+    setPortal(null);
+    // Catálogos de convenios/especialistas/especialidades en caché de módulo
+    // — si no se limpian acá, la próxima cuenta que entre en esta misma
+    // pestaña (de OTRO tenant) puede seguir viéndolos hasta por 5 minutos.
+    invalidateCompaniesCache();
+    invalidateSelectoresCache();
     setCurrentUser(null);
     setIsDrMindOpen(false);
     setDrMindContextPatient(null);
@@ -185,6 +215,8 @@ export default function App() {
       // Limpiar sesión pero mantener isSuspended=true para mostrar el banner
       localStorage.removeItem('mind_token');
       localStorage.removeItem('mind_user');
+      invalidateCompaniesCache();
+      invalidateSelectoresCache();
       setCurrentUser(null);
       setIsDrMindOpen(false);
       setDrMindContextPatient(null);
@@ -212,6 +244,11 @@ export default function App() {
   // cada poll, y se ignoran las que ya llegan marcadas leídas (historial).
   const [staffNotifications, setStaffNotifications] = useState<any[]>([]);
   const toastedIdsRef = useRef<Set<string>>(new Set());
+  // El primer poll (al cargar la página) puede traer varias no leídas de
+  // antes — no deben sonar todas de golpe como si acabaran de llegar.
+  // Sonido solo a partir del segundo poll en adelante, cuando una
+  // notificación realmente aparece nueva en la ventana de 45s.
+  const firstNotifLoadRef = useRef(true);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -221,7 +258,7 @@ export default function App() {
         const token = localStorage.getItem('mind_token');
         if (!token) return;
 
-        const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+        const apiBase = getApiBase();
         const res = await fetch(`${apiBase}/api/notifications/recent`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -229,9 +266,13 @@ export default function App() {
         const recent = await res.json();
         setStaffNotifications(recent);
 
+        const isFirstLoad = firstNotifLoadRef.current;
+        firstNotifLoadRef.current = false;
+
         recent.forEach((notif: any) => {
           if (notif.read || toastedIdsRef.current.has(notif.id)) return;
           toastedIdsRef.current.add(notif.id);
+          if (!isFirstLoad) playNotificationChime();
 
           // El resto de tipos (nueva cita, consentimiento firmado, cita
           // cancelada por el paciente, evaluación asignada/completada) ya NO
@@ -274,7 +315,7 @@ export default function App() {
     setStaffNotifications((prev) => prev.map((n) => (ids.includes(n.id) ? { ...n, read: true } : n)));
     try {
       const token = localStorage.getItem('mind_token');
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
       await fetch(`${apiBase}/api/notifications/mark-read`, {
         method: 'POST',
         body: JSON.stringify({ ids }),
@@ -290,7 +331,7 @@ export default function App() {
   const handleDeleteNotification = (id: string) => {
     setStaffNotifications((prev) => prev.filter((n) => n.id !== id));
     const token = localStorage.getItem('mind_token');
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+    const apiBase = getApiBase();
     fetch(`${apiBase}/api/notifications/${id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
@@ -303,7 +344,7 @@ export default function App() {
     if (!window.confirm('¿Eliminar todas las notificaciones? Esta acción no se puede deshacer.')) return;
     setStaffNotifications([]);
     const token = localStorage.getItem('mind_token');
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+    const apiBase = getApiBase();
     fetch(`${apiBase}/api/notifications`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${token}` },
@@ -358,8 +399,9 @@ export default function App() {
     if (!currentUser) {
       return (
         <Login
-          onLoginSuccess={(user, isTempPassword) => {
+          onLoginSuccess={(user, isTempPassword, chosenPortal) => {
             handleLoginSuccess(user);
+            if (chosenPortal) choosePortal(chosenPortal);
             if (isTempPassword) {
               localStorage.setItem('mind_must_change_pwd', 'true');
               setMustChangePassword(true);
@@ -391,19 +433,75 @@ export default function App() {
       );
     }
 
+    // ── Programas de medición ──────────────────────────────────────────────
+    if (programsBlocked) {
+      return (
+        <div className="flex h-full items-center justify-center bg-toast-50 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+            <h2 className="text-lg font-semibold text-charcoal-900">Programas de medición no disponible</h2>
+            <p className="mt-2 text-sm text-slate-500">Tu cuenta es solo de Programas de medición, pero tu organización no lo tiene habilitado. Contacta a MindPsic.</p>
+            <button onClick={handleLogout} className="mt-5 rounded-xl border border-slate-200 px-4 py-2 text-xs font-medium hover:bg-slate-50">Cerrar sesión</button>
+          </div>
+        </div>
+      );
+    }
+    const programsView = (
+      <div className="relative h-full">
+        <ProgramsPortal />
+        <div className="absolute bottom-4 left-4 flex gap-2">
+          {programsAccess === 'BOTH' && (
+            <button onClick={() => choosePortal('clinical')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Ir al portal clínico</button>
+          )}
+          <button onClick={handleLogout} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Cerrar sesión</button>
+        </div>
+      </div>
+    );
+    if (programsAccess === 'ONLY') return programsView;
+    if (programsAccess === 'BOTH') {
+      // Normalmente el portal ya se eligió en el login; esto cubre una sesión
+      // restaurada en otra pestaña (sessionStorage vacío).
+      if (portal === null) {
+        return (
+          <div className="flex h-full items-center justify-center bg-toast-50 px-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-charcoal-900">¿A qué portal quieres entrar?</h2>
+              <div className="mt-5 grid gap-3">
+                <button onClick={() => choosePortal('clinical')} className="rounded-xl border border-slate-200 p-4 text-left transition hover:border-toast-500">
+                  <div className="text-sm font-semibold">Portal clínico</div>
+                  <div className="text-xs text-slate-500">Pacientes, agenda, historias, evaluaciones y facturación.</div>
+                </button>
+                <button onClick={() => choosePortal('programs')} className="rounded-xl border border-slate-200 p-4 text-left transition hover:border-toast-500">
+                  <div className="text-sm font-semibold">Programas de medición</div>
+                  <div className="text-xs text-slate-500">Encuestas de programa para empresas clientes.</div>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+      if (portal === 'programs') return programsView;
+    }
+
+    const withProgramsSwitch = (node: React.ReactElement) => programsAccess === 'BOTH' ? (
+      <div className="relative h-full">
+        {node}
+        <button onClick={() => choosePortal('programs')} className="absolute bottom-4 left-4 z-30 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Ir a Programas de medición</button>
+      </div>
+    ) : node;
+
     switch (currentUser.role) {
 
       // ── Nivel 1 ─────────────────────────────────────────────────────────────
       case 'CEO':
-        return <AdminPortal />;
+        return withProgramsSwitch(<AdminPortal />);
 
       // ── Nivel 2 ─────────────────────────────────────────────────────────────
       case 'DIRECTIVO':
-        return <AdminPortal />;
+        return withProgramsSwitch(<AdminPortal />);
 
       // ── Nivel 3 ─────────────────────────────────────────────────────────────
       case 'ESPECIALISTA_B2B':
-        return (
+        return withProgramsSwitch(
           <PsychologistPortal
             onOpenDrMindWithPatient={handleOpenDrMindWithPatient}
             workspaceContext={workspaceContext}
@@ -413,7 +511,7 @@ export default function App() {
 
       // ── Nivel 4 ─────────────────────────────────────────────────────────────
       case 'OPERATIVO':
-        return <AdminPortal />;
+        return withProgramsSwitch(<AdminPortal />);
 
       // ── Nivel 5: acceso DENEGADO al EHR interno ─────────────────────────────
       case 'USUARIO_B2C':
@@ -494,6 +592,12 @@ export default function App() {
   // puente — el flujo termina dentro de la app móvil. Por eso intenta abrirla y
   // muestra el código como salida cuando el enlace profundo no funciona.
   // ============================================================================
+  // PROGRAMAS DE MEDICIÓN — /programa/:token: un enlace general por corte, sin cuenta;
+  // el participante se identifica con su cédula (ver pages/ProgramParticipant.tsx).
+  if (window.location.pathname.startsWith('/programa/')) {
+    return <ProgramParticipant />;
+  }
+
   if (window.location.pathname.startsWith('/invitacion/')) {
     return <InvitationLanding />;
   }
