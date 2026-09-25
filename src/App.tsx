@@ -10,6 +10,9 @@ import Login from './pages/Login';
 import SignConsent from './pages/SignConsent';
 import CancelAppointment from './pages/CancelAppointment';
 import InvitationLanding from './pages/InvitationLanding';
+import ProgramParticipant from './pages/ProgramParticipant';
+import ProgramsPortal from './pages/ProgramsPortal';
+import { apiFetch } from './lib/apiClient';
 import AnswerAssessment from './pages/AnswerAssessment';
 import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
@@ -48,6 +51,30 @@ export default function App() {
 
   // Workspace Context State — Hybrid Clinical + Research
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>('clinical');
+
+  // Programas de medición: portal aparte, solo si el tenant lo tiene habilitado
+  // (Tenant.allowMeasurementPrograms) y el rol es CEO/DIRECTIVO. undefined =
+  // consultando; false = sin acceso. La elección clínico/programas se pregunta
+  // una vez por sesión de navegador y se olvida al cerrar sesión.
+  const [programsAccess, setProgramsAccess] = useState<boolean | undefined>(undefined);
+  const [portal, setPortal] = useState<'clinical' | 'programs' | null>(() => {
+    try { const v = sessionStorage.getItem('mind_portal'); return v === 'clinical' || v === 'programs' ? v : null; } catch { return null; }
+  });
+  useEffect(() => {
+    if (!currentUser || (currentUser.role !== 'CEO' && currentUser.role !== 'DIRECTIVO')) { setProgramsAccess(false); return; }
+    let cancelled = false;
+    setProgramsAccess(undefined);
+    apiFetch('/api/programs/capability')
+      .then((r) => (r.ok ? r.json() : { canManage: false }))
+      .then((c) => { if (!cancelled) setProgramsAccess(!!c.canManage); })
+      .catch(() => { if (!cancelled) setProgramsAccess(false); });
+    return () => { cancelled = true; };
+  }, [currentUser?.id, currentUser?.role]);
+
+  const choosePortal = (p: 'clinical' | 'programs') => {
+    setPortal(p);
+    try { sessionStorage.setItem('mind_portal', p); } catch { /* sin almacenamiento */ }
+  };
 
   // AI Assistant Drawer management
   const [isDrMindOpen, setIsDrMindOpen] = useState(false);
@@ -173,6 +200,9 @@ export default function App() {
     localStorage.removeItem('mind_token');
     localStorage.removeItem('mind_user');
     localStorage.removeItem('mind_must_change_pwd');
+    try { sessionStorage.removeItem('mind_portal'); } catch { /* sin almacenamiento */ }
+    setPortal(null);
+    setProgramsAccess(undefined);
     // Catálogos de convenios/especialistas/especialidades en caché de módulo
     // — si no se limpian acá, la próxima cuenta que entre en esta misma
     // pestaña (de OTRO tenant) puede seguir viéndolos hasta por 5 minutos.
@@ -410,15 +440,57 @@ export default function App() {
       );
     }
 
+    // ── Programas de medición: elegir portal ───────────────────────────────
+    if (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') {
+      if (programsAccess === undefined) {
+        return <div className="flex h-full items-center justify-center text-sm text-slate-500">Cargando…</div>;
+      }
+      if (programsAccess && portal === null) {
+        return (
+          <div className="flex h-full items-center justify-center bg-toast-50 px-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-charcoal-900">¿A qué portal quieres entrar?</h2>
+              <p className="mt-1 text-sm text-slate-500">Tu organización tiene habilitados ambos.</p>
+              <div className="mt-5 grid gap-3">
+                <button onClick={() => choosePortal('clinical')} className="rounded-xl border border-slate-200 p-4 text-left transition hover:border-toast-500">
+                  <div className="text-sm font-semibold">Portal clínico</div>
+                  <div className="text-xs text-slate-500">Pacientes, agenda, historias, evaluaciones y facturación.</div>
+                </button>
+                <button onClick={() => choosePortal('programs')} className="rounded-xl border border-slate-200 p-4 text-left transition hover:border-toast-500">
+                  <div className="text-sm font-semibold">Programas de medición</div>
+                  <div className="text-xs text-slate-500">Encuestas de programa para empresas clientes.</div>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+      if (programsAccess && portal === 'programs') {
+        return (
+          <div className="relative h-full">
+            <ProgramsPortal />
+            <button onClick={() => choosePortal('clinical')} className="absolute bottom-4 left-4 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Ir al portal clínico</button>
+          </div>
+        );
+      }
+    }
+
+    const withProgramsSwitch = (node: React.ReactElement) => programsAccess ? (
+      <div className="relative h-full">
+        {node}
+        <button onClick={() => choosePortal('programs')} className="absolute bottom-4 left-4 z-30 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Ir a Programas de medición</button>
+      </div>
+    ) : node;
+
     switch (currentUser.role) {
 
       // ── Nivel 1 ─────────────────────────────────────────────────────────────
       case 'CEO':
-        return <AdminPortal />;
+        return withProgramsSwitch(<AdminPortal />);
 
       // ── Nivel 2 ─────────────────────────────────────────────────────────────
       case 'DIRECTIVO':
-        return <AdminPortal />;
+        return withProgramsSwitch(<AdminPortal />);
 
       // ── Nivel 3 ─────────────────────────────────────────────────────────────
       case 'ESPECIALISTA_B2B':
@@ -513,6 +585,12 @@ export default function App() {
   // puente — el flujo termina dentro de la app móvil. Por eso intenta abrirla y
   // muestra el código como salida cuando el enlace profundo no funciona.
   // ============================================================================
+  // PROGRAMAS DE MEDICIÓN — /programa/:token: un enlace general por corte, sin cuenta;
+  // el participante se identifica con su cédula (ver pages/ProgramParticipant.tsx).
+  if (window.location.pathname.startsWith('/programa/')) {
+    return <ProgramParticipant />;
+  }
+
   if (window.location.pathname.startsWith('/invitacion/')) {
     return <InvitationLanding />;
   }
