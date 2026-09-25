@@ -43,7 +43,7 @@ interface PublicCtx {
   consent?: Consent;
 }
 
-type Stage = 'loading' | 'blocked' | 'welcome' | 'consent' | 'cedula' | 'form' | 'done';
+type Stage = 'loading' | 'blocked' | 'consent' | 'cedula' | 'form' | 'done';
 
 const SESSION_KEY = 'mind_program_session';
 const DEVICE_KEY = 'mind_program_device';
@@ -326,7 +326,7 @@ export default function ProgramParticipant() {
             return;
           } catch { dropSession(); }
         }
-        setStage('welcome');
+        setStage('consent');
       } catch (e) {
         setError((e as Error).message);
         setStage('blocked');
@@ -380,25 +380,6 @@ export default function ProgramParticipant() {
     );
   }
 
-  if (stage === 'welcome' && ctx?.welcome) {
-    return (
-      <Shell>
-        <div ref={topRef} />
-        <Card>
-          <p className="text-xs font-semibold uppercase tracking-wider text-toast-500">{ctx.program.clientName}</p>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight">{ctx.program.title}</h1>
-          <div className="mt-5 space-y-3 text-[15px] leading-relaxed text-charcoal-900/85">
-            {ctx.welcome.map((p, i) => <p key={i}>{p}</p>)}
-          </div>
-          <p className="mt-4 text-xs text-charcoal-900/50">Enlace disponible hasta el {formatDate(ctx.closesAt)}.</p>
-          <div className="mt-6 flex justify-end">
-            <PrimaryButton onClick={() => setStage('consent')}>Continuar <ArrowRight className="h-4 w-4" aria-hidden /></PrimaryButton>
-          </div>
-        </Card>
-      </Shell>
-    );
-  }
-
   if (stage === 'consent' && ctx?.consent) {
     const c = ctx.consent;
     const radio = (name: string, val: 'yes' | 'no' | null, set: (v: 'yes' | 'no') => void, yes: string, no: string) => (
@@ -447,10 +428,7 @@ export default function ProgramParticipant() {
             <p className="mt-3 text-sm text-charcoal-900/70">{c.authorization2.note}</p>
           </div>
 
-          <div className="mt-6 flex items-center justify-between">
-            <button type="button" onClick={() => setStage('welcome')} className="inline-flex items-center gap-1 text-sm text-charcoal-900/60 hover:text-charcoal-900">
-              <ArrowLeft className="h-4 w-4" aria-hidden /> Atrás
-            </button>
+          <div className="mt-6 flex items-center justify-end">
             <PrimaryButton disabled={auth1 !== 'yes' || auth2 === null} onClick={() => { setError(null); setStage('cedula'); }}>
               Continuar <ArrowRight className="h-4 w-4" aria-hidden />
             </PrimaryButton>
@@ -578,7 +556,7 @@ export default function ProgramParticipant() {
         await goToStep(r.state, session);
       } catch (e) {
         const err = e as ApiError;
-        if (err.code === 'SESSION_INVALID' || err.code?.startsWith('WAVE_')) { dropSession(); setStage('welcome'); }
+        if (err.code === 'SESSION_INVALID' || err.code?.startsWith('WAVE_')) { dropSession(); setStage('consent'); }
         setError(err.message);
       } finally {
         setBusy(false);
