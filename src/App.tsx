@@ -12,7 +12,6 @@ import CancelAppointment from './pages/CancelAppointment';
 import InvitationLanding from './pages/InvitationLanding';
 import ProgramParticipant from './pages/ProgramParticipant';
 import ProgramsPortal from './pages/ProgramsPortal';
-import { apiFetch } from './lib/apiClient';
 import AnswerAssessment from './pages/AnswerAssessment';
 import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
@@ -52,24 +51,16 @@ export default function App() {
   // Workspace Context State — Hybrid Clinical + Research
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>('clinical');
 
-  // Programas de medición: portal aparte, solo si el tenant lo tiene habilitado
-  // (Tenant.allowMeasurementPrograms) y el rol es CEO/DIRECTIVO. undefined =
-  // consultando; false = sin acceso. La elección clínico/programas se pregunta
-  // una vez por sesión de navegador y se olvida al cerrar sesión.
-  const [programsAccess, setProgramsAccess] = useState<boolean | undefined>(undefined);
+  // Programas de medición: acceso POR PERSONA (User.programsAccess, lo otorga un
+  // CEO desde AdminCenter) sobre un socio con Tenant.allowMeasurementPrograms.
+  //   NONE = solo clínico · BOTH = elige portal en el login · ONLY = solo programas.
+  // El servidor es quien manda (403 si no corresponde); esto solo decide qué pintar.
+  const programsAccess: 'NONE' | 'BOTH' | 'ONLY' =
+    currentUser?.programsEnabled ? (currentUser.programsAccess ?? 'NONE') : 'NONE';
+  const programsBlocked = currentUser?.programsAccess === 'ONLY' && !currentUser.programsEnabled;
   const [portal, setPortal] = useState<'clinical' | 'programs' | null>(() => {
     try { const v = sessionStorage.getItem('mind_portal'); return v === 'clinical' || v === 'programs' ? v : null; } catch { return null; }
   });
-  useEffect(() => {
-    if (!currentUser || (currentUser.role !== 'CEO' && currentUser.role !== 'DIRECTIVO')) { setProgramsAccess(false); return; }
-    let cancelled = false;
-    setProgramsAccess(undefined);
-    apiFetch('/api/programs/capability')
-      .then((r) => (r.ok ? r.json() : { canManage: false }))
-      .then((c) => { if (!cancelled) setProgramsAccess(!!c.canManage); })
-      .catch(() => { if (!cancelled) setProgramsAccess(false); });
-    return () => { cancelled = true; };
-  }, [currentUser?.id, currentUser?.role]);
 
   const choosePortal = (p: 'clinical' | 'programs') => {
     setPortal(p);
@@ -145,6 +136,8 @@ export default function App() {
             specialty: syncData.specialty ?? prev.specialty,
             level: syncData.level ?? prev.level,
             avatarUrl: syncData.avatarUrl ?? undefined,
+            programsAccess: syncData.programsAccess ?? prev.programsAccess,
+            programsEnabled: syncData.programsEnabled ?? prev.programsEnabled,
           };
           // Persistir el usuario actualizado en localStorage
           localStorage.setItem('mind_user', JSON.stringify(updatedUser));
@@ -202,7 +195,6 @@ export default function App() {
     localStorage.removeItem('mind_must_change_pwd');
     try { sessionStorage.removeItem('mind_portal'); } catch { /* sin almacenamiento */ }
     setPortal(null);
-    setProgramsAccess(undefined);
     // Catálogos de convenios/especialistas/especialidades en caché de módulo
     // — si no se limpian acá, la próxima cuenta que entre en esta misma
     // pestaña (de OTRO tenant) puede seguir viéndolos hasta por 5 minutos.
@@ -407,8 +399,9 @@ export default function App() {
     if (!currentUser) {
       return (
         <Login
-          onLoginSuccess={(user, isTempPassword) => {
+          onLoginSuccess={(user, isTempPassword, chosenPortal) => {
             handleLoginSuccess(user);
+            if (chosenPortal) choosePortal(chosenPortal);
             if (isTempPassword) {
               localStorage.setItem('mind_must_change_pwd', 'true');
               setMustChangePassword(true);
@@ -440,17 +433,38 @@ export default function App() {
       );
     }
 
-    // ── Programas de medición: elegir portal ───────────────────────────────
-    if (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') {
-      if (programsAccess === undefined) {
-        return <div className="flex h-full items-center justify-center text-sm text-slate-500">Cargando…</div>;
-      }
-      if (programsAccess && portal === null) {
+    // ── Programas de medición ──────────────────────────────────────────────
+    if (programsBlocked) {
+      return (
+        <div className="flex h-full items-center justify-center bg-toast-50 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+            <h2 className="text-lg font-semibold text-charcoal-900">Programas de medición no disponible</h2>
+            <p className="mt-2 text-sm text-slate-500">Tu cuenta es solo de Programas de medición, pero tu organización no lo tiene habilitado. Contacta a MindPsic.</p>
+            <button onClick={handleLogout} className="mt-5 rounded-xl border border-slate-200 px-4 py-2 text-xs font-medium hover:bg-slate-50">Cerrar sesión</button>
+          </div>
+        </div>
+      );
+    }
+    const programsView = (
+      <div className="relative h-full">
+        <ProgramsPortal />
+        <div className="absolute bottom-4 left-4 flex gap-2">
+          {programsAccess === 'BOTH' && (
+            <button onClick={() => choosePortal('clinical')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Ir al portal clínico</button>
+          )}
+          <button onClick={handleLogout} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Cerrar sesión</button>
+        </div>
+      </div>
+    );
+    if (programsAccess === 'ONLY') return programsView;
+    if (programsAccess === 'BOTH') {
+      // Normalmente el portal ya se eligió en el login; esto cubre una sesión
+      // restaurada en otra pestaña (sessionStorage vacío).
+      if (portal === null) {
         return (
           <div className="flex h-full items-center justify-center bg-toast-50 px-4">
             <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
               <h2 className="text-lg font-semibold text-charcoal-900">¿A qué portal quieres entrar?</h2>
-              <p className="mt-1 text-sm text-slate-500">Tu organización tiene habilitados ambos.</p>
               <div className="mt-5 grid gap-3">
                 <button onClick={() => choosePortal('clinical')} className="rounded-xl border border-slate-200 p-4 text-left transition hover:border-toast-500">
                   <div className="text-sm font-semibold">Portal clínico</div>
@@ -465,17 +479,10 @@ export default function App() {
           </div>
         );
       }
-      if (programsAccess && portal === 'programs') {
-        return (
-          <div className="relative h-full">
-            <ProgramsPortal />
-            <button onClick={() => choosePortal('clinical')} className="absolute bottom-4 left-4 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Ir al portal clínico</button>
-          </div>
-        );
-      }
+      if (portal === 'programs') return programsView;
     }
 
-    const withProgramsSwitch = (node: React.ReactElement) => programsAccess ? (
+    const withProgramsSwitch = (node: React.ReactElement) => programsAccess === 'BOTH' ? (
       <div className="relative h-full">
         {node}
         <button onClick={() => choosePortal('programs')} className="absolute bottom-4 left-4 z-30 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Ir a Programas de medición</button>
@@ -494,7 +501,7 @@ export default function App() {
 
       // ── Nivel 3 ─────────────────────────────────────────────────────────────
       case 'ESPECIALISTA_B2B':
-        return (
+        return withProgramsSwitch(
           <PsychologistPortal
             onOpenDrMindWithPatient={handleOpenDrMindWithPatient}
             workspaceContext={workspaceContext}
@@ -504,7 +511,7 @@ export default function App() {
 
       // ── Nivel 4 ─────────────────────────────────────────────────────────────
       case 'OPERATIVO':
-        return <AdminPortal />;
+        return withProgramsSwitch(<AdminPortal />);
 
       // ── Nivel 5: acceso DENEGADO al EHR interno ─────────────────────────────
       case 'USUARIO_B2C':
