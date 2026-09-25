@@ -77,6 +77,9 @@ export interface User {
   // session-change.service.js en el backend) — controla si ve el toggle en
   // Equipo y Accesos y el ítem de menú "Aprobaciones".
   canApproveSessionChanges?: boolean;
+  // Acceso a Programas de medición (lo otorga un CEO) y si el socio los tiene habilitados.
+  programsAccess?: 'NONE' | 'BOTH' | 'ONLY';
+  programsEnabled?: boolean;
 }
 
 export interface Patient {
