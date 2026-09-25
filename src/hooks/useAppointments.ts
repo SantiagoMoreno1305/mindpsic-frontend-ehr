@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { BackendAppointment } from '../types';
+import { getApiBase } from '../lib/apiClient';
 
 export function useAppointments(token: string | null) {
   const [appointments, setAppointments] = useState<BackendAppointment[]>([]);
@@ -13,7 +14,7 @@ export function useAppointments(token: string | null) {
     }
     try {
       setLoading(true);
-      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:9000';
+      const apiBase = getApiBase();
       const res = await fetch(`${apiBase}/api/appointments`, {
         headers: { Authorization: `Bearer ${token}` },
       });

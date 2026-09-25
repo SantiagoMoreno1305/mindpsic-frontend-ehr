@@ -18,7 +18,7 @@
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { toast } from 'react-hot-toast';
 import { X, Plus, Pencil, Video, Building2, Link2, CalendarClock, User } from 'lucide-react';
-import { apiFetch } from '../lib/apiClient';
+import { apiFetch, getApiBase } from '../lib/apiClient';
 import { getCompaniesCached, type CompanyRecord } from '../hooks/useCompanies';
 import PsychologistAvailabilityGrid from './PsychologistAvailabilityGrid';
 
@@ -90,6 +90,12 @@ interface ScheduleSummary {
   activeAuthorization: ActiveAuthorization | null;
   sessionsTaken: number;
   sessionsRemaining: number | null;
+  // Solo relevante para ESPECIALISTA_B2B: true si Tenant.
+  // allowSpecialistSelfAuthorizeSessions está activo Y este paciente es
+  // propio (Patient.psychologistId === el especialista logueado) — lo
+  // calcula el backend (getScheduleSummary) para que el modal no tenga que
+  // duplicar esa regla acá.
+  canCallerSelfAuthorizeSessions: boolean;
   appointments: ScheduleSummaryAppointment[];
 }
 
@@ -188,6 +194,15 @@ let cargaEnVuelo: Promise<SelectoresData> | null = null;
 
 const cacheEsValida = (): boolean =>
   !!selectoresCache && Date.now() - selectoresCache.ts < SELECTORES_CACHE_TTL_MS;
+
+// Se llama al iniciar/cerrar sesión (ver Login.tsx/App.tsx) — sin esto, un
+// cambio de tenant/usuario dentro de la misma pestaña (sin recargar la
+// página) podía seguir sirviendo especialistas/convenios/especialidades del
+// tenant ANTERIOR durante hasta 5 minutos: el caché vive a nivel de módulo,
+// no se resetea solo con un remount de React.
+export function invalidateSelectoresCache(): void {
+  selectoresCache = null;
+}
 
 // NOTA: los pacientes NO se precargan/cachean aquí a propósito — a diferencia
 // de especialistas/convenios/especialidades (catálogos acotados al tamaño del
@@ -357,10 +372,25 @@ export default function DelegatedAppointmentModal({
   // cambiar de convenio) — un solo flujo, ver POST .../authorize-sessions.
   // Mismo convenio del lote activo = suma; convenio distinto = cierra el
   // lote actual (pierde lo que le quedaba) y abre uno nuevo.
+  //
+  // Este endpoint YA NO aplica el cambio directo — arma una solicitud y
+  // manda un código de confirmación a un "aprobador" elegido (control de dos
+  // personas, ver session-change.service.js en el backend). El cambio real
+  // solo ocurre al verificar ese código.
   const [authCompanyId, setAuthCompanyId] = useState('');
   const [authSessionsInput, setAuthSessionsInput] = useState('');
   const [authLibres, setAuthLibres] = useState(false);
+  // 'SUBTRACT' corrige el caso real de "me equivoqué y agregué de más" — ver
+  // applySessionSubtraction en el backend. Solo aplica sobre el lote VIGENTE
+  // del paciente, así que no tiene sentido combinarlo con "Libres (sin tope)".
+  const [authChangeType, setAuthChangeType] = useState<'ADD' | 'SUBTRACT'>('ADD');
   const [authorizingSessions, setAuthorizingSessions] = useState(false);
+  const [approvers, setApprovers] = useState<{ id: string; name: string; email: string }[]>([]);
+  const [authApproverId, setAuthApproverId] = useState('');
+  const [pendingChangeRequestId, setPendingChangeRequestId] = useState<string | null>(null);
+  const [pendingChangeExpiresInMinutes, setPendingChangeExpiresInMinutes] = useState<number | null>(null);
+  const [verifyCodeInput, setVerifyCodeInput] = useState('');
+  const [verifyingCode, setVerifyingCode] = useState(false);
   // Fuerza mostrar el formulario de autorizar aunque todavía queden sesiones
   // disponibles (para cambiar de convenio de forma proactiva, no solo al agotar).
   const [showAuthForm, setShowAuthForm] = useState(false);
@@ -494,7 +524,12 @@ export default function DelegatedAppointmentModal({
     setAuthCompanyId('');
     setAuthSessionsInput('');
     setAuthLibres(false);
+    setAuthChangeType('ADD');
     setShowAuthForm(false);
+    setAuthApproverId('');
+    setPendingChangeRequestId(null);
+    setPendingChangeExpiresInMinutes(null);
+    setVerifyCodeInput('');
     lastAutoSizedPatientId.current = null;
   }, [initialData, isOpen]);
 
@@ -502,6 +537,20 @@ export default function DelegatedAppointmentModal({
   useEffect(() => {
     if (!isOpen) return;
     fetchSelectorsData();
+  }, [isOpen]);
+
+  // Aprobadores elegibles (User.canApproveSessionChanges) para el
+  // desplegable "¿A quién le llega el código?" — solo tiene sentido pedirlo
+  // si el caller de verdad puede autorizar sesiones. Usa getStoredUser()
+  // directo (no la constante canAuthorizeSessions de más abajo, declarada
+  // después en el render) para no depender del orden de declaración.
+  useEffect(() => {
+    const role = getStoredUser()?.role;
+    if (!isOpen || (role !== 'CEO' && role !== 'DIRECTIVO')) return;
+    apiFetch('/api/session-changes/approvers')
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => setApprovers(Array.isArray(data) ? data : []))
+      .catch(() => setApprovers([]));
   }, [isOpen]);
 
   /**
@@ -644,7 +693,7 @@ export default function DelegatedAppointmentModal({
 
     try {
       const token  = localStorage.getItem('mind_token');
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const selectedCompany = companies.find(c => c.name === form.corporateClient);
 
       // ── Reprogramación (edición de una cita existente) ──────────────────
@@ -806,7 +855,7 @@ export default function DelegatedAppointmentModal({
     setIsProvisioning(true);
     try {
       const token  = localStorage.getItem('mind_token');
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const selectedCompany = companies.find((c) => c.name === form.corporateClient);
       const res = await fetch(`${apiUrl}/api/patients`, {
         method: 'POST',
@@ -892,66 +941,141 @@ export default function DelegatedAppointmentModal({
     setAuthCompanyId('');
     setAuthSessionsInput('');
     setAuthLibres(false);
+    setAuthChangeType('ADD');
     setShowAuthForm(false);
+    setAuthApproverId('');
+    setPendingChangeRequestId(null);
+    setPendingChangeExpiresInMinutes(null);
+    setVerifyCodeInput('');
     lastAutoSizedPatientId.current = null;
     onClose();
   };
 
-  // ── Autorizar sesiones (crear el primer lote / ampliar el vigente /
-  // cambiar de convenio) — un solo flujo, ver POST .../authorize-sessions.
-  // El backend decide si suma al lote activo (mismo convenio) o cierra el
-  // actual y abre uno nuevo (convenio distinto).
-  const handleAuthorizeSessions = async () => {
-    if (!authCompanyId) {
-      toast.error('Selecciona el convenio con el que se autorizan estas sesiones.');
-      return;
+  // Refresca la ficha del paciente y limpia el formulario de autorización
+  // tras un cambio de cupo YA aplicado — usado tanto por el camino directo
+  // (self-authorize, ver handleAuthorizeSessions) como por la verificación
+  // del código del camino normal (ver handleVerifySessionChange). Antes esta
+  // lógica solo vivía dentro de handleVerifySessionChange; se extrajo para
+  // no duplicarla entre los dos caminos.
+  const refreshAfterSessionChange = async (result: { renewed: boolean; closedReason: string | null; companyName: string }) => {
+    const summaryRes = await apiFetch(`/api/patients/${form.patientId}/schedule-summary`);
+    if (summaryRes.ok) {
+      const data: ScheduleSummary = await summaryRes.json();
+      setScheduleSummary(data);
+      setForm((prev) => ({ ...prev, corporateClient: data.patient.companyName || prev.corporateClient }));
+      // Amplía slotDates para cubrir el cupo TOTAL ya disponible (no solo lo
+      // recién autorizado en esta pasada) sin perder las fechas que el
+      // administrativo ya había llenado antes de autorizar — así se puede
+      // autorizar de a poco (p. ej. 1 y luego 1 más) sin perder el avance.
+      setSlotDates((prev) => {
+        const filledCount = prev.filter(Boolean).length;
+        const target = data.sessionsRemaining === null
+          ? Math.max(filledCount, 1)
+          : Math.max(data.sessionsRemaining, filledCount, 1);
+        return resizeSlotDates(prev, target);
+      });
     }
+
+    setAuthSessionsInput('');
+    setAuthLibres(false);
+    setAuthChangeType('ADD');
+    setAuthApproverId('');
+    setPendingChangeRequestId(null);
+    setPendingChangeExpiresInMinutes(null);
+    setVerifyCodeInput('');
+    setShowAuthForm(false);
+    toast.success(
+      result.renewed
+        ? `Lote anterior cerrado (${result.closedReason}) — nuevas sesiones autorizadas con ${result.companyName}.`
+        : `Sesiones autorizadas con ${result.companyName}.`
+    );
+  };
+
+  // ── Autorizar sesiones (crear el primer lote / ampliar el vigente /
+  // cambiar de convenio). Dos caminos, según lo que devuelva el backend:
+  //   - { applied: true, ... } — especialista con self-authorize activo
+  //     sobre su propio paciente: el cambio YA se aplicó, sin código ni
+  //     aprobador (ver Tenant.allowSpecialistSelfAuthorizeSessions).
+  //   - { requestId, expiresInMinutes } — camino normal: arma la solicitud y
+  //     manda el código al aprobador elegido (ver handleVerifySessionChange,
+  //     que es quien de verdad aplica el cambio una vez el código coincide).
+  const handleAuthorizeSessions = async () => {
     const n = Number(authSessionsInput);
-    if (!authLibres && (!Number.isInteger(n) || n <= 0)) {
-      toast.error('Ingresa un número entero de sesiones mayor a 0 (o marca "sesiones libres").');
+    if (authChangeType === 'SUBTRACT') {
+      if (!Number.isInteger(n) || n <= 0) {
+        toast.error('Ingresa un número entero de sesiones a restar mayor a 0.');
+        return;
+      }
+    } else {
+      if (!authCompanyId) {
+        toast.error('Selecciona el convenio con el que se autorizan estas sesiones.');
+        return;
+      }
+      if (!authLibres && (!Number.isInteger(n) || n <= 0)) {
+        toast.error('Ingresa un número entero de sesiones mayor a 0 (o marca "sesiones libres").');
+        return;
+      }
+    }
+    if (!isSelfAuthorize && !authApproverId) {
+      toast.error('Elige a quién le va a llegar el código de confirmación.');
       return;
     }
     setAuthorizingSessions(true);
     try {
       const res = await apiFetch(`/api/patients/${form.patientId}/authorize-sessions`, {
         method: 'POST',
-        body: JSON.stringify({ companyId: authCompanyId, unlimited: authLibres, sessionsAuthorized: authLibres ? undefined : n }),
+        body: JSON.stringify({
+          changeType: authChangeType,
+          ...(authChangeType === 'SUBTRACT'
+            ? { sessionsAuthorized: n }
+            : { companyId: authCompanyId, unlimited: authLibres, sessionsAuthorized: authLibres ? undefined : n }),
+          ...(isSelfAuthorize ? {} : { approverId: authApproverId }),
+        }),
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || `HTTP ${res.status}`);
       }
-      const result = await res.json();
-
-      const summaryRes = await apiFetch(`/api/patients/${form.patientId}/schedule-summary`);
-      if (summaryRes.ok) {
-        const data: ScheduleSummary = await summaryRes.json();
-        setScheduleSummary(data);
-        setForm((prev) => ({ ...prev, corporateClient: data.patient.companyName || prev.corporateClient }));
-        // Amplía slotDates para cubrir el cupo TOTAL ya disponible (no solo lo
-        // recién autorizado en esta pasada) sin perder las fechas que el
-        // administrativo ya había llenado antes de autorizar — así se puede
-        // autorizar de a poco (p. ej. 1 y luego 1 más) sin perder el avance.
-        setSlotDates((prev) => {
-          const filledCount = prev.filter(Boolean).length;
-          const target = data.sessionsRemaining === null
-            ? Math.max(filledCount, 1)
-            : Math.max(data.sessionsRemaining, filledCount, 1);
-          return resizeSlotDates(prev, target);
-        });
+      const data = await res.json();
+      if (data.applied) {
+        await refreshAfterSessionChange(data);
+        return;
       }
-
-      setAuthSessionsInput('');
-      setAuthLibres(false);
-      toast.success(
-        result.renewed
-          ? `Lote anterior cerrado (${result.closedReason}) — nuevas sesiones autorizadas con ${result.companyName}.`
-          : `Sesiones autorizadas con ${result.companyName}.`
-      );
+      const { requestId, expiresInMinutes } = data;
+      setPendingChangeRequestId(requestId);
+      setPendingChangeExpiresInMinutes(expiresInMinutes);
+      const approverName = approvers.find((a) => a.id === authApproverId)?.name || 'el aprobador elegido';
+      toast.success(`Código enviado a ${approverName} — pídele que te lo dicte.`);
     } catch (err: any) {
-      toast.error(`Error al autorizar sesiones: ${err.message}`);
+      toast.error(`Error al solicitar la autorización: ${err.message}`);
     } finally {
       setAuthorizingSessions(false);
+    }
+  };
+
+  // Verifica el código que el aprobador dictó — solo acá se aplica el
+  // cambio real (ver POST /api/session-changes/verify en el backend).
+  const handleVerifySessionChange = async () => {
+    if (!pendingChangeRequestId || !verifyCodeInput.trim()) {
+      toast.error('Ingresa el código que te dictaron.');
+      return;
+    }
+    setVerifyingCode(true);
+    try {
+      const res = await apiFetch('/api/session-changes/verify', {
+        method: 'POST',
+        body: JSON.stringify({ requestId: pendingChangeRequestId, code: verifyCodeInput.trim() }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+      const { result } = await res.json();
+      await refreshAfterSessionChange(result);
+    } catch (err: any) {
+      toast.error(`Error al verificar el código: ${err.message}`);
+    } finally {
+      setVerifyingCode(false);
     }
   };
 
@@ -988,7 +1112,7 @@ export default function DelegatedAppointmentModal({
     setIsProvisioning(true);
     try {
       const token  = localStorage.getItem('mind_token');
-      const apiUrl = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+      const apiUrl = getApiBase();
       const res = await fetch(`${apiUrl}/api/patients/${form.patientId}`, {
         method: 'PUT',
         headers: {
@@ -1053,13 +1177,17 @@ export default function DelegatedAppointmentModal({
   const remainingSessions = scheduleSummary?.sessionsRemaining ?? 0;
   // Autorizar sesiones (agregar cupo o dejarlo "libre") es una decisión
   // administrativa/financiera, no clínica — un psicólogo puede AGENDAR si
-  // ya hay cupo disponible, pero no crear cupo nuevo. El backend ya lo
-  // rechaza (403) igual, esto es solo para no mostrar un formulario que de
-  // todos modos va a fallar. Mismo patrón de lectura de rol que el resto
-  // del EHR (localStorage.mind_user), sin necesidad de pasar un prop nuevo
-  // desde los dos portales que usan este modal.
+  // ya hay cupo disponible, pero no crear cupo nuevo, SALVO que su tenant
+  // active allowSpecialistSelfAuthorizeSessions para sus propios pacientes
+  // (ver canCallerSelfAuthorizeSessions, ya calculado por el backend en
+  // schedule-summary). El backend ya lo rechaza (403) igual, esto es solo
+  // para no mostrar un formulario que de todos modos va a fallar. Mismo
+  // patrón de lectura de rol que el resto del EHR (localStorage.mind_user),
+  // sin necesidad de pasar un prop nuevo desde los dos portales que usan
+  // este modal.
   const storedUser = getStoredUser();
-  const canAuthorizeSessions = storedUser?.role === 'CEO' || storedUser?.role === 'DIRECTIVO';
+  const isSelfAuthorize = !!scheduleSummary?.canCallerSelfAuthorizeSessions;
+  const canAuthorizeSessions = storedUser?.role === 'CEO' || storedUser?.role === 'DIRECTIVO' || isSelfAuthorize;
   // Un especialista solo puede agendarse a sí mismo — nunca debe ver (ni
   // poder elegir) a los demás psicólogos del tenant en este selector, aunque
   // el endpoint /api/users/specialists sí le traiga la lista completa (la
@@ -1088,8 +1216,55 @@ export default function DelegatedAppointmentModal({
     <div className="rounded-lg border border-slate-200 bg-slate-100 p-2.5 text-[11px] leading-relaxed text-slate-500">
       No puedes agregar sesiones — contacta al centro administrativo.
     </div>
+  ) : pendingChangeRequestId ? (
+    // Código ya enviado al aprobador elegido — este paso solo verifica lo
+    // que él dicte, no aplica nada por sí mismo.
+    <div className="space-y-1.5 rounded-lg border border-indigo-200 bg-indigo-50 p-2.5">
+      <p className="text-[11px] font-semibold text-indigo-700">
+        Código enviado{pendingChangeExpiresInMinutes ? ` — vence en ${pendingChangeExpiresInMinutes} min` : ''}. Pídele el código a quien lo recibió.
+      </p>
+      <div className="flex items-center gap-1.5">
+        <input
+          type="text" inputMode="numeric" maxLength={6} value={verifyCodeInput}
+          onChange={(e) => setVerifyCodeInput(e.target.value.replace(/\D/g, ''))}
+          placeholder="Código de 6 dígitos"
+          className="min-w-0 flex-1 border border-indigo-300 rounded-lg p-2 text-xs font-mono tracking-widest focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+        />
+        <button
+          type="button"
+          onClick={handleVerifySessionChange}
+          disabled={verifyingCode}
+          className="shrink-0 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold px-2.5 py-2 disabled:opacity-50"
+        >
+          {verifyingCode ? '...' : 'Confirmar'}
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={() => { setPendingChangeRequestId(null); setPendingChangeExpiresInMinutes(null); setVerifyCodeInput(''); }}
+        className="text-[10px] font-semibold text-slate-500 hover:text-slate-700"
+      >
+        Cancelar y pedir un código nuevo
+      </button>
+    </div>
   ) : (
     <div className="space-y-1.5">
+      <div className="flex overflow-hidden rounded-lg border border-slate-200 text-[10px] font-bold">
+        <button
+          type="button"
+          onClick={() => setAuthChangeType('ADD')}
+          className={`flex-1 py-1.5 transition-colors ${authChangeType === 'ADD' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
+        >
+          Agregar
+        </button>
+        <button
+          type="button"
+          onClick={() => { setAuthChangeType('SUBTRACT'); setAuthLibres(false); }}
+          className={`flex-1 py-1.5 transition-colors ${authChangeType === 'SUBTRACT' ? 'bg-rose-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
+        >
+          Restar
+        </button>
+      </div>
       <div className="flex items-center gap-1.5">
         {authLibres ? (
           <div className="flex-1 rounded-lg border border-emerald-300 bg-emerald-50 p-2 text-xs font-semibold text-emerald-700">Libres</div>
@@ -1103,17 +1278,46 @@ export default function DelegatedAppointmentModal({
         )}
         <button
           type="button"
-          onClick={() => { void handleAuthorizeSessions().then(() => setShowAuthForm(false)); }}
+          onClick={handleAuthorizeSessions}
           disabled={authorizingSessions}
-          className="shrink-0 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold px-2.5 py-2 disabled:opacity-50"
+          className={`shrink-0 rounded-lg text-white text-[11px] font-bold px-2.5 py-2 disabled:opacity-50 ${authChangeType === 'SUBTRACT' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}
         >
-          {authorizingSessions ? '...' : 'Agregar sesión'}
+          {authorizingSessions
+            ? '...'
+            : !isSelfAuthorize
+              ? 'Solicitar código'
+              : authChangeType === 'SUBTRACT' ? 'Restar sesiones' : 'Agregar sesiones'}
         </button>
       </div>
-      <label className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500">
-        <input type="checkbox" checked={authLibres} onChange={(e) => { setAuthLibres(e.target.checked); if (e.target.checked) setAuthSessionsInput(''); }} />
-        Libres (sin tope)
-      </label>
+      {authChangeType === 'ADD' && (
+        <label className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500">
+          <input type="checkbox" checked={authLibres} onChange={(e) => { setAuthLibres(e.target.checked); if (e.target.checked) setAuthSessionsInput(''); }} />
+          Libres (sin tope)
+        </label>
+      )}
+      {isSelfAuthorize ? (
+        <p className="text-[10px] text-emerald-600">
+          {authChangeType === 'SUBTRACT' ? 'Resta sesiones de tu paciente' : 'Agrega sesiones a tu paciente'}
+        </p>
+      ) : (
+        <>
+          <select
+            value={authApproverId}
+            onChange={(e) => setAuthApproverId(e.target.value)}
+            className="w-full border border-slate-200 rounded-lg p-2 text-[11px] focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+          >
+            <option value="">¿A quién le llega el código?</option>
+            {approvers.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
+          {approvers.length === 0 && (
+            <p className="text-[10px] text-amber-600">
+              Nadie en tu equipo tiene el permiso de aprobador todavía — actívalo desde Equipo y Accesos.
+            </p>
+          )}
+        </>
+      )}
     </div>
   );
 
@@ -1442,7 +1646,10 @@ export default function DelegatedAppointmentModal({
                     <div className={lockedBoxClass}>
                       {!activeAuth ? 'Sin autorización vigente' : isUnlimitedAuth ? `Libres - ${activeAuth.companyName}` : `${remainingSessions} disponibles - ${activeAuth.companyName}`}
                     </div>
-                  ) : !hasUsableBatch || showAuthForm ? (
+                  ) : (!hasUsableBatch || showAuthForm) && !(hasUsableBatch && showAuthForm && authChangeType === 'SUBTRACT') ? (
+                    // "Restar" siempre opera sobre el convenio del lote vigente — nunca
+                    // deja elegir otro, a diferencia de "Agregar" (que sí puede abrir un
+                    // lote nuevo con un convenio distinto).
                     companySelect
                   ) : (
                     <div className={lockedBoxClass}>
@@ -1503,7 +1710,12 @@ export default function DelegatedAppointmentModal({
                     ) : showAuthForm ? (
                       <div>
                         <div className="mb-1.5 flex items-center justify-between">
-                          <span className="text-[10px] text-slate-400">Convenio distinto = cierra el lote actual (pierde lo que quede).</span>
+                          {/* La advertencia de cierre de lote solo aplica a "Agregar" con
+                              convenio distinto — "Restar" nunca cierra ni cambia convenio,
+                              mostrarla ahí sería confuso (ver authChangeType arriba). */}
+                          <span className="text-[10px] text-slate-400">
+                            {authChangeType === 'SUBTRACT' ? 'Ajusta el cupo del lote vigente.' : 'Convenio distinto = cierra el lote actual (pierde lo que quede).'}
+                          </span>
                           <button type="button" onClick={() => setShowAuthForm(false)} className="text-[10px] font-semibold text-slate-400 hover:text-slate-600">Cancelar</button>
                         </div>
                         {authorizeControls}
@@ -1524,7 +1736,7 @@ export default function DelegatedAppointmentModal({
                           onClick={() => setShowAuthForm(true)}
                           className="mt-1.5 text-[10px] font-semibold text-indigo-600 hover:text-indigo-800"
                         >
-                          Cambiar de convenio
+                          Agregar o restar sesiones
                         </button>
                       </>
                     )}

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import ClinicalHistoryEditor from './ClinicalHistoryEditor';
 import ClinicalAttachments from './ClinicalAttachments';
+import { getApiBase } from '../../lib/apiClient';
 import InitialAssessmentWizard from './InitialAssessmentWizard';
 import PatientInvitationCard from './PatientInvitationCard';
 import AssessmentRunner from './AssessmentRunner';
@@ -100,6 +101,10 @@ interface InitialAssessmentData {
   estrato?: number | null;
   telefono?: string | null;
   telefonoEmergencia?: string | null;
+  contactoEmergenciaNombres?: string | null;
+  contactoEmergenciaApellidos?: string | null;
+  contactoEmergenciaTelefono?: string | null;
+  contactoEmergenciaParentesco?: string | null;
   requiereRepresentanteLegal: boolean;
   legalRep1Nombres?: string | null;
   legalRep1Apellidos?: string | null;
@@ -167,7 +172,7 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 function apiBase() {
-  return import.meta.env.VITE_API_URL || 'http://localhost:9000';
+  return getApiBase();
 }
 
 function authHeaders() {
@@ -856,7 +861,14 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
           <InfoRow label="Estudia actualmente" value={patient.estudiaActualmente ? `Sí — ${[patient.semestreGradoTrimestre, patient.carrera].filter(Boolean).join(', ')}` : 'No'} />
           <InfoRow label="Correo electrónico" value={patient.email} />
           <InfoRow label="Teléfono" value={patient.phone} />
-          <InfoRow label="Contacto de emergencia" value={a.telefonoEmergencia} />
+          {/* contactoEmergencia* reemplazó al antiguo telefonoEmergencia
+              (solo teléfono, sin nombre/parentesco) — ver comentario en
+              schema.prisma. Se conserva telefonoEmergencia como respaldo
+              para valoraciones firmadas antes de ese cambio, que nunca
+              llegaron a llenar los campos nuevos. */}
+          <InfoRow label="Contacto de emergencia" value={[a.contactoEmergenciaNombres, a.contactoEmergenciaApellidos].filter(Boolean).join(' ')} />
+          <InfoRow label="Teléfono de emergencia" value={a.contactoEmergenciaTelefono || a.telefonoEmergencia} />
+          <InfoRow label="Parentesco" value={a.contactoEmergenciaParentesco} />
           <InfoRow label="Dirección" value={[patient.direccionResidencia, patient.barrio].filter(Boolean).join(', ')} />
           <InfoRow label="Estrato" value={patient.estrato} />
         </div>
