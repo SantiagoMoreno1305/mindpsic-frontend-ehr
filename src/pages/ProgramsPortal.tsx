@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ClipboardList, Copy, Check, Plus, Loader2, Link2, Lock, CalendarClock, Download } from 'lucide-react';
 import { apiFetch } from '../lib/apiClient';
+import TrainingPortal from './TrainingPortal';
 
 interface Wave {
   id: string;
@@ -203,7 +204,12 @@ function WaveRow({ moment, wave, programId, onChanged }: { moment: typeof MOMENT
   );
 }
 
-export default function ProgramsPortal() {
+// Renombrado de `ProgramsPortal` a `MeasurementProgramsTab` — sin tocar NADA
+// de su lógica ni su JSX interno (ver charla: "no te metas con lo ya
+// construido anteriormente"). El nuevo default export de abajo es solo un
+// selector de pestañas que pone esto al lado de Capacitaciones, ambos bajo
+// el mismo permiso de "Programas de investigación".
+function MeasurementProgramsTab() {
   const [programs, setPrograms] = useState<Program[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -288,6 +294,36 @@ export default function ProgramsPortal() {
             </section>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+export default function ProgramsPortal() {
+  const [tab, setTab] = useState<'medicion' | 'capacitaciones'>('medicion');
+  const tabs: { id: typeof tab; label: string }[] = [
+    { id: 'medicion', label: 'Programas de medición' },
+    { id: 'capacitaciones', label: 'Capacitaciones' },
+  ];
+  return (
+    <div className="flex h-full flex-col bg-toast-50">
+      <div className="border-b border-slate-200 bg-white px-4 pt-3">
+        <div className="mx-auto flex max-w-3xl gap-1">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`rounded-t-lg px-4 py-2.5 text-sm font-semibold transition-colors ${
+                tab === t.id ? 'border-b-2 border-toast-500 text-charcoal-900' : 'text-slate-400 hover:text-slate-600'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="min-h-0 flex-1">
+        {tab === 'medicion' ? <MeasurementProgramsTab /> : <TrainingPortal />}
       </div>
     </div>
   );

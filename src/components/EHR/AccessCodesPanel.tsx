@@ -119,6 +119,11 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
   const [companyId, setCompanyId] = useState('');
   const [purpose, setPurpose] = useState<'LINEA247' | 'EVALUATION_CAMPAIGN'>('LINEA247');
   const [instrumentId, setInstrumentId] = useState('');
+  // Si se elige una oleada, ese instrumento manda y el selector de arriba
+  // se oculta — ver modules/research-projects (el código canjea la oleada,
+  // no un instrumento suelto).
+  const [researchWaveId, setResearchWaveId] = useState('');
+  const [researchWaves, setResearchWaves] = useState<{ id: string; label: string }[]>([]);
   const [name, setName] = useState('');
   const [customCode, setCustomCode] = useState('');
   const [maxUses, setMaxUses] = useState('');
@@ -154,12 +159,26 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
         setInstruments(list.filter((i: any) => i.modality !== 'heteroaplicada'));
       })
       .catch(() => setInstruments([]));
+    // Oleadas de proyectos de investigación (opcional, si el módulo está
+    // habilitado) — un 403/404 aquí no es un error visible, simplemente no
+    // hay nada que ofrecer en el selector.
+    apiFetch('/api/research-projects')
+      .then((res) => (res.ok ? res.json() : { projects: [] }))
+      .then((data) => {
+        const projects = Array.isArray(data?.projects) ? data.projects : [];
+        const waves = projects.flatMap((proj: any) =>
+          (proj.waves || []).map((w: any) => ({ id: w.id, label: `${proj.name} — ${w.name || `Oleada ${w.order + 1}`} (${w.instrument.code})` })),
+        );
+        setResearchWaves(waves);
+      })
+      .catch(() => setResearchWaves([]));
   }, []);
 
   function resetForm() {
     setCompanyId('');
     setPurpose('LINEA247');
     setInstrumentId('');
+    setResearchWaveId('');
     setName('');
     setCustomCode('');
     setMaxUses('');
@@ -181,8 +200,8 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
       setFormError('Elige un convenio/cliente.');
       return;
     }
-    if (purpose === 'EVALUATION_CAMPAIGN' && !instrumentId) {
-      setFormError('Elige qué instrumento se asigna con este código.');
+    if (purpose === 'EVALUATION_CAMPAIGN' && !instrumentId && !researchWaveId) {
+      setFormError('Elige qué instrumento se asigna con este código, o una oleada de investigación.');
       return;
     }
     setSubmitting(true);
@@ -193,7 +212,8 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
         body: JSON.stringify({
           companyId,
           purpose,
-          instrumentId: purpose === 'EVALUATION_CAMPAIGN' ? instrumentId : undefined,
+          instrumentId: purpose === 'EVALUATION_CAMPAIGN' && !researchWaveId ? instrumentId : undefined,
+          researchWaveId: purpose === 'EVALUATION_CAMPAIGN' ? researchWaveId || undefined : undefined,
           name: name.trim() || undefined,
           code: customCode.trim() || undefined,
           maxUses: maxUses.trim() || undefined,
@@ -501,14 +521,19 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
 
       {showForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+          <div className="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4">
               <h2 className="text-base font-bold text-charcoal-900">Nuevo código de acceso</h2>
               <button onClick={() => setShowForm(false)} className="text-slate-400 hover:text-charcoal-900 cursor-pointer">
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <form onSubmit={handleCreate} className="space-y-4 px-6 py-5">
+            {/* La cantidad de campos crece con el tipo de código elegido (oleada de
+                investigación, instrumento, fecha límite de evaluación...) y puede no
+                caber entera en pantallas bajas; el encabezado y los botones de abajo
+                quedan fijos, solo esta zona hace scroll. */}
+            <form onSubmit={handleCreate} className="flex min-h-0 flex-1 flex-col">
+            <div className="min-h-0 space-y-4 overflow-y-auto px-6 py-5">
               <div>
                 <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Convenio / Cliente *</label>
                 <select
@@ -547,7 +572,26 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
                 </div>
               </div>
 
-              {purpose === 'EVALUATION_CAMPAIGN' && (
+              {purpose === 'EVALUATION_CAMPAIGN' && researchWaves.length > 0 && (
+                <div>
+                  <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Vincular a oleada de investigación (opcional)</label>
+                  <select
+                    value={researchWaveId}
+                    onChange={(e) => { setResearchWaveId(e.target.value); if (e.target.value) setInstrumentId(''); }}
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                  >
+                    <option value="">Ninguna — instrumento suelto</option>
+                    {researchWaves.map((w) => (
+                      <option key={w.id} value={w.id}>{w.label}</option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[10.5px] text-slate-400">
+                    Quien canjee este código queda enrolado en ese proyecto — la app le muestra solo sus evaluaciones.
+                  </p>
+                </div>
+              )}
+
+              {purpose === 'EVALUATION_CAMPAIGN' && !researchWaveId && (
                 <div>
                   <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Instrumento a asignar *</label>
                   <select
@@ -623,8 +667,9 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
               )}
 
               {formError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">{formError}</p>}
+            </div>
 
-              <div className="flex items-center justify-end gap-3 border-t border-slate-100 pt-4">
+              <div className="flex shrink-0 items-center justify-end gap-3 border-t border-slate-100 px-6 py-4">
                 <button type="button" onClick={() => setShowForm(false)} className="rounded-lg px-4 py-2.5 text-sm font-semibold text-slate-500 hover:text-charcoal-900 cursor-pointer">
                   Cancelar
                 </button>
