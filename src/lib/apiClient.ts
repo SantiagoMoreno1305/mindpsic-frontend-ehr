@@ -6,9 +6,26 @@
  * ============================================================
  * Responsabilidades:
  *  1. Adjunta automáticamente el Bearer token (mind_token) a cada petición.
- *  2. Detecta respuestas 403 Forbidden del backend (tenant suspendido).
- *  3. Dispara un CustomEvent global 'forbidden-access' para que App.tsx
- *     limpie la sesión y muestre el mensaje de suspensión sin acoplamiento.
+ *  2. Detecta la ÚNICA respuesta 403 que de verdad significa "cierra la
+ *     sesión" — cuenta u organización desactivada (code ACCOUNT_INACTIVE,
+ *     ver /auth/sync y /auth/login en Mind) — y en ESE caso dispara el
+ *     CustomEvent global 'forbidden-access' para que App.tsx limpie la
+ *     sesión y muestre el mensaje de suspensión.
+ *  3. Para CUALQUIER OTRO 403 — y hay decenas en el backend: falta un
+ *     permiso puntual (RBAC_INSUFFICIENT_ROLE), un módulo no habilitado para
+ *     el tenant (PROGRAMS_NOT_ENABLED, ACCESS_CODES_NOT_ENABLED...), un
+ *     recurso de otro tenant (CROSS_TENANT_DENIED), o ninguno de los
+ *     anteriores — NO cierra la sesión: devuelve la Response tal cual, para
+ *     que cada pantalla decida qué hacer (mostrar un aviso local, ocultar
+ *     una opción, o simplemente ignorarlo si era una llamada opcional).
+ *
+ *     Antes CUALQUIER 403 disparaba el cierre de sesión, sin mirar el motivo
+ *     — un DIRECTIVO sin el permiso puntual de Proyectos de investigación
+ *     veía "su organización está suspendida" y quedaba deslogueado solo por
+ *     abrir Códigos de acceso, que de paso intenta cargar (opcionalmente)
+ *     las oleadas de investigación para un selector. Ese código YA sabía
+ *     manejar el 403 con gracia (`res.ok ? ... : { projects: [] }`) — nunca
+ *     llegaba a ejecutarse porque este interceptor tiraba el error antes.
  *
  * USO:
  *   import { apiFetch } from '../lib/apiClient';
@@ -131,14 +148,25 @@ export async function apiFetch(
     throw networkError;
   }
 
-  // ── Interceptor 403: Tenant suspendido ──────────────────────────────────
+  // ── Interceptor 403: SOLO cuenta/organización desactivada ───────────────
+  // Se clona la respuesta para leer `code` sin consumir el body que el
+  // caller todavía necesita (p. ej. AccessCodesPanel espera poder hacer su
+  // propio `res.ok ? res.json() : ...` sobre este mismo objeto Response).
   if (response.status === 403) {
-    console.warn(
-      '[apiClient] 🔒 403 Forbidden recibido — dispatching forbidden-access event.',
-      { url, status: response.status }
-    );
-    dispatchForbiddenAccess();
-    throw new Error('FORBIDDEN_ACCESS: Tenant suspendido o acceso denegado.');
+    let code: string | undefined;
+    try {
+      code = (await response.clone().json())?.code;
+    } catch {
+      // Body no era JSON o venía vacío — no es el 403 de cuenta desactivada.
+    }
+    if (code === 'ACCOUNT_INACTIVE') {
+      console.warn('[apiClient] 🔒 Cuenta/organización desactivada — cerrando sesión.', { url });
+      dispatchForbiddenAccess();
+      throw new Error('FORBIDDEN_ACCESS: Cuenta u organización desactivada.');
+    }
+    // Cualquier otro 403 (permiso puntual, módulo no habilitado, cross-tenant...)
+    // se devuelve tal cual — no es un cierre de sesión, es una respuesta más
+    // que el caller ya sabe leer con response.ok/response.status.
   }
 
   return response;

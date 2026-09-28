@@ -11,6 +11,8 @@ import SignConsent from './pages/SignConsent';
 import CancelAppointment from './pages/CancelAppointment';
 import InvitationLanding from './pages/InvitationLanding';
 import ProgramParticipant from './pages/ProgramParticipant';
+import TrainingTaskParticipant from './pages/TrainingTaskParticipant';
+import TrainingFacilitatorChecklist from './pages/TrainingFacilitatorChecklist';
 import ProgramsPortal from './pages/ProgramsPortal';
 import AnswerAssessment from './pages/AnswerAssessment';
 import PsychologistPortal from './pages/PsychologistPortal';
@@ -58,8 +60,11 @@ export default function App() {
   const programsAccess: 'NONE' | 'BOTH' | 'ONLY' =
     currentUser?.programsEnabled ? (currentUser.programsAccess ?? 'NONE') : 'NONE';
   const programsBlocked = currentUser?.programsAccess === 'ONLY' && !currentUser.programsEnabled;
-  const [portal, setPortal] = useState<'clinical' | 'programs' | null>(() => {
-    try { const v = sessionStorage.getItem('mind_portal'); return v === 'clinical' || v === 'programs' ? v : null; } catch { return null; }
+  // 'clinical' por defecto — sin pantalla intermedia de "¿a qué portal quieres
+  // entrar?". Quien tenga acceso a ambos cambia con el selector de la barra
+  // superior (PortalSwitcher) en cualquier momento, no solo al iniciar sesión.
+  const [portal, setPortal] = useState<'clinical' | 'programs'>(() => {
+    try { const v = sessionStorage.getItem('mind_portal'); return v === 'programs' ? v : 'clinical'; } catch { return 'clinical'; }
   });
 
   const choosePortal = (p: 'clinical' | 'programs') => {
@@ -291,7 +296,7 @@ export default function App() {
           // atención de crisis por línea24x7 con riesgo alto y no fuiste vos
           // quien lo atendió -- es una urgencia clínica que no debería
           // esperar a que abras la campana por otro motivo.
-          if (notif.type === 'CRISIS_ENCOUNTER_CRITICAL') {
+          if (notif.type === 'CRISIS_ENCOUNTER_CRITICAL' || notif.type === 'CRISIS_ENCOUNTER_FOLLOWUP') {
             toast.error(notif.message, { duration: 15000, position: 'top-right', icon: '⚠️' });
           }
         });
@@ -445,63 +450,31 @@ export default function App() {
         </div>
       );
     }
-    const programsView = (
-      <div className="relative h-full">
-        <ProgramsPortal />
-        <div className="absolute bottom-4 left-4 flex gap-2">
-          {programsAccess === 'BOTH' && (
-            <button onClick={() => choosePortal('clinical')} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Ir al portal clínico</button>
-          )}
-          <button onClick={handleLogout} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Cerrar sesión</button>
-        </div>
-      </div>
-    );
+    // El cambio de portal vive en el selector de la barra superior (PortalSwitcher);
+    // cerrar sesión, en el ícono de salida de esa misma barra.
+    const programsView = <ProgramsPortal />;
     if (programsAccess === 'ONLY') return programsView;
     if (programsAccess === 'BOTH') {
       // Normalmente el portal ya se eligió en el login; esto cubre una sesión
-      // restaurada en otra pestaña (sessionStorage vacío).
-      if (portal === null) {
-        return (
-          <div className="flex h-full items-center justify-center bg-toast-50 px-4">
-            <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-              <h2 className="text-lg font-semibold text-charcoal-900">¿A qué portal quieres entrar?</h2>
-              <div className="mt-5 grid gap-3">
-                <button onClick={() => choosePortal('clinical')} className="rounded-xl border border-slate-200 p-4 text-left transition hover:border-toast-500">
-                  <div className="text-sm font-semibold">Portal clínico</div>
-                  <div className="text-xs text-slate-500">Pacientes, agenda, historias, evaluaciones y facturación.</div>
-                </button>
-                <button onClick={() => choosePortal('programs')} className="rounded-xl border border-slate-200 p-4 text-left transition hover:border-toast-500">
-                  <div className="text-sm font-semibold">Programas de medición</div>
-                  <div className="text-xs text-slate-500">Encuestas de programa para empresas clientes.</div>
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      }
+      // restaurada en otra pestaña (sessionStorage vacío) — arranca en
+      // 'clinical' por defecto (ver useState de `portal` arriba).
       if (portal === 'programs') return programsView;
     }
 
-    const withProgramsSwitch = (node: React.ReactElement) => programsAccess === 'BOTH' ? (
-      <div className="relative h-full">
-        {node}
-        <button onClick={() => choosePortal('programs')} className="absolute bottom-4 left-4 z-30 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-medium shadow-sm hover:bg-slate-50">Ir a Programas de medición</button>
-      </div>
-    ) : node;
 
     switch (currentUser.role) {
 
       // ── Nivel 1 ─────────────────────────────────────────────────────────────
       case 'CEO':
-        return withProgramsSwitch(<AdminPortal />);
+        return <AdminPortal />;
 
       // ── Nivel 2 ─────────────────────────────────────────────────────────────
       case 'DIRECTIVO':
-        return withProgramsSwitch(<AdminPortal />);
+        return <AdminPortal />;
 
       // ── Nivel 3 ─────────────────────────────────────────────────────────────
       case 'ESPECIALISTA_B2B':
-        return withProgramsSwitch(
+        return (
           <PsychologistPortal
             onOpenDrMindWithPatient={handleOpenDrMindWithPatient}
             workspaceContext={workspaceContext}
@@ -511,7 +484,7 @@ export default function App() {
 
       // ── Nivel 4 ─────────────────────────────────────────────────────────────
       case 'OPERATIVO':
-        return withProgramsSwitch(<AdminPortal />);
+        return <AdminPortal />;
 
       // ── Nivel 5: acceso DENEGADO al EHR interno ─────────────────────────────
       case 'USUARIO_B2C':
@@ -598,6 +571,18 @@ export default function App() {
     return <ProgramParticipant />;
   }
 
+  // ============================================================================
+  // CAPACITACIONES — dos enlaces públicos, sin cuenta, que NO cruzan datos con
+  // Programas de medición (ver pages/TrainingTaskParticipant.tsx y
+  // TrainingFacilitatorChecklist.tsx).
+  // ============================================================================
+  if (window.location.pathname.startsWith('/capacitacion/tareas/')) {
+    return <TrainingTaskParticipant />;
+  }
+  if (window.location.pathname.startsWith('/capacitacion/facilitadora/')) {
+    return <TrainingFacilitatorChecklist />;
+  }
+
   if (window.location.pathname.startsWith('/invitacion/')) {
     return <InvitationLanding />;
   }
@@ -617,6 +602,9 @@ export default function App() {
         onMarkNotificationsRead={handleMarkNotificationsRead}
         onDeleteNotification={handleDeleteNotification}
         onDeleteAllNotifications={handleDeleteAllNotifications}
+        showPortalSwitcher={programsAccess === 'BOTH'}
+        portal={portal}
+        onPortalChange={choosePortal}
       />
 
       {/* 2. RBAC ROLE GUARD ROUTER */}
