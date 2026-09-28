@@ -23,6 +23,7 @@ import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../co
 import PacientesPanel from '../components/EHR/PacientesPanel';
 import AccessCodesPanel from '../components/EHR/AccessCodesPanel';
 import TariffsPanel from '../components/EHR/TariffsPanel';
+import ResearchProjectsPanel from '../components/EHR/ResearchProjectsPanel';
 import ApprovalsPanel from '../components/EHR/ApprovalsPanel';
 import AssessmentsPanel from '../components/EHR/AssessmentsPanel';
 import CalendarPanel, {
@@ -80,10 +81,11 @@ import {
   Check,
   KeyRound,
   Tag,
-  Inbox
+  Inbox,
+  FlaskConical
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'approvals' | 'billing_rips' | 'chat';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat';
 
 export default function AdminPortal() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -101,6 +103,26 @@ export default function AdminPortal() {
   // Sin permiso Y sin códigos previos, la sección no tiene nada que ofrecer.
   // Con códigos ya emitidos se deja visible para poder cerrarlos/recordarlos.
   const showAccessCodesTab = !(accessCodesCap && !accessCodesCap.tenantEnabled && !accessCodesCap.hasCodes);
+
+  // Proyectos de investigación: dos permisos independientes deben estar
+  // activos (ver Manual de gates en research-project.service.js §canManage) —
+  // Tenant.allowResearchProjects (lo activa MindPsic para todo el socio) Y
+  // User.canManageResearchProjects (por persona, lo otorga el CEO del socio
+  // en Equipo y Accesos). El backend ya rechaza con 403 a quien le falte
+  // cualquiera de los dos; el ítem del menú debe reflejar lo mismo — antes
+  // solo miraba el permiso del tenant, así que aparecía para CUALQUIERA del
+  // socio aunque esa persona no tuviera el permiso propio, y al entrar solo
+  // veía "0 proyectos" (el 403 se traga como lista vacía) en vez de un aviso
+  // claro de que le falta el permiso.
+  const [researchCap, setResearchCap] = useState<{ enabled: boolean; canManage: boolean } | null>(null);
+  useEffect(() => {
+    if (!currentUser) return;
+    apiFetch('/api/research-projects/capability')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (data) setResearchCap(data); })
+      .catch(() => { /* sin dato: se deja oculto */ });
+  }, [currentUser?.id]);
+  const showResearchTab = !!researchCap?.canManage;
   const [authLoading, setAuthLoading] = useState(true);
   const [accessDenied, setAccessDenied] = useState(false);
   const [showDelegatedModal, setShowDelegatedModal] = useState(false);
@@ -319,6 +341,7 @@ export default function AdminPortal() {
     /** "YYYY-MM-DD" — ya viene calculado del backend (users.routes.js GET /). */
     joinedDate: string;
     canApproveSessionChanges: boolean;
+    canManageResearchProjects: boolean;
   }
 
   const [teamUsers, setTeamUsers] = useState<TeamUser[]>([]);
@@ -420,9 +443,17 @@ export default function AdminPortal() {
     documentType: 'CC', documentId: '',
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
     canApproveSessionChanges: false,
+    canManageResearchProjects: false,
   };
   const [showEditStaffModal, setShowEditStaffModal] = useState(false);
   const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
+  // Rol de quien se está editando — determina si tiene sentido ofrecerle el
+  // permiso de Proyectos de investigación (ver targetEligibleForResearchProjects
+  // más abajo: hoy ese módulo solo vive en este Portal Administrativo, que a su
+  // vez está bloqueado para cualquiera que no sea CEO/DIRECTIVO — ver ADMIN_ROLES
+  // más arriba. Otorgárselo a un OPERATIVO o a un ESPECIALISTA_B2B no le abre
+  // nada: ninguno de los dos llega nunca a esta pantalla).
+  const [editingStaffRole, setEditingStaffRole] = useState<string | null>(null);
   const [editStaffForm, setEditStaffForm] = useState(emptyEditStaffForm);
   const [savingStaff, setSavingStaff] = useState(false);
   const [editStaffError, setEditStaffError] = useState<string | null>(null);
@@ -435,6 +466,7 @@ export default function AdminPortal() {
     // aunque la fila de la tabla sí mostraba el nombre completo.
     const [fallbackFirstName, ...fallbackLastNameParts] = (member.name || '').trim().split(/\s+/);
     setEditingStaffId(member.id);
+    setEditingStaffRole(member.role);
     setEditStaffForm({
       firstName: member.firstName || fallbackFirstName || '',
       lastName: member.lastName || fallbackLastNameParts.join(' '),
@@ -448,6 +480,7 @@ export default function AdminPortal() {
       epsCode: member.epsCode || '',
       epsLabel: member.epsName || '',
       canApproveSessionChanges: member.canApproveSessionChanges || false,
+      canManageResearchProjects: member.canManageResearchProjects || false,
     });
     editStaffEpsSearch.setQuery('');
     editStaffEpsSearch.setResults([]);
@@ -488,6 +521,9 @@ export default function AdminPortal() {
           // presente y el caller no tiene autoridad, así que un DIRECTIVO sin el
           // permiso no debe ni enviarlo al editar cualquier otro dato del colaborador.
           ...(canGrantSessionChangePermission ? { canApproveSessionChanges: f.canApproveSessionChanges } : {}),
+          // Mismo criterio: solo se manda si YO puedo tocarlo — ver
+          // canGrantResearchProjectsPermission más abajo.
+          ...(canGrantResearchProjectsPermission && targetEligibleForResearchProjects ? { canManageResearchProjects: f.canManageResearchProjects } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -509,6 +545,15 @@ export default function AdminPortal() {
   // solo CEO (rol de MindPsic) o quien YA tiene el permiso, mismo gate exacto
   // que ya aplica el backend en PUT /api/users/:userId.
   const canGrantSessionChangePermission = currentUser?.role === 'CEO' || !!currentUser?.canApproveSessionChanges;
+  // El permiso solo sirve si la persona editada puede siquiera abrir la pantalla
+  // donde vive Investigación (este Portal Administrativo — ver ADMIN_ROLES arriba,
+  // solo CEO/DIRECTIVO). Otorgárselo a alguien más no hace nada: un OPERATIVO
+  // recibe "Acceso Restringido" antes de llegar a ningún menú, y un ESPECIALISTA_B2B
+  // va siempre al Portal Psicólogo, que no tiene esta pestaña.
+  const targetEligibleForResearchProjects = editingStaffRole === 'CEO' || editingStaffRole === 'DIRECTIVO';
+  // Mismo patrón para Proyectos de investigación (ver User.canManageResearchProjects) —
+  // independiente del anterior: tener uno no da el otro.
+  const canGrantResearchProjectsPermission = currentUser?.role === 'CEO' || !!currentUser?.canManageResearchProjects;
 
   // ── Historial de cambios de la ficha profesional ──
   interface StaffHistoryEntry {
@@ -1914,6 +1959,23 @@ export default function AdminPortal() {
             {activeTab === 'tariffs' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
+          {/* Proyectos de investigación — evaluar una cohorte propia por oleadas */}
+          {showResearchTab && (
+            <button
+              onClick={() => setActiveTab('research_projects')}
+              id="tab-adm-research-projects"
+              className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+                activeTab === 'research_projects'
+                  ? 'bg-charcoal-900 text-white font-semibold'
+                  : 'hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <FlaskConical className="w-5 h-5 shrink-0" />
+              <span className="ml-3 text-xs hidden md:block">Investigación</span>
+              {activeTab === 'research_projects' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+            </button>
+          )}
+
           {/* Bandeja de aprobación de cambios de cupo — solo visible para
               quien tiene el permiso (o CEO, respaldo de MindPsic) */}
           {canGrantSessionChangePermission && (
@@ -3095,6 +3157,23 @@ export default function AdminPortal() {
                   </label>
                 )}
 
+                {canGrantResearchProjectsPermission && targetEligibleForResearchProjects && (
+                  <label className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editStaffForm.canManageResearchProjects}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, canManageResearchProjects: e.target.checked })}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      <span className="block text-xs font-bold text-slate-700">Puede gestionar Proyectos de investigación</span>
+                      <span className="block text-[10.5px] text-slate-400 mt-0.5">
+                        Puede crear proyectos y oleadas, generar sus códigos de acceso y ver los resultados agregados — sin importar su rol (por ejemplo, un especialista que además es el investigador del estudio). Solo tú puedes otorgar o quitar este permiso porque ya lo tienes. Además necesita que MindPsic tenga habilitados los Proyectos de investigación para tu clínica.
+                      </span>
+                    </span>
+                  </label>
+                )}
+
                 {editStaffError && (
                   <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-xs text-red-700">⚠️ {editStaffError}</div>
                 )}
@@ -3649,6 +3728,9 @@ export default function AdminPortal() {
 
         {/* VIEW: TARIFAS — por convenio y por estrato (particular) */}
         {activeTab === 'tariffs' && <TariffsPanel />}
+
+        {/* VIEW: PROYECTOS DE INVESTIGACIÓN */}
+        {activeTab === 'research_projects' && showResearchTab && <ResearchProjectsPanel canManage={researchCap?.canManage ?? false} />}
 
         {/* VIEW: APROBACIONES — bandeja del aprobador de cambios de cupo */}
         {activeTab === 'approvals' && canGrantSessionChangePermission && <ApprovalsPanel />}

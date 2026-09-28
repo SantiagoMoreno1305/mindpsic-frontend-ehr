@@ -11,6 +11,7 @@ import { getApiBase } from '../../lib/apiClient';
 import InitialAssessmentWizard from './InitialAssessmentWizard';
 import PatientInvitationCard from './PatientInvitationCard';
 import AssessmentRunner from './AssessmentRunner';
+import CrisisEncountersPanel from './CrisisEncountersPanel';
 
 interface RipsDiagnosis {
   id: string;
@@ -429,6 +430,10 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
           </div>
         </div>
       </div>
+
+      {/* Atenciones de crisis por línea 24/7: aviso persistente para el tratante,
+          visible en cualquier pestaña hasta que lo marque como visto. */}
+      <CrisisEncountersPanel patientId={patientId} />
 
       {/* ═══ Tabs ═══ */}
       <div className="flex gap-1 overflow-x-auto border-b border-slate-200">

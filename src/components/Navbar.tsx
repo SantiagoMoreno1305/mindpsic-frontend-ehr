@@ -11,6 +11,7 @@
 import { useState } from 'react';
 import { User } from '../types';
 import ContextSwitcher, { WorkspaceContext } from './ContextSwitcher';
+import PortalSwitcher, { PortalId } from './PortalSwitcher';
 import UserProfileModal from './UserProfileModal';
 import { ShieldCheck, LogOut, User as UserIcon, Bell, CalendarDays, X } from 'lucide-react';
 import { OPEN_APPOINTMENT_EVENT } from '../lib/apiClient';
@@ -42,9 +43,13 @@ interface NavbarProps {
   onMarkNotificationsRead: (ids: string[]) => void;
   onDeleteNotification: (id: string) => void;
   onDeleteAllNotifications: () => void;
+  // Selector Clínico ↔ Programas de medición: solo si la cuenta tiene acceso a ambos.
+  showPortalSwitcher?: boolean;
+  portal?: PortalId | null;
+  onPortalChange?: (portal: PortalId) => void;
 }
 
-export default function Navbar({ user, onLogout, onUserUpdated, currentContext, onContextChange, notifications, onMarkNotificationsRead, onDeleteNotification, onDeleteAllNotifications }: NavbarProps) {
+export default function Navbar({ user, onLogout, onUserUpdated, currentContext, onContextChange, notifications, onMarkNotificationsRead, onDeleteNotification, onDeleteAllNotifications, showPortalSwitcher = false, portal = null, onPortalChange }: NavbarProps) {
   const [showProfile, setShowProfile] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const unreadCount = notifications.filter((n) => !n.read).length;
@@ -153,6 +158,11 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
           {/* Context Switcher — Hybrid Workspace Toggle. Oculto a propósito:
               aún no es funcional, se habilita meses después. No se elimina
               para no perder la integración ya hecha (currentContext/onContextChange). */}
+          {showPortalSwitcher && onPortalChange && (
+            <div className="ml-3 sm:ml-6">
+              <PortalSwitcher portal={portal} onChange={onPortalChange} />
+            </div>
+          )}
           {false && (
             <div className="hidden lg:block ml-8">
               <ContextSwitcher currentContext={currentContext} onContextChange={onContextChange} />
