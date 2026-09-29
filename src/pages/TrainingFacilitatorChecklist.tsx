@@ -32,13 +32,13 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-toast-50 text-charcoal-900 antialiased">
       <header className="border-b border-charcoal-900/10 bg-white">
-        <div className="mx-auto flex max-w-2xl items-center gap-2 px-4 py-3">
+        <div className="mx-auto flex max-w-5xl items-center gap-2 px-4 py-3">
           <ShieldCheck className="h-5 w-5 text-toast-500" aria-hidden />
           <span className="text-sm font-semibold tracking-tight">MINDPSIC</span>
           <span className="text-sm text-charcoal-900/50">· Checklist de fidelidad</span>
         </div>
       </header>
-      <main className="mx-auto max-w-2xl px-4 py-6 sm:py-10">{children}</main>
+      <main className="mx-auto max-w-5xl px-4 py-6 sm:py-10">{children}</main>
     </div>
   );
 }
@@ -70,64 +70,113 @@ function cleanBlock(catalog: Catalog, b: Record<string, any>): Record<string, an
   return out;
 }
 
-function BlockForm({ title, catalog, value, onChange }: { title: string; catalog: Catalog; value: Record<string, any>; onChange: (v: Record<string, any>) => void }) {
-  const set = (k: string, v: any) => onChange({ ...value, [k]: v });
+// Tabla única, pregunta por fila y Bloque 1 / Bloque 2 en columnas lado a
+// lado — misma distribución que el documento fuente ("CHECKLIST DE FIDELIDAD
+// DE IMPLEMENTACIÓN"), en vez de repetir el formulario completo dos veces.
+function SectionRow({ label }: { label: string }) {
   return (
-    <div className="rounded-xl border border-charcoal-900/10 p-4">
-      <h3 className="mb-3 text-sm font-semibold text-charcoal-900">{title}</h3>
+    <tr>
+      <td colSpan={3} className="bg-toast-50 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-charcoal-900/60">{label}</td>
+    </tr>
+  );
+}
 
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-charcoal-900/50">Cobertura de contenidos</p>
-      <div className="space-y-3">
-        {catalog.blockA.map((f) => (
-          <div key={f.code}>
-            <p className="mb-1 text-sm">{f.label}</p>
-            <div className="flex gap-1.5">
-              {catalog.blockAOptions.map((o) => (
-                <button key={o.value} type="button" title={o.label} onClick={() => set(f.code, o.value)}
-                  className={`h-9 flex-1 rounded-lg border text-xs font-semibold ${value[f.code] === o.value ? 'border-toast-500 bg-toast-500 text-white' : 'border-charcoal-900/15 bg-white'}`}>
-                  {o.value}
-                </button>
+function ScoreCell({ value, onChange, options }: { value: any; onChange: (v: number) => void; options: { value: number; label: string }[] }) {
+  return (
+    <div className="flex justify-center gap-1">
+      {options.map((o) => (
+        <button key={o.value} type="button" title={o.label} onClick={() => onChange(o.value)}
+          className={`h-8 w-8 rounded-lg border text-xs font-semibold transition ${value === o.value ? 'border-toast-500 bg-toast-500 text-white' : 'border-charcoal-900/15 bg-white hover:border-toast-300'}`}>
+          {o.value}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ChecklistTable({ catalog, block1, block2, setBlock1, setBlock2 }: {
+  catalog: Catalog; block1: Record<string, any>; block2: Record<string, any>;
+  setBlock1: (v: Record<string, any>) => void; setBlock2: (v: Record<string, any>) => void;
+}) {
+  const setters = { 1: (k: string, v: any) => setBlock1({ ...block1, [k]: v }), 2: (k: string, v: any) => setBlock2({ ...block2, [k]: v }) };
+  const values = { 1: block1, 2: block2 };
+  const cellCls = 'border-t border-charcoal-900/10 px-2 py-2.5 align-top';
+
+  return (
+    <div className="overflow-x-auto rounded-xl border border-charcoal-900/10">
+      <table className="w-full min-w-[640px] border-collapse text-sm">
+        <thead>
+          <tr className="text-left text-xs font-semibold uppercase tracking-wide text-charcoal-900/50">
+            <th className="px-3 py-2">Componente</th>
+            <th className="w-40 px-2 py-2 text-center">Bloque 1</th>
+            <th className="w-40 px-2 py-2 text-center">Bloque 2</th>
+          </tr>
+        </thead>
+        <tbody>
+          <SectionRow label="Parte A · Cobertura de contenidos (0 = no se desarrolló · 1 = parcial · 2 = completo)" />
+          {catalog.blockA.map((f) => (
+            <tr key={f.code}>
+              <td className={cellCls}><span className="mr-1.5 font-mono text-[11px] text-charcoal-900/40">{f.code}</span>{f.label}</td>
+              {([1, 2] as const).map((n) => (
+                <td key={n} className={cellCls}><ScoreCell value={values[n][f.code]} onChange={(v) => setters[n](f.code, v)} options={catalog.blockAOptions} /></td>
               ))}
-            </div>
-          </div>
-        ))}
-      </div>
+            </tr>
+          ))}
 
-      <p className="mb-2 mt-4 text-xs font-semibold uppercase tracking-wide text-charcoal-900/50">Condiciones del bloque</p>
-      <div className="grid grid-cols-2 gap-3">
-        {catalog.blockBNum.map((f) => (
-          <label key={f.code} className="text-xs">
-            {f.label}
-            <input type="number" min={0} value={value[f.code]} onChange={(e) => set(f.code, e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-900/15 px-2.5 py-2 text-sm" />
-          </label>
-        ))}
-        {catalog.blockBSelect.map((f) => (
-          <label key={f.code} className="text-xs">
-            {f.label}
-            <select value={value[f.code]} onChange={(e) => set(f.code, e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-900/15 px-2.5 py-2 text-sm">
-              <option value="">Selecciona…</option>
-              {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
-            </select>
-          </label>
-        ))}
-      </div>
-
-      <div className="mt-3 space-y-3">
-        {catalog.blockBText.map((f) => (
-          <label key={f.code} className="block text-xs">
-            {f.label}
-            <textarea rows={2} value={value[f.code]} onChange={(e) => set(f.code, e.target.value)} className="mt-1 w-full rounded-lg border border-charcoal-900/15 px-2.5 py-2 text-sm" />
-          </label>
-        ))}
-        <div>
-          <p className="mb-1 text-xs">¿Se activó alguna derivación por la ruta de atención?</p>
-          <div className="flex gap-2">
-            {[['Sí', true], ['No', false]].map(([lbl, val]) => (
-              <button key={String(val)} type="button" onClick={() => set('fi16', val)} className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${value.fi16 === val ? 'border-toast-500 bg-toast-500 text-white' : 'border-charcoal-900/15'}`}>{lbl as string}</button>
+          <SectionRow label="Parte B · Condiciones de los bloques" />
+          {catalog.blockBNum.map((f) => (
+            <tr key={f.code}>
+              <td className={cellCls}><span className="mr-1.5 font-mono text-[11px] text-charcoal-900/40">{f.code}</span>{f.label}</td>
+              {([1, 2] as const).map((n) => (
+                <td key={n} className={cellCls}>
+                  <input type="number" min={0} value={values[n][f.code]} onChange={(e) => setters[n](f.code, e.target.value)}
+                    className="w-full rounded-lg border border-charcoal-900/15 px-2 py-1.5 text-center text-sm focus:border-toast-500 focus:outline-none" />
+                </td>
+              ))}
+            </tr>
+          ))}
+          {catalog.blockBSelect.map((f) => (
+            <tr key={f.code}>
+              <td className={cellCls}><span className="mr-1.5 font-mono text-[11px] text-charcoal-900/40">{f.code}</span>{f.label}</td>
+              {([1, 2] as const).map((n) => (
+                <td key={n} className={cellCls}>
+                  <select value={values[n][f.code]} onChange={(e) => setters[n](f.code, e.target.value)}
+                    className="w-full rounded-lg border border-charcoal-900/15 px-2 py-1.5 text-sm focus:border-toast-500 focus:outline-none">
+                    <option value="">Selecciona…</option>
+                    {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
+              ))}
+            </tr>
+          ))}
+          {catalog.blockBText.map((f) => (
+            <tr key={f.code}>
+              <td className={cellCls}><span className="mr-1.5 font-mono text-[11px] text-charcoal-900/40">{f.code}</span>{f.label}</td>
+              {([1, 2] as const).map((n) => (
+                <td key={n} className={cellCls}>
+                  <textarea rows={2} value={values[n][f.code]} onChange={(e) => setters[n](f.code, e.target.value)}
+                    className="w-full rounded-lg border border-charcoal-900/15 px-2 py-1.5 text-xs focus:border-toast-500 focus:outline-none" />
+                </td>
+              ))}
+            </tr>
+          ))}
+          <tr>
+            <td className={cellCls}><span className="mr-1.5 font-mono text-[11px] text-charcoal-900/40">FI16</span>¿Se activó alguna derivación por la ruta de atención?</td>
+            {([1, 2] as const).map((n) => (
+              <td key={n} className={cellCls}>
+                <div className="flex justify-center gap-1.5">
+                  {[['Sí', true], ['No', false]].map(([lbl, val]) => (
+                    <button key={String(val)} type="button" onClick={() => setters[n]('fi16', val)}
+                      className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${values[n].fi16 === val ? 'border-toast-500 bg-toast-500 text-white' : 'border-charcoal-900/15'}`}>
+                      {lbl as string}
+                    </button>
+                  ))}
+                </div>
+              </td>
             ))}
-          </div>
-        </div>
-      </div>
+          </tr>
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -220,9 +269,8 @@ export default function TrainingFacilitatorChecklist() {
           </label>
         </div>
 
-        <div className="mt-5 space-y-4">
-          <BlockForm title="Bloque 1" catalog={ctx.catalog} value={block1} onChange={setBlock1} />
-          <BlockForm title="Bloque 2" catalog={ctx.catalog} value={block2} onChange={setBlock2} />
+        <div className="mt-5">
+          <ChecklistTable catalog={ctx.catalog} block1={block1} block2={block2} setBlock1={setBlock1} setBlock2={setBlock2} />
         </div>
 
         {error && <p role="alert" className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</p>}
