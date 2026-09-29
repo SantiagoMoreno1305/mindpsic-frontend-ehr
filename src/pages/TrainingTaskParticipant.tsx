@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ShieldCheck, Loader2, AlertTriangle, CheckCircle2, ArrowRight, Clock } from 'lucide-react';
+import { ShieldCheck, Loader2, AlertTriangle, CheckCircle2, ArrowRight, ArrowLeft, Clock } from 'lucide-react';
 import { getApiBase } from '../lib/apiClient';
 
 const API = `${getApiBase()}/api/training/tasks`;
@@ -160,8 +160,20 @@ export default function TrainingTaskParticipant() {
     try {
       const r = await api<{ task: Task; answers: Answers }>(`/session/tasks/${code}`, { session });
       setTask(r.task); setAnswers(r.answers || {}); setTaskCode(code);
+      // Sin esto, el botón/gesto "atrás" del navegador saca de la app entera
+      // en vez de volver a la lista de tareas — empujamos una entrada de
+      // historial al abrir, y la escuchamos abajo para cerrar el detalle.
+      window.history.pushState({ trainingTask: code }, '', window.location.href);
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
+
+  const closeTask = useCallback(() => { setTask(null); setTaskCode(null); setAnswers({}); setError(null); }, []);
+
+  useEffect(() => {
+    const onPopState = () => { if (taskCode) closeTask(); };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [taskCode, closeTask]);
 
   const isComplete = (): boolean => {
     if (!task) return false;
@@ -259,6 +271,12 @@ export default function TrainingTaskParticipant() {
     if (task && taskCode) {
       return (
         <Shell>
+          <button
+            type="button" onClick={() => window.history.back()}
+            className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-charcoal-900/60 hover:text-charcoal-900"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden /> Volver a mis tareas
+          </button>
           <Card>
             <h1 className="text-xl font-semibold tracking-tight">{task.title}</h1>
             <p className="mt-2 text-sm text-charcoal-900/70">{task.instructions}</p>

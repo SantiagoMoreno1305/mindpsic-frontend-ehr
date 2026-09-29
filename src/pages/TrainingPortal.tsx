@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { GraduationCap, Copy, Check, Plus, Loader2, CalendarClock, Users, ClipboardCheck } from 'lucide-react';
+import { GraduationCap, Copy, Check, Plus, Loader2, CalendarClock, Users, ClipboardCheck, Pencil, X, SmartphoneNfc, Download } from 'lucide-react';
 import { apiFetch } from '../lib/apiClient';
 
 interface Visit { id: string; order: number; date: string }
@@ -47,6 +47,59 @@ function CopyButton({ url, label }: { url: string; label: string }) {
   );
 }
 
+// Descarga autenticada — el archivo llega como JSON con el contenido en base64
+// (encoding=base64): un binario (xlsx) directo a través de API Gateway/Lambda
+// se corrompe si el gateway no tiene tipos binarios configurados (mismo
+// patrón que ExportButtons en ProgramsPortal.tsx).
+function ExportButton({ scheduleId }: { scheduleId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [withId, setWithId] = useState(false);
+
+  const download = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const res = await apiFetch(`/api/training/schedules/${scheduleId}/export?encoding=base64${withId ? '&identified=1' : ''}`);
+      let bytes: Uint8Array;
+      let filename = 'capacitaciones.xlsx';
+      let contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      if ((res.headers.get('Content-Type') || '').includes('application/json')) {
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || `Error ${res.status}`);
+        if (typeof body.base64 !== 'string') throw new Error('La respuesta del servidor no trae el archivo.');
+        const bin = atob(body.base64);
+        bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        filename = body.filename || filename;
+        contentType = body.contentType || contentType;
+      } else {
+        if (!res.ok) throw new Error(`Error ${res.status}`);
+        bytes = new Uint8Array(await res.arrayBuffer());
+      }
+      if (!(bytes[0] === 0x50 && bytes[1] === 0x4b)) {
+        throw new Error('El archivo llegó dañado desde el servidor. Vuelve a intentarlo; si persiste, avisa a soporte.');
+      }
+      const url = URL.createObjectURL(new Blob([bytes], { type: contentType }));
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="flex flex-col items-end gap-1.5">
+      <button disabled={busy} onClick={() => void download()} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium hover:bg-slate-50 disabled:opacity-50">
+        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />} Excel
+      </button>
+      <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600">
+        <input type="checkbox" checked={withId} onChange={(e) => setWithId(e.target.checked)} />
+        Incluir número de cédula <span className="text-slate-400">(uso interno, no compartir con el cliente)</span>
+      </label>
+      {err && <span role="alert" className="text-xs text-red-700">{err}</span>}
+    </div>
+  );
+}
+
 function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: () => void }) {
   const sorted = [...schedule.visits].sort((a, b) => a.order - b.order);
   const [dates, setDates] = useState<string[]>(() => {
@@ -58,6 +111,9 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
   const [err, setErr] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [showStats, setShowStats] = useState(false);
+  const [releaseCedula, setReleaseCedula] = useState('');
+  const [releasing, setReleasing] = useState(false);
+  const [releaseMsg, setReleaseMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const save = async () => {
     const filled = dates.filter(Boolean);
@@ -74,6 +130,16 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
     if (!stats) {
       try { setStats(await call<Stats>(`/schedules/${schedule.id}/stats`)); } catch { /* silencioso */ }
     }
+  };
+
+  const releaseDevice = async () => {
+    if (!/^\d{5,11}$/.test(releaseCedula)) { setReleaseMsg({ ok: false, text: 'Escribe un número de cédula válido.' }); return; }
+    setReleasing(true); setReleaseMsg(null);
+    try {
+      await call(`/schedules/${schedule.id}/release-device`, { method: 'POST', body: JSON.stringify({ cedula: releaseCedula }) });
+      setReleaseMsg({ ok: true, text: 'Listo — ya puede volver a registrarse desde cualquier dispositivo.' });
+      setReleaseCedula('');
+    } catch (e) { setReleaseMsg({ ok: false, text: (e as Error).message }); } finally { setReleasing(false); }
   };
 
   return (
@@ -122,7 +188,10 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
             <div className="flex justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-slate-300" /></div>
           ) : (
             <>
-              <p className="text-xs text-slate-500">{stats.participants} colaborador(es) registrados · {stats.checklists} checklist(s) de facilitadoras enviados</p>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <p className="text-xs text-slate-500">{stats.participants} colaborador(es) registrados · {stats.checklists} checklist(s) de facilitadoras enviados</p>
+                <ExportButton scheduleId={schedule.id} />
+              </div>
               <table className="mt-2 w-full text-left text-xs">
                 <thead><tr className="text-slate-400"><th className="py-1 pr-2">Tarea</th><th className="py-1 pr-2">Visita</th><th className="py-1 pr-2">Empezaron</th><th className="py-1">Completaron</th></tr></thead>
                 <tbody>
@@ -138,6 +207,25 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
               </table>
             </>
           )}
+
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <p className="flex items-center gap-1.5 text-xs font-semibold text-charcoal-900">
+              <SmartphoneNfc className="h-3.5 w-3.5" /> Reiniciar dispositivo
+            </p>
+            <p className="mt-1 text-[11px] text-slate-500">
+              Si un colaborador borró el caché del navegador, cambió de equipo o de navegador entre visitas, quedará bloqueado al intentar registrarse de nuevo con su misma cédula. Escríbela aquí para liberarlo — podrá entrar desde cualquier dispositivo la próxima vez.
+            </p>
+            <div className="mt-2 flex gap-2">
+              <input
+                value={releaseCedula} onChange={(e) => setReleaseCedula(e.target.value.replace(/\D/g, '').slice(0, 11))}
+                placeholder="Número de cédula" inputMode="numeric" className={`${inputCls} flex-1`}
+              />
+              <button onClick={releaseDevice} disabled={releasing || !releaseCedula} className="shrink-0 rounded-lg bg-charcoal-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">
+                {releasing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Reiniciar'}
+              </button>
+            </div>
+            {releaseMsg && <p className={`mt-2 text-xs ${releaseMsg.ok ? 'text-emerald-700' : 'text-red-700'}`}>{releaseMsg.text}</p>}
+          </div>
         </div>
       )}
     </div>
@@ -152,6 +240,8 @@ export default function TrainingPortal() {
   const [busy, setBusy] = useState(false);
   const [creatingScheduleFor, setCreatingScheduleFor] = useState<string | null>(null);
   const [scheduleName, setScheduleName] = useState('');
+  const [editingProgram, setEditingProgram] = useState<string | null>(null);
+  const [editProgramForm, setEditProgramForm] = useState({ name: '', clientName: '' });
 
   const load = useCallback(async () => {
     try { setPrograms((await call<{ programs: Program[] }>('/programs')).programs); setError(null); }
@@ -165,6 +255,18 @@ export default function TrainingPortal() {
     try {
       await call('/programs', { method: 'POST', body: JSON.stringify(programForm) });
       setProgramForm({ name: '', clientName: '' }); setCreatingProgram(false); await load();
+    } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
+  };
+
+  const startEditProgram = (p: Program) => {
+    setEditingProgram(p.id); setEditProgramForm({ name: p.name, clientName: p.clientName }); setError(null);
+  };
+
+  const saveProgramEdit = async (programId: string) => {
+    setBusy(true); setError(null);
+    try {
+      await call(`/programs/${programId}`, { method: 'PUT', body: JSON.stringify(editProgramForm) });
+      setEditingProgram(null); await load();
     } catch (err) { setError((err as Error).message); } finally { setBusy(false); }
   };
 
@@ -219,17 +321,49 @@ export default function TrainingPortal() {
           {programs?.map((p) => (
             <section key={p.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <div>
-                  <h2 className="text-base font-semibold text-charcoal-900">{p.name}</h2>
-                  <p className="text-sm text-slate-500">{p.clientName}</p>
-                </div>
-                <button
-                  onClick={() => setCreatingScheduleFor(creatingScheduleFor === p.id ? null : p.id)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium hover:bg-slate-50"
-                >
-                  <Plus className="h-3.5 w-3.5" /> Nuevo cronograma
-                </button>
+                {editingProgram === p.id ? null : (
+                  <div className="group flex items-baseline gap-2">
+                    <div>
+                      <h2 className="text-base font-semibold text-charcoal-900">{p.name}</h2>
+                      <p className="text-sm text-slate-500">{p.clientName}</p>
+                    </div>
+                    <button
+                      onClick={() => startEditProgram(p)}
+                      title="Editar nombre y empresa"
+                      className="rounded-lg p-1.5 text-slate-400 opacity-0 hover:bg-slate-50 hover:text-charcoal-900 group-hover:opacity-100"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+                {editingProgram !== p.id && (
+                  <button
+                    onClick={() => setCreatingScheduleFor(creatingScheduleFor === p.id ? null : p.id)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium hover:bg-slate-50"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Nuevo cronograma
+                  </button>
+                )}
               </div>
+
+              {editingProgram === p.id && (
+                <div className="grid gap-3 rounded-xl border border-slate-200 bg-toast-50 p-3 sm:grid-cols-2">
+                  <label className="text-xs font-medium text-slate-600">Nombre del programa
+                    <input required value={editProgramForm.name} onChange={(e) => setEditProgramForm({ ...editProgramForm, name: e.target.value })} className={`${inputCls} mt-1`} />
+                  </label>
+                  <label className="text-xs font-medium text-slate-600">Empresa cliente
+                    <input required value={editProgramForm.clientName} onChange={(e) => setEditProgramForm({ ...editProgramForm, clientName: e.target.value })} className={`${inputCls} mt-1`} />
+                  </label>
+                  <div className="sm:col-span-2 flex justify-end gap-2">
+                    <button onClick={() => setEditingProgram(null)} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium hover:bg-slate-50">
+                      <X className="h-3.5 w-3.5" /> Cancelar
+                    </button>
+                    <button onClick={() => saveProgramEdit(p.id)} disabled={busy} className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40">
+                      {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Guardar
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {creatingScheduleFor === p.id && (
                 <div className="mt-3 flex items-end gap-2 rounded-xl border border-slate-200 bg-toast-50 p-3">
