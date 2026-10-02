@@ -23,8 +23,8 @@
  *   PATCH /api/access-codes/:id/close  → revocar uno antes de tiempo
  *   GET   /api/assessments/catalog     → catálogo de instrumentos (solo para EVALUATION_CAMPAIGN)
  */
-import React, { useEffect, useState } from 'react';
-import { KeyRound, Plus, X, Copy, Check, Loader2, Ban, Building2, ClipboardList, ChevronDown, ChevronRight, BellRing } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { KeyRound, Plus, X, Copy, Check, Loader2, Ban, Building2, ClipboardList, BellRing, Pencil, MoreVertical, Users } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
 
@@ -106,6 +106,70 @@ const PURPOSE_LABELS: Record<string, string> = {
   EVALUATION_CAMPAIGN: 'Campaña de evaluación',
 };
 
+// Menú "⋮" por fila — antes había 0, 1 o 2 botones sueltos según el estado del
+// código, lo que dejaba la columna "Acción" despeinada (cada fila con un ancho
+// distinto). Un solo punto de entrada consistente, con las opciones que apliquen
+// adentro, y "—" cuando no hay ninguna.
+function RowActionsMenu({
+  hasRedemptions, expanded, canClose, onToggleRedemptions, onClose,
+}: {
+  hasRedemptions: boolean;
+  expanded: boolean;
+  canClose: boolean;
+  onToggleRedemptions: () => void;
+  onClose: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [open]);
+
+  if (!hasRedemptions && !canClose) {
+    return <span className="text-xs text-slate-300">—</span>;
+  }
+
+  return (
+    <div ref={ref} className="relative inline-block text-left">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title="Acciones"
+        className="inline-flex items-center justify-center rounded-md border border-slate-200 p-1.5 text-slate-500 hover:border-slate-300 hover:bg-slate-50 cursor-pointer"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-10 mt-1 w-48 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+          {hasRedemptions && (
+            <button
+              onClick={() => { onToggleRedemptions(); setOpen(false); }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+            >
+              <Users className="h-3.5 w-3.5 text-slate-400" />
+              {expanded ? 'Ocultar canjes' : 'Ver canjes'}
+            </button>
+          )}
+          {canClose && (
+            <button
+              onClick={() => { onClose(); setOpen(false); }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-rose-600 hover:bg-rose-50 cursor-pointer"
+            >
+              <Ban className="h-3.5 w-3.5" />
+              Cerrar código
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boolean }) {
   const { companies } = useCompanies();
   const [codes, setCodes] = useState<AccessCodeRecord[]>([]);
@@ -121,9 +185,14 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
   const [instrumentId, setInstrumentId] = useState('');
   // Si se elige una oleada, ese instrumento manda y el selector de arriba
   // se oculta — ver modules/research-projects (el código canjea la oleada,
-  // no un instrumento suelto).
+  // no un instrumento suelto). Dos selects en cascada (proyecto → oleada) en
+  // vez de una sola lista plana "Proyecto — Oleada (CÓDIGO)": con varios
+  // proyectos activos esa lista se vuelve larga y difícil de escanear.
+  const [researchProjectId, setResearchProjectId] = useState('');
   const [researchWaveId, setResearchWaveId] = useState('');
-  const [researchWaves, setResearchWaves] = useState<{ id: string; label: string }[]>([]);
+  interface ResearchWaveOption { id: string; name: string | null; order: number; instrument: { code: string } }
+  interface ResearchProjectOption { id: string; name: string; waves: ResearchWaveOption[] }
+  const [researchProjects, setResearchProjects] = useState<ResearchProjectOption[]>([]);
   const [name, setName] = useState('');
   const [customCode, setCustomCode] = useState('');
   const [maxUses, setMaxUses] = useState('');
@@ -137,6 +206,10 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('ALL');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [editingUsesId, setEditingUsesId] = useState<string | null>(null);
+  const [editMaxUses, setEditMaxUses] = useState('');
+  const [savingUses, setSavingUses] = useState(false);
+  const [editUsesError, setEditUsesError] = useState<string | null>(null);
 
   const fetchCodes = () => {
     setLoading(true);
@@ -166,18 +239,19 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
       .then((res) => (res.ok ? res.json() : { projects: [] }))
       .then((data) => {
         const projects = Array.isArray(data?.projects) ? data.projects : [];
-        const waves = projects.flatMap((proj: any) =>
-          (proj.waves || []).map((w: any) => ({ id: w.id, label: `${proj.name} — ${w.name || `Oleada ${w.order + 1}`} (${w.instrument.code})` })),
-        );
-        setResearchWaves(waves);
+        setResearchProjects(projects.map((proj: any) => ({
+          id: proj.id, name: proj.name,
+          waves: (proj.waves || []).map((w: any) => ({ id: w.id, name: w.name, order: w.order, instrument: { code: w.instrument.code } })),
+        })));
       })
-      .catch(() => setResearchWaves([]));
+      .catch(() => setResearchProjects([]));
   }, []);
 
   function resetForm() {
     setCompanyId('');
     setPurpose('LINEA247');
     setInstrumentId('');
+    setResearchProjectId('');
     setResearchWaveId('');
     setName('');
     setCustomCode('');
@@ -232,6 +306,31 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
       setFormError('No se pudo contactar el servidor.');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  function startEditUses(c: AccessCodeRecord) {
+    setEditingUsesId(c.id);
+    setEditMaxUses(c.maxUses != null ? String(c.maxUses) : '');
+    setEditUsesError(null);
+  }
+
+  async function saveMaxUses(id: string) {
+    setSavingUses(true);
+    setEditUsesError(null);
+    try {
+      const res = await apiFetch(`/api/access-codes/${id}`, { method: 'PATCH', body: JSON.stringify({ maxUses: editMaxUses.trim() }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEditUsesError(data.error || `HTTP ${res.status}`);
+        return;
+      }
+      setEditingUsesId(null);
+      fetchCodes();
+    } catch {
+      setEditUsesError('No se pudo contactar el servidor.');
+    } finally {
+      setSavingUses(false);
     }
   }
 
@@ -442,7 +541,33 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
                         )}
                         <td className="px-4 py-3 text-slate-600">{c.company.name}</td>
                         <td className="px-4 py-3 font-mono text-xs text-slate-600">
-                          {c.usedCount}{c.maxUses != null ? ` / ${c.maxUses}` : ' / ∞'}
+                          {editingUsesId === c.id ? (
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number" min={c.usedCount || 1} autoFocus value={editMaxUses}
+                                onChange={(e) => setEditMaxUses(e.target.value)}
+                                placeholder="Sin límite"
+                                className="w-20 rounded-md border border-slate-200 px-1.5 py-1 text-xs outline-none focus:border-toast-400 focus:ring-2 focus:ring-toast-500/20"
+                              />
+                              <button onClick={() => saveMaxUses(c.id)} disabled={savingUses} title="Guardar" className="rounded-md p-1 text-emerald-600 hover:bg-emerald-50 disabled:opacity-40 cursor-pointer">
+                                {savingUses ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                              </button>
+                              <button onClick={() => setEditingUsesId(null)} disabled={savingUses} title="Cancelar" className="rounded-md p-1 text-slate-400 hover:bg-slate-100 cursor-pointer">
+                                <X className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => startEditUses(c)}
+                              disabled={c.lifecycle === 'CERRADO'}
+                              title={c.lifecycle === 'CERRADO' ? 'Un código cerrado no se puede editar' : 'Editar el cupo máximo'}
+                              className="group inline-flex items-center gap-1 rounded-md px-1 py-0.5 hover:bg-slate-50 disabled:cursor-not-allowed disabled:hover:bg-transparent cursor-pointer"
+                            >
+                              {c.usedCount}{c.maxUses != null ? ` / ${c.maxUses}` : ' / ∞'}
+                              {c.lifecycle !== 'CERRADO' && <Pencil className="h-3 w-3 text-slate-300 group-hover:text-toast-500" />}
+                            </button>
+                          )}
+                          {editingUsesId === c.id && editUsesError && <span className="mt-1 block text-[10.5px] font-sans text-rose-600">{editUsesError}</span>}
                         </td>
                         {showAvanceCol && (
                         <td className="px-4 py-3 text-xs">
@@ -477,27 +602,13 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
                           </span>
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <div className="inline-flex items-center gap-2">
-                            {c.progress.redeemed > 0 && (
-                              <button
-                                onClick={() => setExpandedId(expanded ? null : c.id)}
-                                className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:border-toast-300 cursor-pointer"
-                              >
-                                {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                                Ver canjes
-                              </button>
-                            )}
-                            {c.lifecycle === 'ACTIVO' && (
-                              <button
-                                onClick={() => handleClose(c.id)}
-                                title="Cerrar código"
-                                className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-500 hover:border-rose-300 hover:text-rose-600 cursor-pointer"
-                              >
-                                <Ban className="h-3.5 w-3.5" />
-                                Cerrar
-                              </button>
-                            )}
-                          </div>
+                          <RowActionsMenu
+                            hasRedemptions={c.progress.redeemed > 0}
+                            expanded={expanded}
+                            canClose={c.lifecycle === 'ACTIVO'}
+                            onToggleRedemptions={() => setExpandedId(expanded ? null : c.id)}
+                            onClose={() => handleClose(c.id)}
+                          />
                         </td>
                       </tr>
                       {expanded && (
@@ -572,22 +683,41 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
                 </div>
               </div>
 
-              {purpose === 'EVALUATION_CAMPAIGN' && researchWaves.length > 0 && (
-                <div>
-                  <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Vincular a oleada de investigación (opcional)</label>
-                  <select
-                    value={researchWaveId}
-                    onChange={(e) => { setResearchWaveId(e.target.value); if (e.target.value) setInstrumentId(''); }}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
-                  >
-                    <option value="">Ninguna — instrumento suelto</option>
-                    {researchWaves.map((w) => (
-                      <option key={w.id} value={w.id}>{w.label}</option>
-                    ))}
-                  </select>
-                  <p className="mt-1 text-[10.5px] text-slate-400">
-                    Quien canjee este código queda enrolado en ese proyecto — la app le muestra solo sus evaluaciones.
-                  </p>
+              {purpose === 'EVALUATION_CAMPAIGN' && researchProjects.length > 0 && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1.5 block truncate text-[11px] font-semibold uppercase tracking-wide text-slate-500" title="Proyecto de investigación (opcional)">Proyecto (opcional)</label>
+                    <select
+                      value={researchProjectId}
+                      onChange={(e) => { setResearchProjectId(e.target.value); setResearchWaveId(''); }}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                    >
+                      <option value="">Ninguno — instrumento suelto</option>
+                      {researchProjects.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {researchProjectId && (
+                    <div>
+                      <label className="mb-1.5 block truncate text-[11px] font-semibold uppercase tracking-wide text-slate-500">Oleada *</label>
+                      <select
+                        value={researchWaveId}
+                        onChange={(e) => { setResearchWaveId(e.target.value); if (e.target.value) setInstrumentId(''); }}
+                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+                      >
+                        <option value="">Selecciona...</option>
+                        {researchProjects.find((p) => p.id === researchProjectId)?.waves.map((w) => (
+                          <option key={w.id} value={w.id}>{w.name || `Oleada ${w.order + 1}`} ({w.instrument.code})</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  {researchProjectId && (
+                    <p className="sm:col-span-2 text-[10.5px] text-slate-400">
+                      Quien canjee este código queda enrolado en ese proyecto — la app le muestra solo sus evaluaciones.
+                    </p>
+                  )}
                 </div>
               )}
 
