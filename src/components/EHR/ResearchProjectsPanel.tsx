@@ -25,7 +25,7 @@
  */
 import { useEffect, useState } from 'react';
 import { toast } from 'react-hot-toast';
-import { FlaskConical, Plus, Loader2, ChevronDown, ChevronRight, Send, BarChart3, Users, Download } from 'lucide-react';
+import { FlaskConical, Plus, Loader2, ChevronDown, ChevronRight, Send, BarChart3, Users, Download, KeyRound, X } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
 
@@ -37,6 +37,14 @@ interface InstrumentOption {
   modality: string;
 }
 
+interface WaveAccessCode {
+  id: string;
+  code: string;
+  usedCount: number;
+  maxUses: number | null;
+  lifecycle: 'ACTIVO' | 'AGOTADO' | 'VENCIDO' | 'CERRADO';
+}
+
 interface WaveRecord {
   id: string;
   name: string | null;
@@ -45,6 +53,7 @@ interface WaveRecord {
   instrument: { code: string; name: string };
   assignedCount: number;
   completedCount: number;
+  accessCodes: WaveAccessCode[];
 }
 
 interface ProjectRecord {
@@ -106,6 +115,13 @@ interface ParticipantsResponse {
   participants: ParticipantRow[];
 }
 
+const CODE_LIFECYCLE_STYLES: Record<WaveAccessCode['lifecycle'], { label: string; cls: string }> = {
+  ACTIVO: { label: 'activo', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  AGOTADO: { label: 'agotado', cls: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  VENCIDO: { label: 'vencido', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  CERRADO: { label: 'cerrado', cls: 'bg-slate-100 text-slate-500 border-slate-200' },
+};
+
 function formatPct(v: number | null) {
   return v == null ? '—' : `${Math.round(v * 100)}%`;
 }
@@ -144,6 +160,20 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
   const [loadingParticipants, setLoadingParticipants] = useState<string | null>(null);
   const [exportingWaveId, setExportingWaveId] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+
+  // Atajo "Crear código" por oleada — mismo POST /api/access-codes que el
+  // formulario de Códigos de acceso, pero sin los selects de convenio/
+  // proyecto/oleada: ya sabemos los tres porque el botón vive en esta misma
+  // fila. Si el proyecto no tiene convenio asociado, se pide acá.
+  const [codeModalFor, setCodeModalFor] = useState<{ project: ProjectRecord; wave: WaveRecord } | null>(null);
+  const [codeCompanyId, setCodeCompanyId] = useState('');
+  const [codeName, setCodeName] = useState('');
+  const [codeCustom, setCodeCustom] = useState('');
+  const [codeMaxUses, setCodeMaxUses] = useState('');
+  const [codeExpiresAt, setCodeExpiresAt] = useState('');
+  const [codeDeadline, setCodeDeadline] = useState('');
+  const [codeSubmitting, setCodeSubmitting] = useState(false);
+  const [codeFormError, setCodeFormError] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -207,6 +237,48 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
       load();
     } finally {
       setCreatingWave(false);
+    }
+  };
+
+  const openCodeModal = (project: ProjectRecord, wave: WaveRecord) => {
+    setCodeModalFor({ project, wave });
+    setCodeCompanyId(project.company?.id || '');
+    setCodeName('');
+    setCodeCustom('');
+    setCodeMaxUses('');
+    setCodeExpiresAt('');
+    setCodeDeadline('');
+    setCodeFormError(null);
+  };
+
+  const submitCode = async () => {
+    if (!codeModalFor) return;
+    if (!codeCompanyId) { setCodeFormError('Elige un convenio/cliente.'); return; }
+    setCodeSubmitting(true);
+    setCodeFormError(null);
+    try {
+      const res = await apiFetch('/api/access-codes', {
+        method: 'POST',
+        body: JSON.stringify({
+          companyId: codeCompanyId,
+          purpose: 'EVALUATION_CAMPAIGN',
+          researchWaveId: codeModalFor.wave.id,
+          name: codeName.trim() || undefined,
+          code: codeCustom.trim() || undefined,
+          maxUses: codeMaxUses.trim() || undefined,
+          expiresAt: codeExpiresAt || undefined,
+          evaluationDeadline: codeDeadline || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setCodeFormError(data.error || `Error ${res.status}`); return; }
+      toast.success(`Código "${data.code}" creado.`);
+      setCodeModalFor(null);
+      load();
+    } catch {
+      setCodeFormError('No se pudo contactar el servidor.');
+    } finally {
+      setCodeSubmitting(false);
     }
   };
 
@@ -410,6 +482,22 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                         {w.completedCount}/{w.assignedCount} completadas
                         {w.dueAt ? ` · hasta ${new Date(w.dueAt).toLocaleDateString('es-CO')}` : ''}
                       </p>
+                      {w.accessCodes.length > 0 && (
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          {w.accessCodes.map((c) => {
+                            const st = CODE_LIFECYCLE_STYLES[c.lifecycle];
+                            return (
+                              <span
+                                key={c.id}
+                                title={`Código ${c.code} — ${c.usedCount} de ${c.maxUses ?? '∞'} canjes usados`}
+                                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[10.5px] ${st.cls}`}
+                              >
+                                {c.code}: {c.usedCount}/{c.maxUses ?? '∞'} canjes ({st.label})
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                     <div className="flex items-center gap-2">
                       <button
@@ -438,6 +526,16 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                         >
                           {assigningWaveId === w.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
                           Lanzar a la cohorte
+                        </button>
+                      )}
+                      {canManage && (
+                        <button
+                          onClick={() => openCodeModal(p, w)}
+                          title="Crea un código de acceso ya vinculado a esta oleada, sin tener que elegir proyecto y oleada aparte"
+                          className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700"
+                        >
+                          <KeyRound className="h-3.5 w-3.5" />
+                          Crear código
                         </button>
                       )}
                     </div>
@@ -545,6 +643,70 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
           )}
         </div>
       ))}
+
+      {codeModalFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Crear código de acceso</h2>
+                <p className="text-xs text-slate-500">
+                  {codeModalFor.project.name} — {codeModalFor.wave.name || `Oleada ${codeModalFor.wave.order + 1}`}
+                </p>
+              </div>
+              <button onClick={() => setCodeModalFor(null)} className="text-slate-400 hover:text-slate-900 cursor-pointer">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              {!codeModalFor.project.company && (
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Convenio / Cliente *</label>
+                  <select value={codeCompanyId} onChange={(e) => setCodeCompanyId(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                    <option value="">Selecciona...</option>
+                    {companies.map((c: any) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <p className="mt-1 text-[10.5px] text-slate-400">Este proyecto no quedó asociado a ningún convenio — elige uno para el código.</p>
+                </div>
+              )}
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Nombre interno (opcional)</label>
+                <input value={codeName} onChange={(e) => setCodeName(e.target.value)} placeholder="Ej. Sede Medellín" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Código (opcional)</label>
+                  <input value={codeCustom} onChange={(e) => setCodeCustom(e.target.value.toUpperCase())} placeholder="Se genera solo" maxLength={20} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Cupo máximo</label>
+                  <input type="number" min={1} value={codeMaxUses} onChange={(e) => setCodeMaxUses(e.target.value)} placeholder="Sin límite" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Vigencia del código (opcional)</label>
+                <input type="date" value={codeExpiresAt} onChange={(e) => setCodeExpiresAt(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fecha límite para completar (opcional)</label>
+                <input type="date" value={codeDeadline} onChange={(e) => setCodeDeadline(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+              {codeFormError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{codeFormError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-slate-100 px-5 py-4">
+              <button onClick={() => setCodeModalFor(null)} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-500 hover:text-slate-900 cursor-pointer">Cancelar</button>
+              <button
+                onClick={submitCode}
+                disabled={codeSubmitting}
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 cursor-pointer"
+              >
+                {codeSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                Crear código
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
