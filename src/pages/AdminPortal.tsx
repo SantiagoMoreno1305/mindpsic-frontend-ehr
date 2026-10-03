@@ -917,7 +917,7 @@ export default function AdminPortal() {
   // Recuerda la última tab visitada entre recargas — sin esto, cualquier
   // refresh de página remonta el componente y activeTab vuelve a su default
   // ('metrics' / "Tablero Gerencial"), sin importar dónde estaba el usuario.
-  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'billing_rips', 'chat'];
+  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat'];
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     const saved = localStorage.getItem('mind_admin_active_tab');
     return (saved && (ADMIN_TABS as string[]).includes(saved)) ? (saved as AdminTab) : 'metrics';
