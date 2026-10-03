@@ -1927,23 +1927,6 @@ export default function AdminPortal() {
             {activeTab === 'convenios' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
-          {/* Códigos de acceso — línea24/7 y campañas de evaluación */}
-          {showAccessCodesTab && (
-            <button
-              onClick={() => setActiveTab('access_codes')}
-              id="tab-adm-access-codes"
-              className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
-                activeTab === 'access_codes'
-                  ? 'bg-charcoal-900 text-white font-semibold'
-                  : 'hover:bg-slate-800 hover:text-white'
-              }`}
-            >
-              <KeyRound className="w-5 h-5 shrink-0" />
-              <span className="ml-3 text-xs hidden md:block">Códigos de acceso</span>
-              {activeTab === 'access_codes' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
-            </button>
-          )}
-
           {/* Tarifas por sesión — por convenio y por estrato (particular) */}
           <button
             onClick={() => setActiveTab('tariffs')}
@@ -1973,6 +1956,23 @@ export default function AdminPortal() {
               <FlaskConical className="w-5 h-5 shrink-0" />
               <span className="ml-3 text-xs hidden md:block">Investigación</span>
               {activeTab === 'research_projects' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+            </button>
+          )}
+
+          {/* Códigos de acceso — línea24/7 y campañas de evaluación */}
+          {showAccessCodesTab && (
+            <button
+              onClick={() => setActiveTab('access_codes')}
+              id="tab-adm-access-codes"
+              className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+                activeTab === 'access_codes'
+                  ? 'bg-charcoal-900 text-white font-semibold'
+                  : 'hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <KeyRound className="w-5 h-5 shrink-0" />
+              <span className="ml-3 text-xs hidden md:block">Códigos de acceso</span>
+              {activeTab === 'access_codes' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
             </button>
           )}
 
