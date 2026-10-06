@@ -15,8 +15,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { GraduationCap, Copy, Check, Plus, Loader2, CalendarClock, Users, ClipboardCheck, Pencil, X, SmartphoneNfc, Download } from 'lucide-react';
 import { apiFetch } from '../lib/apiClient';
+import { toast } from 'react-hot-toast';
 
-interface Visit { id: string; order: number; date: string }
+interface Visit { id: string; order: number; opensAt: string; closesAt: string }
 interface Schedule { id: string; name: string | null; facilitatorUrl: string; taskUrl: string; visits: Visit[] }
 interface Program { id: string; name: string; clientName: string; schedules: Schedule[] }
 interface TaskStat { code: string; title: string; visitOrder: number; started: number; completed: number }
@@ -100,29 +101,61 @@ function ExportButton({ scheduleId }: { scheduleId: string }) {
   );
 }
 
+// Sugerencia inicial de cierre: 8 días después de la apertura. Solo prellena el
+// campo; el staff puede cambiarla y no vive en la lógica del servidor.
+const SUGGESTED_WINDOW_DAYS = 8;
+const bogotaDay = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+const addDays = (ymd: string, n: number) => {
+  const d = new Date(`${ymd}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
 function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: () => void }) {
   const sorted = [...schedule.visits].sort((a, b) => a.order - b.order);
-  const [dates, setDates] = useState<string[]>(() => {
+  const [opens, setOpens] = useState<string[]>(() => {
     const arr = Array(5).fill('');
-    sorted.forEach((v) => { arr[v.order - 1] = v.date.slice(0, 10); });
+    sorted.forEach((v) => { arr[v.order - 1] = bogotaDay(v.opensAt); });
+    return arr;
+  });
+  const [closes, setCloses] = useState<string[]>(() => {
+    const arr = Array(5).fill('');
+    sorted.forEach((v) => { arr[v.order - 1] = bogotaDay(v.closesAt); });
     return arr;
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [showStats, setShowStats] = useState(false);
+  const [showWindows, setShowWindows] = useState(false);
+  const [savedNote, setSavedNote] = useState<string | null>(null);
   const [releaseCedula, setReleaseCedula] = useState('');
   const [releasing, setReleasing] = useState(false);
   const [releaseMsg, setReleaseMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  const setOpenFor = (i: number, value: string) => {
+    setOpens((o) => o.map((x, j) => (j === i ? value : x)));
+    // Si el cierre está vacío, se sugiere 8 días después (editable).
+    setCloses((c) => c.map((x, j) => (j === i && !x && value ? addDays(value, SUGGESTED_WINDOW_DAYS) : x)));
+  };
+
   const save = async () => {
-    const filled = dates.filter(Boolean);
-    if (!filled.length) { setErr('Ingresa al menos la fecha de la Visita 1.'); return; }
-    setSaving(true); setErr(null);
+    const windows = opens.map((o, i) => ({ opensAt: o, closesAt: closes[i] })).filter((w) => w.opensAt);
+    if (!windows.length) { setErr('Ingresa al menos la apertura de la Visita 1.'); return; }
+    if (windows.some((w) => !w.closesAt)) { setErr('Cada visita con apertura necesita su fecha de cierre.'); return; }
+    if (windows.some((w) => w.closesAt < w.opensAt)) { setErr('El cierre no puede ser anterior a la apertura.'); return; }
+    setSaving(true); setErr(null); setSavedNote(null);
     try {
-      await call(`/schedules/${schedule.id}/visits`, { method: 'PUT', body: JSON.stringify({ dates: filled }) });
+      await call(`/schedules/${schedule.id}/visits`, { method: 'PUT', body: JSON.stringify({ visits: windows }) });
+      const note = `Ventanas guardadas (${windows.length} visita${windows.length === 1 ? '' : 's'}).`;
+      toast.success(note);
+      setSavedNote(note);
       onChanged();
-    } catch (e) { setErr((e as Error).message); } finally { setSaving(false); }
+    } catch (e) {
+      const msg = (e as Error).message;
+      toast.error(`No se guardaron las ventanas: ${msg}`);
+      setErr(msg);
+    } finally { setSaving(false); }
   };
 
   const loadStats = async () => {
@@ -165,21 +198,48 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
       </div>
 
       <div className="mt-4">
-        <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          <CalendarClock className="h-3.5 w-3.5" /> Fechas de las 5 visitas
-        </p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-          {[0, 1, 2, 3, 4].map((i) => (
-            <label key={i} className="text-[11px] text-slate-500">
-              Visita {i + 1}
-              <input type="date" value={dates[i]} onChange={(e) => setDates((d) => d.map((x, j) => (j === i ? e.target.value : x)))} className={`${inputCls} mt-1`} />
-            </label>
-          ))}
-        </div>
-        {err && <p role="alert" className="mt-2 text-xs text-red-700">{err}</p>}
-        <button onClick={save} disabled={saving} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40">
-          {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Guardar fechas
+        <button
+          type="button"
+          onClick={() => setShowWindows((v) => !v)}
+          aria-expanded={showWindows}
+          className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-left hover:bg-slate-50"
+        >
+          <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <CalendarClock className="h-3.5 w-3.5" /> Ventanas de visita
+          </span>
+          <span className="text-[11px] text-slate-400">
+            {opens.filter(Boolean).length} configurada{opens.filter(Boolean).length === 1 ? '' : 's'} · {showWindows ? 'Ocultar' : 'Editar'}
+          </span>
         </button>
+
+        {showWindows && (
+          <div className="mt-3">
+            <p className="mb-3 text-[11px] text-slate-400">
+              Apertura: desde cuándo se pueden responder sus tareas. Cierre: hasta cuándo. Las ventanas pueden solaparse
+              (por ejemplo, dar tiempo extra a la visita anterior mientras ya abrió la siguiente).
+            </p>
+            <div className="space-y-2">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <div key={i} className="grid grid-cols-[4.5rem_1fr_1fr] items-end gap-2">
+                  <span className="pb-2 text-xs font-semibold text-slate-600">Visita {i + 1}</span>
+                  <label className="text-[11px] text-slate-500">
+                    Apertura
+                    <input type="date" value={opens[i]} onChange={(e) => setOpenFor(i, e.target.value)} className={`${inputCls} mt-1`} />
+                  </label>
+                  <label className="text-[11px] text-slate-500">
+                    Cierre
+                    <input type="date" value={closes[i]} min={opens[i] || undefined} onChange={(e) => setCloses((c) => c.map((x, j) => (j === i ? e.target.value : x)))} className={`${inputCls} mt-1`} />
+                  </label>
+                </div>
+              ))}
+            </div>
+            {err && <p role="alert" className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{err}</p>}
+            {savedNote && !err && <p role="status" className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{savedNote}</p>}
+            <button onClick={save} disabled={saving} className="mt-3 inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40">
+              {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Guardar ventanas
+            </button>
+          </div>
+        )}
       </div>
 
       {showStats && (
