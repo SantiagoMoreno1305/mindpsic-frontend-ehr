@@ -12,7 +12,6 @@ import { useState } from 'react';
 import { User } from '../types';
 import ContextSwitcher, { WorkspaceContext } from './ContextSwitcher';
 import PortalSwitcher, { PortalId } from './PortalSwitcher';
-import UserProfileModal from './UserProfileModal';
 import { ShieldCheck, LogOut, User as UserIcon, Bell, CalendarDays, X } from 'lucide-react';
 import { OPEN_APPOINTMENT_EVENT } from '../lib/apiClient';
 
@@ -36,7 +35,8 @@ interface StaffNotification {
 interface NavbarProps {
   user: User | null;
   onLogout: () => void;
-  onUserUpdated: (user: User) => void;
+  onOpenProfile: () => void;
+  onGoHome: () => void;
   currentContext: WorkspaceContext;
   onContextChange: (context: WorkspaceContext) => void;
   notifications: StaffNotification[];
@@ -49,8 +49,7 @@ interface NavbarProps {
   onPortalChange?: (portal: PortalId) => void;
 }
 
-export default function Navbar({ user, onLogout, onUserUpdated, currentContext, onContextChange, notifications, onMarkNotificationsRead, onDeleteNotification, onDeleteAllNotifications, showPortalSwitcher = false, portal = null, onPortalChange }: NavbarProps) {
-  const [showProfile, setShowProfile] = useState(false);
+export default function Navbar({ user, onLogout, onOpenProfile, onGoHome, currentContext, onContextChange, notifications, onMarkNotificationsRead, onDeleteNotification, onDeleteAllNotifications, showPortalSwitcher = false, portal = null, onPortalChange }: NavbarProps) {
   const [notifOpen, setNotifOpen] = useState(false);
   const unreadCount = notifications.filter((n) => !n.read).length;
 
@@ -93,7 +92,12 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
         <div className="flex items-center gap-8 py-4">
 
           {/* MindPsic Logo — isotipo oscuro sobre blanco */}
-          <a href="#" className="flex items-center gap-3 group shrink-0" aria-label="MindPsic — Inicio">
+          <a
+            href="#"
+            onClick={(e) => { e.preventDefault(); onGoHome(); }}
+            className="flex items-center gap-3 group shrink-0"
+            aria-label="MindPsic — Inicio"
+          >
             {/* Isotipo SVG (brain + psi) */}
             <div className="w-9 h-9 flex items-center justify-center shrink-0">
               <img
@@ -274,7 +278,7 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
               {/* User identity card — clic abre el perfil */}
               <button
                 type="button"
-                onClick={() => setShowProfile(true)}
+                onClick={onOpenProfile}
                 title="Ver perfil"
                 className="flex items-center gap-3 rounded-lg p-1 -m-1 transition-colors hover:bg-stone-50 cursor-pointer"
               >
@@ -338,14 +342,6 @@ export default function Navbar({ user, onLogout, onUserUpdated, currentContext, 
 
       </div>
 
-      {user && (
-        <UserProfileModal
-          isOpen={showProfile}
-          onClose={() => setShowProfile(false)}
-          user={user}
-          onUserUpdated={onUserUpdated}
-        />
-      )}
     </nav>
   );
 }
