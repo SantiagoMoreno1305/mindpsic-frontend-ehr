@@ -49,6 +49,11 @@ function restoreUserFromStorage(): User | null {
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(restoreUserFromStorage);
+  // Pedidos de navegación del Navbar (logo → inicio, nombre/foto → Mi perfil).
+  // Cada portal los atiende cambiando su propia pestaña; un contador basta para
+  // que un clic repetido vuelva a disparar el cambio.
+  const [navRequest, setNavRequest] = useState<{ target: 'home' | 'profile'; n: number }>({ target: 'home', n: 0 });
+  const requestNav = (target: 'home' | 'profile') => setNavRequest((r) => ({ target, n: r.n + 1 }));
 
   // Workspace Context State — Hybrid Clinical + Research
   const [workspaceContext, setWorkspaceContext] = useState<WorkspaceContext>('clinical');
@@ -186,7 +191,7 @@ export default function App() {
   };
 
   // Actualiza el usuario en memoria + localStorage tras una acción propia
-  // (hoy: subir foto de perfil desde UserProfileModal) sin necesidad de
+  // (hoy: subir foto de perfil desde Mi perfil) sin necesidad de
   // esperar al próximo /auth/sync.
   const handleUserUpdated = (updatedUser: User) => {
     setCurrentUser(updatedUser);
@@ -466,17 +471,19 @@ export default function App() {
 
       // ── Nivel 1 ─────────────────────────────────────────────────────────────
       case 'CEO':
-        return <AdminPortal />;
+        return <AdminPortal navRequest={navRequest} onUserUpdated={handleUserUpdated} />;
 
       // ── Nivel 2 ─────────────────────────────────────────────────────────────
       case 'DIRECTIVO':
-        return <AdminPortal />;
+        return <AdminPortal navRequest={navRequest} onUserUpdated={handleUserUpdated} />;
 
       // ── Nivel 3 ─────────────────────────────────────────────────────────────
       case 'ESPECIALISTA_B2B':
         return (
           <PsychologistPortal
             onOpenDrMindWithPatient={handleOpenDrMindWithPatient}
+            navRequest={navRequest}
+            onUserUpdated={handleUserUpdated}
             workspaceContext={workspaceContext}
             onContextChange={setWorkspaceContext}
           />
@@ -484,7 +491,7 @@ export default function App() {
 
       // ── Nivel 4 ─────────────────────────────────────────────────────────────
       case 'OPERATIVO':
-        return <AdminPortal />;
+        return <AdminPortal navRequest={navRequest} onUserUpdated={handleUserUpdated} />;
 
       // ── Nivel 5: acceso DENEGADO al EHR interno ─────────────────────────────
       case 'USUARIO_B2C':
@@ -595,7 +602,8 @@ export default function App() {
       <Navbar
         user={currentUser}
         onLogout={handleLogout}
-        onUserUpdated={handleUserUpdated}
+        onOpenProfile={() => requestNav('profile')}
+        onGoHome={() => requestNav('home')}
         currentContext={workspaceContext}
         onContextChange={setWorkspaceContext}
         notifications={staffNotifications}

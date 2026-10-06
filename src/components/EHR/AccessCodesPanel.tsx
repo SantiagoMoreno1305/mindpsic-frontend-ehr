@@ -27,6 +27,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { KeyRound, Plus, X, Copy, Check, Loader2, Ban, Building2, ClipboardList, BellRing, Pencil, MoreVertical, Users } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
+import { LugarAplicacionFields, camposDeLugar, etiquetaDeLugar, lineasDeLugar, textoDeLugar, type LugarTipo } from './LugarAplicacionFields';
 
 interface InstrumentOption {
   id: string;
@@ -50,6 +51,8 @@ interface AccessCodeRecord {
   company: { id: string; name: string };
   instrument: { id: string; code: string; name: string } | null;
   evaluationDeadline: string | null;
+  lugarTipo: string | null;
+  lugarOpciones: string[] | null;
   // Estado como CANAL DE ENTRADA (¿todavía se puede canjear?) — lo calcula el
   // backend. Independiente del avance de lo ya canjeado (progress).
   lifecycle: Lifecycle;
@@ -196,6 +199,14 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
   const [name, setName] = useState('');
   const [customCode, setCustomCode] = useState('');
   const [maxUses, setMaxUses] = useState('');
+  const [lugarTipo, setLugarTipo] = useState<LugarTipo | ''>('');
+  const [lugarTexto, setLugarTexto] = useState('');
+  // Edición del lugar de un código ya creado (diálogo aparte).
+  const [editLugarCode, setEditLugarCode] = useState<AccessCodeRecord | null>(null);
+  const [editLugarTipo, setEditLugarTipo] = useState<LugarTipo | ''>('');
+  const [editLugarTexto, setEditLugarTexto] = useState('');
+  const [savingLugar, setSavingLugar] = useState(false);
+  const [editLugarError, setEditLugarError] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -258,6 +269,8 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
     setMaxUses('');
     setExpiresAt('');
     setEvaluationDeadline('');
+    setLugarTipo('');
+    setLugarTexto('');
     setFormError(null);
   }
 
@@ -293,6 +306,7 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
           maxUses: maxUses.trim() || undefined,
           expiresAt: expiresAt || undefined,
           evaluationDeadline: purpose === 'EVALUATION_CAMPAIGN' ? evaluationDeadline || undefined : undefined,
+          ...(purpose === 'EVALUATION_CAMPAIGN' ? camposDeLugar(lugarTipo, lugarTexto) : {}),
         }),
       });
       const data = await res.json();
@@ -306,6 +320,36 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
       setFormError('No se pudo contactar el servidor.');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  function startEditLugar(c: AccessCodeRecord) {
+    setEditLugarCode(c);
+    setEditLugarTipo((c.lugarTipo as LugarTipo) || '');
+    setEditLugarTexto(textoDeLugar(c.lugarOpciones));
+    setEditLugarError(null);
+  }
+
+  async function saveLugar() {
+    if (!editLugarCode) return;
+    setSavingLugar(true);
+    setEditLugarError(null);
+    try {
+      // Sin nada escrito se borra el lugar: el código deja de pedirlo.
+      const campos = camposDeLugar(editLugarTipo, editLugarTexto);
+      const body = Object.keys(campos).length ? campos : { lugarTipo: null, lugarOpciones: null };
+      const res = await apiFetch(`/api/access-codes/${editLugarCode.id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEditLugarError(data.error || `HTTP ${res.status}`);
+        return;
+      }
+      setEditLugarCode(null);
+      fetchCodes();
+    } catch {
+      setEditLugarError('No se pudo contactar el servidor.');
+    } finally {
+      setSavingLugar(false);
     }
   }
 
@@ -523,6 +567,18 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
                             {copiedId === c.id ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3 text-slate-400" />}
                           </button>
                           {c.name && <span className="mt-1 block text-[10.5px] text-slate-400">{c.name}</span>}
+                          {c.purpose === 'EVALUATION_CAMPAIGN' && (
+                            <span className="mt-1 flex items-center gap-1 text-[10.5px] text-slate-500">
+                              {c.lugarOpciones?.length
+                                ? `${etiquetaDeLugar(c.lugarTipo)} · ${c.lugarOpciones.length} opciones`
+                                : 'Sin lugar de aplicación'}
+                              {c.lifecycle !== 'CERRADO' && (
+                                <button onClick={() => startEditLugar(c)} title="Definir lugar de aplicación" className="rounded p-0.5 text-slate-300 hover:text-toast-500 cursor-pointer">
+                                  <Pencil className="h-3 w-3" />
+                                </button>
+                              )}
+                            </span>
+                          )}
                         </td>
                         {showPurposeCol && (
                           <td className="px-4 py-3">
@@ -796,6 +852,10 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
                 </div>
               )}
 
+              {purpose === 'EVALUATION_CAMPAIGN' && (
+                <LugarAplicacionFields tipo={lugarTipo} onTipoChange={setLugarTipo} texto={lugarTexto} onTextoChange={setLugarTexto} />
+              )}
+
               {formError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">{formError}</p>}
             </div>
 
@@ -813,6 +873,41 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {editLugarCode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-charcoal-900/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+              <div>
+                <h2 className="text-base font-bold text-charcoal-900">Lugar de aplicación</h2>
+                <p className="font-mono text-xs text-slate-500">{editLugarCode.code}</p>
+              </div>
+              <button type="button" onClick={() => setEditLugarCode(null)} className="text-slate-400 hover:text-charcoal-900 cursor-pointer">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-3 px-6 py-5">
+              <LugarAplicacionFields tipo={editLugarTipo} onTipoChange={setEditLugarTipo} texto={editLugarTexto} onTextoChange={setEditLugarTexto} />
+              <p className="text-[10.5px] text-slate-400">Afecta solo a los registros nuevos. Quien ya se registró conserva su lugar.</p>
+              {editLugarError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">{editLugarError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-slate-100 px-6 py-4">
+              <button type="button" onClick={() => setEditLugarCode(null)} className="rounded-lg px-4 py-2.5 text-sm font-semibold text-slate-500 hover:text-charcoal-900 cursor-pointer">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={saveLugar}
+                disabled={savingLugar}
+                className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-charcoal-800 disabled:opacity-50 cursor-pointer"
+              >
+                {savingLugar && <Loader2 className="h-4 w-4 animate-spin" />}
+                Guardar
+              </button>
+            </div>
           </div>
         </div>
       )}

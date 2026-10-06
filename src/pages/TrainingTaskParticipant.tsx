@@ -27,12 +27,13 @@ interface Task {
   fields?: Field[]; naLabel?: string; options?: string[]; days?: string[];
 }
 type Answers = Record<string, any>;
-interface StateTask { code: string; title: string; status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' }
+interface StateTask { code: string; title: string; status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED'; visitOrder: number }
+interface StateWindow { visitOrder: number; closesAt: string; allDone: boolean; tasks: StateTask[] }
 type ParticipantState =
-  | { phase: 'NOT_STARTED' }
-  | { phase: 'OPEN'; visitOrder: number; deadline: string; allDone: boolean; tasks: StateTask[] }
+  | { phase: 'NOT_STARTED'; nextVisitOrder: number | null; nextDate: string | null }
+  | { phase: 'OPEN'; windows: StateWindow[]; allDone: boolean; tasks: StateTask[] }
   | { phase: 'WAITING'; nextVisitOrder: number; nextDate: string }
-  | { phase: 'CLOSED'; visitOrder: number; tasks: StateTask[] };
+  | { phase: 'CLOSED' };
 
 const safeGet = (k: string) => { try { return sessionStorage.getItem(k); } catch { return null; } };
 const safeSet = (k: string, v: string) => { try { sessionStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
@@ -352,13 +353,10 @@ export default function TrainingTaskParticipant() {
         </Shell>
       );
     }
-    // Lista de tareas de la visita vigente
+    // Una sección por ventana abierta: pendientes de la visita anterior arriba,
+    // con su fecha de cierre, y las de la visita nueva debajo.
     return (
       <Shell>
-        <div className="mb-4 flex items-center justify-between text-xs text-charcoal-900/60">
-          <span>Visita {pState.visitOrder}</span>
-          <span>Tienes hasta el {formatDate(pState.deadline)}</span>
-        </div>
         {pState.allDone ? (
           <Card className="text-center">
             <CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-toast-500" aria-hidden />
@@ -366,18 +364,29 @@ export default function TrainingTaskParticipant() {
             <p className="mt-2 text-sm text-charcoal-900/70">Vuelve a entrar con tu cédula cuando llegue tu próxima visita.</p>
           </Card>
         ) : (
-          <div className="space-y-3">
-            {pState.tasks.map((t) => (
-              <button
-                key={t.code} onClick={() => void openTask(t.code)} disabled={t.status === 'COMPLETED' || busy}
-                className={`flex w-full items-center justify-between rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:border-toast-500 disabled:cursor-default disabled:opacity-60 ${t.status === 'COMPLETED' ? 'border-emerald-200' : 'border-charcoal-900/10'}`}
-              >
-                <div>
-                  <p className="text-sm font-semibold text-charcoal-900">{t.title}</p>
-                  <p className="text-xs text-charcoal-900/50">{t.status === 'COMPLETED' ? 'Enviada' : 'Por responder'}</p>
+          <div className="space-y-6">
+            {pState.windows.map((w) => (
+              <section key={w.visitOrder} className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-charcoal-900/60">
+                  <span className="font-semibold">Visita {w.visitOrder}</span>
+                  <span>Tienes hasta el {formatDate(w.closesAt)}</span>
                 </div>
-                {t.status === 'COMPLETED' ? <CheckCircle2 className="h-5 w-5 text-emerald-500" aria-hidden /> : <ArrowRight className="h-5 w-5 text-charcoal-900/30" aria-hidden />}
-              </button>
+                {w.allDone && (
+                  <p className="rounded-xl bg-emerald-50 px-3 py-2 text-xs text-emerald-800">Ya enviaste las tareas de esta visita.</p>
+                )}
+                {w.tasks.map((t) => (
+                  <button
+                    key={t.code} onClick={() => void openTask(t.code)} disabled={t.status === 'COMPLETED' || busy}
+                    className={`flex w-full items-center justify-between rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:border-toast-500 disabled:cursor-default disabled:opacity-60 ${t.status === 'COMPLETED' ? 'border-emerald-200' : 'border-charcoal-900/10'}`}
+                  >
+                    <div>
+                      <p className="text-sm font-semibold text-charcoal-900">{t.title}</p>
+                      <p className="text-xs text-charcoal-900/50">{t.status === 'COMPLETED' ? 'Enviada' : 'Por responder'}</p>
+                    </div>
+                    {t.status === 'COMPLETED' ? <CheckCircle2 className="h-5 w-5 text-emerald-500" aria-hidden /> : <ArrowRight className="h-5 w-5 text-charcoal-900/30" aria-hidden />}
+                  </button>
+                ))}
+              </section>
             ))}
             {error && <ErrorNote message={error} />}
           </div>
