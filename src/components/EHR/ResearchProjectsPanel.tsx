@@ -28,6 +28,7 @@ import { toast } from 'react-hot-toast';
 import { FlaskConical, Plus, Loader2, ChevronDown, ChevronRight, Send, BarChart3, Users, Download, KeyRound, X } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
+import { LugarAplicacionFields, camposDeLugar, type LugarTipo } from './LugarAplicacionFields';
 
 interface InstrumentOption {
   id: string;
@@ -174,6 +175,8 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
   const [codeDeadline, setCodeDeadline] = useState('');
   const [codeSubmitting, setCodeSubmitting] = useState(false);
   const [codeFormError, setCodeFormError] = useState<string | null>(null);
+  const [codeLugarTipo, setCodeLugarTipo] = useState<LugarTipo | ''>('');
+  const [codeLugarTexto, setCodeLugarTexto] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -248,6 +251,8 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
     setCodeMaxUses('');
     setCodeExpiresAt('');
     setCodeDeadline('');
+    setCodeLugarTipo('');
+    setCodeLugarTexto('');
     setCodeFormError(null);
   };
 
@@ -268,6 +273,7 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
           maxUses: codeMaxUses.trim() || undefined,
           expiresAt: codeExpiresAt || undefined,
           evaluationDeadline: codeDeadline || undefined,
+          ...camposDeLugar(codeLugarTipo, codeLugarTexto),
         }),
       });
       const data = await res.json();
@@ -646,8 +652,8 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
 
       {codeModalFor && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <div className="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
                 <h2 className="text-sm font-bold text-slate-900">Crear código de acceso</h2>
                 <p className="text-xs text-slate-500">
@@ -658,7 +664,7 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <div className="space-y-3 px-5 py-4">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
               {!codeModalFor.project.company && (
                 <div>
                   <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Convenio / Cliente *</label>
@@ -691,9 +697,15 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                 <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fecha límite para completar (opcional)</label>
                 <input type="date" value={codeDeadline} onChange={(e) => setCodeDeadline(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
               </div>
+              <LugarAplicacionFields
+                tipo={codeLugarTipo}
+                onTipoChange={setCodeLugarTipo}
+                texto={codeLugarTexto}
+                onTextoChange={setCodeLugarTexto}
+              />
               {codeFormError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{codeFormError}</p>}
             </div>
-            <div className="flex items-center justify-end gap-3 border-t border-slate-100 px-5 py-4">
+            <div className="flex shrink-0 items-center justify-end gap-3 border-t border-slate-100 px-5 py-4">
               <button onClick={() => setCodeModalFor(null)} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-500 hover:text-slate-900 cursor-pointer">Cancelar</button>
               <button
                 onClick={submitCode}
