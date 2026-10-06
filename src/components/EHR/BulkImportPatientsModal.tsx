@@ -29,7 +29,6 @@
  *   POST /api/patients/bulk-import → Validación + creación atómica del lote
  */
 import { useEffect, useState } from 'react';
-import * as XLSX from 'xlsx-js-style';
 import ExcelJS from 'exceljs';
 import { X, Download, Upload, Loader2, AlertTriangle, CheckCircle2, FileSpreadsheet } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
@@ -205,6 +204,19 @@ function statusLabelToKey(label: string): string | null {
     ([key, value]) => BULK_STATUS_KEYS.includes(key) && value.toLowerCase() === normalized
   );
   return entry ? entry[0] : null;
+}
+
+// Valor de celda de ExcelJS → texto. Toma el resultado de las fórmulas, nunca las ejecuta.
+function cellPlainText(value: any): string {
+  if (value == null) return '';
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') {
+    if (value.richText) return value.richText.map((r: any) => r.text).join('');
+    if ('result' in value) return cellPlainText(value.result);
+    if (value.text != null) return String(value.text);
+    return '';
+  }
+  return String(value);
 }
 
 export default function BulkImportPatientsModal({ isOpen, onClose, onImported }: BulkImportPatientsModalProps) {
@@ -537,6 +549,30 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
     return '';
   }
 
+  // Lee la hoja "Pacientes" (o la primera) como filas {encabezado: valor}.
+  // Se usa ExcelJS (no xlsx) porque el archivo lo elige el usuario: solo .xlsx,
+  // y sin ejecutar fórmulas (se toma su resultado).
+  async function readPatientRows(buf: ArrayBuffer): Promise<Record<string, any>[]> {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf);
+    const sheet = wb.getWorksheet('Pacientes') ?? wb.worksheets[0];
+    if (!sheet) return [];
+    const headers: string[] = [];
+    sheet.getRow(1).eachCell((cell, col) => { headers[col - 1] = cellPlainText(cell.value).trim(); });
+    const rows: Record<string, any>[] = [];
+    sheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      const obj: Record<string, any> = {};
+      headers.forEach((header, i) => {
+        if (!header) return;
+        const v = row.getCell(i + 1).value;
+        obj[header] = v == null ? '' : (v instanceof Date ? v : cellPlainText(v));
+      });
+      if (Object.values(obj).some((v) => v !== '')) rows.push(obj);
+    });
+    return rows;
+  }
+
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -545,11 +581,20 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
     setServerErrors([]);
     setSuccessCount(null);
 
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
+      setGeneralError('Sube un archivo .xlsx (la plantilla que descargas aquí).');
+      setParsedRows(null);
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setGeneralError('El archivo supera 5 MB. Divídelo en varios archivos.');
+      setParsedRows(null);
+      return;
+    }
+
     try {
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array', cellDates: true });
-      const sheet = wb.Sheets['Pacientes'] || wb.Sheets[wb.SheetNames[0]];
-      const raw: Record<string, any>[] = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      const raw = await readPatientRows(buf);
 
       if (raw.length === 0) {
         setGeneralError('El archivo no tiene filas para importar.');
@@ -911,7 +956,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
             <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-500 transition-colors hover:border-toast-400 hover:bg-toast-50/40">
               <Upload className="h-4 w-4 shrink-0 text-slate-400" />
               <span className="truncate">{fileName || 'Selecciona el archivo .xlsx completado...'}</span>
-              <input type="file" accept=".xlsx,.xls" onChange={handleFileChange} className="hidden" />
+              <input type="file" accept=".xlsx" onChange={handleFileChange} className="hidden" />
             </label>
           </div>
 

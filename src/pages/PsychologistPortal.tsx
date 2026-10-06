@@ -10,6 +10,7 @@
 
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
+import MiPerfilPage from '../components/MiPerfilPage';
 import ClinicalRecordsList from '../components/EHR/ClinicalRecordsList';
 import { useState, FormEvent, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -81,6 +82,7 @@ import {
   Stethoscope,
   BarChart3,
   LayoutGrid,
+  UserRound,
 } from 'lucide-react';
 import CalendarPanel, {
   normalizeStatus,
@@ -140,14 +142,18 @@ interface PsychologistPortalProps {
   onOpenDrMindWithPatient: (patient: Patient) => void;
   workspaceContext: WorkspaceContext;
   onContextChange: (context: WorkspaceContext) => void;
+  navRequest?: { target: 'home' | 'profile'; n: number };
+  onUserUpdated?: (user: User) => void;
 }
 
-type ActiveTab = 'dashboard' | 'video' | 'evaluations' | 'patients' | 'clinical_history' | 'chat' | 'reports' | 'research' | 'screening' | 'drive';
+type ActiveTab = 'dashboard' | 'video' | 'evaluations' | 'patients' | 'clinical_history' | 'chat' | 'reports' | 'research' | 'screening' | 'drive' | 'mi_perfil';
 
 export default function PsychologistPortal({
   onOpenDrMindWithPatient,
   workspaceContext,
   onContextChange,
+  navRequest,
+  onUserUpdated,
 }: PsychologistPortalProps) {
   const navigate = useNavigate();
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -469,7 +475,7 @@ export default function PsychologistPortal({
   // Recuerda la última tab visitada entre recargas — mismo fix aplicado en
   // AdminPortal: sin esto, un refresh de página remonta el componente y
   // activeTab vuelve a 'dashboard' sin importar dónde estaba el usuario.
-  const PSYCHOLOGIST_TABS: ActiveTab[] = ['dashboard', 'video', 'evaluations', 'patients', 'clinical_history', 'chat', 'reports', 'research', 'screening', 'drive'];
+  const PSYCHOLOGIST_TABS: ActiveTab[] = ['dashboard', 'video', 'evaluations', 'patients', 'clinical_history', 'chat', 'reports', 'research', 'screening', 'drive', 'mi_perfil'];
   const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
     const saved = localStorage.getItem('mind_psych_active_tab');
     return (saved && (PSYCHOLOGIST_TABS as string[]).includes(saved)) ? (saved as ActiveTab) : 'dashboard';
@@ -477,6 +483,11 @@ export default function PsychologistPortal({
   useEffect(() => {
     localStorage.setItem('mind_psych_active_tab', activeTab);
   }, [activeTab]);
+  // Logo → inicio; nombre/foto del Navbar → Mi perfil (ver navRequest en App.tsx).
+  useEffect(() => {
+    if (!navRequest || navRequest.n === 0) return;
+    setActiveTab(navRequest.target === 'profile' ? 'mi_perfil' : 'dashboard');
+  }, [navRequest?.n]);
 
   const [patients, setPatients] = useState<Patient[]>(initialPatients);
   const [progressNotes, setProgressNotes] = useState<ProgressNote[]>(initialProgressNotes);
@@ -880,6 +891,18 @@ export default function PsychologistPortal({
               </button>
             </>
           )}
+
+          <button
+            onClick={() => setActiveTab('mi_perfil')}
+            id="tab-psych-mi-perfil"
+            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
+              activeTab === 'mi_perfil' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
+            }`}
+          >
+            <UserRound className="w-5 h-5 shrink-0" />
+            <span className="ml-3 text-xs hidden md:block">Mi perfil</span>
+            {activeTab === 'mi_perfil' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+          </button>
         </div>
 
         {/* License + Compliance Signature Block – reemplaza al footer general de la app */}
@@ -990,6 +1013,14 @@ export default function PsychologistPortal({
       <main className="flex-1 overflow-y-auto p-6 md:p-8">
         
         {/* VIEW: INTERNAL CHAT */}
+        {activeTab === 'mi_perfil' && currentUser && (
+          <MiPerfilPage
+            user={currentUser}
+            onUserUpdated={(u) => { setCurrentUser(u); onUserUpdated?.(u); }}
+            onBack={() => setActiveTab('dashboard')}
+          />
+        )}
+
         {activeTab === 'chat' && (
           <div className="max-w-7xl mx-auto">
             <InternalChat currentUser={currentUser} />

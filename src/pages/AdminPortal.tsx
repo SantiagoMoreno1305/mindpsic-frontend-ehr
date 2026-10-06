@@ -21,6 +21,7 @@ import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
+import MiPerfilPage from '../components/MiPerfilPage';
 import AccessCodesPanel from '../components/EHR/AccessCodesPanel';
 import TariffsPanel from '../components/EHR/TariffsPanel';
 import ResearchProjectsPanel from '../components/EHR/ResearchProjectsPanel';
@@ -82,12 +83,18 @@ import {
   KeyRound,
   Tag,
   Inbox,
-  FlaskConical
+  FlaskConical,
+  UserRound
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat' | 'mi_perfil';
 
-export default function AdminPortal() {
+interface AdminPortalProps {
+  navRequest?: { target: 'home' | 'profile'; n: number };
+  onUserUpdated?: (user: User) => void;
+}
+
+export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalProps = {}) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   // Permiso del socio para crear códigos de acceso (Tenant.allowAccessCodes,
   // lo habilita MindPsic desde AdminCenter). null = aún no se sabe: mientras
@@ -917,7 +924,7 @@ export default function AdminPortal() {
   // Recuerda la última tab visitada entre recargas — sin esto, cualquier
   // refresh de página remonta el componente y activeTab vuelve a su default
   // ('metrics' / "Tablero Gerencial"), sin importar dónde estaba el usuario.
-  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat'];
+  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat', 'mi_perfil'];
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     const saved = localStorage.getItem('mind_admin_active_tab');
     return (saved && (ADMIN_TABS as string[]).includes(saved)) ? (saved as AdminTab) : 'metrics';
@@ -925,6 +932,11 @@ export default function AdminPortal() {
   useEffect(() => {
     localStorage.setItem('mind_admin_active_tab', activeTab);
   }, [activeTab]);
+  // Logo → inicio; nombre/foto del Navbar → Mi perfil (ver navRequest en App.tsx).
+  useEffect(() => {
+    if (!navRequest || navRequest.n === 0) return;
+    setActiveTab(navRequest.target === 'profile' ? 'mi_perfil' : 'metrics');
+  }, [navRequest?.n]);
 
   // Igual que activeTab: sin esto, un refresh estando dentro de la ficha de
   // un paciente perdía selectedPatientId y volvía al listado de "Historias
@@ -2033,20 +2045,27 @@ export default function AdminPortal() {
             {activeTab === 'chat' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
           </button>
 
+
         </div>
 
         {/* Console state tag + user info (dinámico) */}
         <div className="p-4 border-t border-slate-800 hidden md:block bg-slate-950/40 text-left">
-          <div className="flex items-center space-x-1.5 text-toast-450 mb-1">
+          <div className="flex items-center space-x-1.5 text-toast-450 mb-2">
             <ShieldCheck className="w-3.5 h-3.5 text-toast-400" />
             <span className="text-[10px] font-bold uppercase tracking-wider text-toast-300">
               Sesión activa
             </span>
           </div>
-          <p className="text-[11px] font-semibold text-white truncate">{currentUser.name}</p>
-          <p className="text-[9px] text-slate-400 font-mono mt-0.5">
-            {currentUser.role} · {currentUser.tenantId}
-          </p>
+          <button
+            onClick={() => setActiveTab('mi_perfil')}
+            id="tab-adm-mi-perfil"
+            className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs transition-colors cursor-pointer ${
+              activeTab === 'mi_perfil' ? 'bg-white/10 text-white font-semibold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
+            }`}
+          >
+            <UserRound className="w-4 h-4 shrink-0" />
+            Mi perfil
+          </button>
           {currentUser.licenseNumber && (
             <p className="text-[9px] text-slate-500 font-mono mt-1">
               Lic. {currentUser.licenseNumber}
@@ -3728,6 +3747,14 @@ export default function AdminPortal() {
 
         {/* VIEW: TARIFAS — por convenio y por estrato (particular) */}
         {activeTab === 'tariffs' && <TariffsPanel />}
+
+        {activeTab === 'mi_perfil' && currentUser && (
+          <MiPerfilPage
+            user={currentUser}
+            onUserUpdated={(u) => { setCurrentUser(u); onUserUpdated?.(u); }}
+            onBack={() => setActiveTab('metrics')}
+          />
+        )}
 
         {/* VIEW: PROYECTOS DE INVESTIGACIÓN */}
         {activeTab === 'research_projects' && showResearchTab && <ResearchProjectsPanel canManage={researchCap?.canManage ?? false} />}
