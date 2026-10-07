@@ -21,7 +21,8 @@ interface Visit { id: string; order: number; opensAt: string; closesAt: string }
 interface Schedule { id: string; name: string | null; facilitatorUrl: string; taskUrl: string; visits: Visit[] }
 interface Program { id: string; name: string; clientName: string; schedules: Schedule[] }
 interface TaskStat { code: string; title: string; visitOrder: number; started: number; completed: number }
-interface Stats { participants: number; checklists: number; tasks: TaskStat[] }
+interface Stats { participants: number; checklists: number; roster: { total: number; conPersonal: number; sinPersonal: number }; tasks: TaskStat[] }
+interface RosterSection { name: string; total: number; conPersonal: number; sinPersonal: number }
 
 const inputCls = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-toast-500 focus:outline-none focus:ring-2 focus:ring-toast-500/30';
 const fmt = (iso: string) => new Date(iso).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'America/Bogota' });
@@ -103,7 +104,7 @@ function ExportButton({ scheduleId }: { scheduleId: string }) {
 
 // Sugerencia inicial de cierre: 8 días después de la apertura. Solo prellena el
 // campo; el staff puede cambiarla y no vive en la lógica del servidor.
-const SUGGESTED_WINDOW_DAYS = 8;
+const SUGGESTED_WINDOW_DAYS = 5;
 const bogotaDay = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
 const addDays = (ymd: string, n: number) => {
   const d = new Date(`${ymd}T12:00:00Z`);
@@ -129,6 +130,48 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
   const [showStats, setShowStats] = useState(false);
   const [showWindows, setShowWindows] = useState(false);
   const [savedNote, setSavedNote] = useState<string | null>(null);
+  const [showRoster, setShowRoster] = useState(false);
+  const [rosterFile, setRosterFile] = useState<string | null>(null);
+  const [rosterSections, setRosterSections] = useState<RosterSection[] | null>(null);
+  const [rosterChoice, setRosterChoice] = useState('');
+  const [rosterBusy, setRosterBusy] = useState(false);
+  const [rosterSummary, setRosterSummary] = useState<{ total: number; conPersonal: number; sinPersonal: number } | null>(null);
+
+  const readAsBase64 = async (file: File) => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let bin = '';
+    bytes.forEach((b) => { bin += String.fromCharCode(b); });
+    return btoa(bin);
+  };
+
+  const onRosterFile = async (file: File | undefined) => {
+    setRosterSections(null); setRosterChoice('');
+    if (!file) return;
+    setRosterBusy(true);
+    try {
+      const b64 = await readAsBase64(file);
+      setRosterFile(b64);
+      const r = await call<{ sections: RosterSection[] }>(`/schedules/${schedule.id}/roster/preview`, { method: 'POST', body: JSON.stringify({ file: b64 }) });
+      setRosterSections(r.sections);
+      if (r.sections.length === 1) setRosterChoice(r.sections[0].name);
+    } catch (e) {
+      setRosterFile(null);
+      toast.error(`No se pudo leer el archivo: ${(e as Error).message}`);
+    } finally { setRosterBusy(false); }
+  };
+
+  const importRoster = async () => {
+    if (!rosterFile || !rosterChoice) return;
+    setRosterBusy(true);
+    try {
+      const r = await call<{ roster: { total: number; conPersonal: number; sinPersonal: number } }>(`/schedules/${schedule.id}/roster`, { method: 'POST', body: JSON.stringify({ file: rosterFile, section: rosterChoice }) });
+      setRosterSummary(r.roster);
+      setRosterSections(null); setRosterFile(null); setRosterChoice('');
+      toast.success(`Lista importada: ${r.roster.total} colaboradores (${r.roster.conPersonal} con personal a cargo).`);
+    } catch (e) {
+      toast.error(`No se importó la lista: ${(e as Error).message}`);
+    } finally { setRosterBusy(false); }
+  };
   const [releaseCedula, setReleaseCedula] = useState('');
   const [releasing, setReleasing] = useState(false);
   const [releaseMsg, setReleaseMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -161,7 +204,7 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
   const loadStats = async () => {
     setShowStats((v) => !v);
     if (!stats) {
-      try { setStats(await call<Stats>(`/schedules/${schedule.id}/stats`)); } catch { /* silencioso */ }
+      try { const st = await call<Stats>(`/schedules/${schedule.id}/stats`); setStats(st); setRosterSummary(st.roster); } catch { /* silencioso */ }
     }
   };
 
@@ -195,6 +238,57 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
           <input readOnly value={schedule.facilitatorUrl} onFocus={(e) => e.currentTarget.select()} className="flex-1 min-w-0 bg-transparent font-mono text-[11px] text-charcoal-900 outline-none" />
           <CopyButton url={schedule.facilitatorUrl} label="Facilitadoras" />
         </div>
+      </div>
+
+      <div className="mt-4">
+        <button
+          type="button"
+          onClick={() => setShowRoster((v) => !v)}
+          aria-expanded={showRoster}
+          className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2 text-left hover:bg-slate-50"
+        >
+          <span className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <Users className="h-3.5 w-3.5" /> Lista de colaboradores
+          </span>
+          <span className="text-[11px] text-slate-400">
+            {rosterSummary ? `${rosterSummary.total} colaboradores · ${rosterSummary.conPersonal} con personal a cargo` : 'Sin lista cargada'} · {showRoster ? 'Ocultar' : 'Editar'}
+          </span>
+        </button>
+        {showRoster && (
+          <div className="mt-3 space-y-3">
+            <p className="text-[11px] text-slate-400">
+              Sube el Excel de la obra. Quien aparece como NO tiene personal a cargo y solo ve el Bloque 1; quien no está en la lista ve ambos bloques.
+            </p>
+            <input
+              type="file" accept=".xlsx"
+              onChange={(e) => void onRosterFile(e.target.files?.[0])}
+              disabled={rosterBusy}
+              className="block w-full text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-xs file:font-semibold"
+            />
+            {rosterSections && (
+              <div className="space-y-2">
+                <label className="block text-[11px] text-slate-500">
+                  Obra a importar
+                  <select value={rosterChoice} onChange={(e) => setRosterChoice(e.target.value)} className={`${inputCls} mt-1`}>
+                    <option value="">Selecciona…</option>
+                    {rosterSections.map((r) => (
+                      <option key={r.name} value={r.name}>{r.name} — {r.total} colaboradores ({r.conPersonal} con personal a cargo)</option>
+                    ))}
+                  </select>
+                </label>
+                <button onClick={importRoster} disabled={!rosterChoice || rosterBusy} className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40">
+                  {rosterBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Importar lista de esta obra
+                </button>
+              </div>
+            )}
+            {rosterBusy && !rosterSections && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
+            {rosterSummary && !rosterSections && (
+              <p className="text-xs text-slate-600">
+                Lista actual: {rosterSummary.total} colaboradores · {rosterSummary.conPersonal} con personal a cargo · {rosterSummary.sinPersonal} sin personal a cargo.
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="mt-4">
