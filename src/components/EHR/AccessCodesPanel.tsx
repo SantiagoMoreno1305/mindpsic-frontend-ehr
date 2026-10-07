@@ -23,7 +23,8 @@
  *   PATCH /api/access-codes/:id/close  → revocar uno antes de tiempo
  *   GET   /api/assessments/catalog     → catálogo de instrumentos (solo para EVALUATION_CAMPAIGN)
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { KeyRound, Plus, X, Copy, Check, Loader2, Ban, Building2, ClipboardList, BellRing, Pencil, MoreVertical, Users } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
@@ -49,7 +50,10 @@ interface AccessCodeRecord {
   createdByName: string | null;
   createdAt: string;
   company: { id: string; name: string };
-  instrument: { id: string; code: string; name: string } | null;
+  // Un código puede llevar varios instrumentos a la vez (decisión
+  // 2026-10-07) — si viene de una oleada de investigación, son los de la
+  // oleada; si es un código de campaña suelto, los suyos propios.
+  instruments: Array<{ id: string; code: string; name: string; nameEs?: string | null }>;
   evaluationDeadline: string | null;
   lugarTipo: string | null;
   lugarOpciones: string[] | null;
@@ -77,7 +81,9 @@ interface RedemptionRecord {
   id: string;
   redeemedAt: string;
   patient: { id: string; firstName: string; lastName: string; documentId: string; email: string | null };
-  evaluation: { state: EvalState; instrumentName: string; dueAt: string | null; startedAt: string | null; completedAt: string | null } | null;
+  // Varias si el código lleva varios instrumentos — una por cada evaluación
+  // que se le creó a esta persona al canjear.
+  evaluations: Array<{ state: EvalState; instrumentName: string; dueAt: string | null; startedAt: string | null; completedAt: string | null }>;
   lastRemindedAt: string | null;
   reminderCount: number;
   canRemind: boolean;
@@ -113,6 +119,11 @@ const PURPOSE_LABELS: Record<string, string> = {
 // código, lo que dejaba la columna "Acción" despeinada (cada fila con un ancho
 // distinto). Un solo punto de entrada consistente, con las opciones que apliquen
 // adentro, y "—" cuando no hay ninguna.
+//
+// Renderizado en un portal a document.body con posición `fixed` calculada
+// desde el botón (NO `absolute` dentro de la fila): la tabla tiene scroll
+// propio, y un menú `absolute` se corta contra su borde en las últimas filas
+// (reportado 2026-10-07, mismo bug que WaveActionsMenu en ResearchProjectsPanel).
 function RowActionsMenu({
   hasRedemptions, expanded, canClose, onToggleRedemptions, onClose,
 }: {
@@ -123,15 +134,45 @@ function RowActionsMenu({
   onClose: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [style, setStyle] = useState<{ top: number; left: number; visibility: 'hidden' | 'visible' }>({ top: 0, left: 0, visibility: 'hidden' });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const MENU_WIDTH = 192; // w-48
 
+  const close = () => setOpen(false);
+
+  // Primero se posiciona "a ciegas" (debajo del botón, visibility: hidden)
+  // para medir la altura real del menú ya renderizado, y recién con esa
+  // medida se decide si voltearlo hacia arriba.
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    setStyle({ top: rect.bottom + 4, left: Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8), visibility: 'hidden' });
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !menuRef.current || !btnRef.current || style.visibility === 'visible') return;
+    const btnRect = btnRef.current.getBoundingClientRect();
+    const menuHeight = menuRef.current.offsetHeight;
+    const openUp = window.innerHeight - btnRect.bottom < menuHeight + 8 && btnRect.top > menuHeight + 8;
+    setStyle({
+      top: openUp ? btnRect.top - menuHeight - 4 : btnRect.bottom + 4,
+      left: Math.min(btnRect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8),
+      visibility: 'visible',
+    });
+  }, [open, style]);
+
+  // Scroll/resize con el menú abierto invalida la posición calculada — más
+  // simple y confiable cerrarlo que recalcular en cada evento de scroll.
   useEffect(() => {
     if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    const onScrollOrResize = () => close();
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+    return () => {
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
     };
-    document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
   }, [open]);
 
   if (!hasRedemptions && !canClose) {
@@ -139,37 +180,46 @@ function RowActionsMenu({
   }
 
   return (
-    <div ref={ref} className="relative inline-block text-left">
+    <>
       <button
+        ref={btnRef}
         onClick={() => setOpen((v) => !v)}
         title="Acciones"
         className="inline-flex items-center justify-center rounded-md border border-slate-200 p-1.5 text-slate-500 hover:border-slate-300 hover:bg-slate-50 cursor-pointer"
       >
         <MoreVertical className="h-4 w-4" />
       </button>
-      {open && (
-        <div className="absolute right-0 top-full z-10 mt-1 w-48 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
-          {hasRedemptions && (
-            <button
-              onClick={() => { onToggleRedemptions(); setOpen(false); }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
-            >
-              <Users className="h-3.5 w-3.5 text-slate-400" />
-              {expanded ? 'Ocultar canjes' : 'Ver canjes'}
-            </button>
-          )}
-          {canClose && (
-            <button
-              onClick={() => { onClose(); setOpen(false); }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-rose-600 hover:bg-rose-50 cursor-pointer"
-            >
-              <Ban className="h-3.5 w-3.5" />
-              Cerrar código
-            </button>
-          )}
-        </div>
+      {open && createPortal(
+        <>
+          <div className="fixed inset-0 z-40" onClick={close} />
+          <div
+            ref={menuRef}
+            style={{ position: 'fixed', top: style.top, left: style.left, width: MENU_WIDTH, visibility: style.visibility }}
+            className="z-50 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+          >
+            {hasRedemptions && (
+              <button
+                onClick={() => { onToggleRedemptions(); close(); }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                <Users className="h-3.5 w-3.5 text-slate-400" />
+                {expanded ? 'Ocultar canjes' : 'Ver canjes'}
+              </button>
+            )}
+            {canClose && (
+              <button
+                onClick={() => { onClose(); close(); }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-rose-600 hover:bg-rose-50 cursor-pointer"
+              >
+                <Ban className="h-3.5 w-3.5" />
+                Cerrar código
+              </button>
+            )}
+          </div>
+        </>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }
 
@@ -185,15 +235,17 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
   // Form state
   const [companyId, setCompanyId] = useState('');
   const [purpose, setPurpose] = useState<'LINEA247' | 'EVALUATION_CAMPAIGN'>('LINEA247');
-  const [instrumentId, setInstrumentId] = useState('');
-  // Si se elige una oleada, ese instrumento manda y el selector de arriba
+  // Varios instrumentos por código (decisión 2026-10-07) — checklist, no un
+  // solo select.
+  const [instrumentIds, setInstrumentIds] = useState<string[]>([]);
+  // Si se elige una oleada, sus instrumentos mandan y el selector de arriba
   // se oculta — ver modules/research-projects (el código canjea la oleada,
-  // no un instrumento suelto). Dos selects en cascada (proyecto → oleada) en
+  // no instrumentos sueltos). Dos selects en cascada (proyecto → oleada) en
   // vez de una sola lista plana "Proyecto — Oleada (CÓDIGO)": con varios
   // proyectos activos esa lista se vuelve larga y difícil de escanear.
   const [researchProjectId, setResearchProjectId] = useState('');
   const [researchWaveId, setResearchWaveId] = useState('');
-  interface ResearchWaveOption { id: string; name: string | null; order: number; instrument: { code: string } }
+  interface ResearchWaveOption { id: string; name: string | null; order: number; instruments: Array<{ code: string }> }
   interface ResearchProjectOption { id: string; name: string; waves: ResearchWaveOption[] }
   const [researchProjects, setResearchProjects] = useState<ResearchProjectOption[]>([]);
   const [name, setName] = useState('');
@@ -252,7 +304,7 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
         const projects = Array.isArray(data?.projects) ? data.projects : [];
         setResearchProjects(projects.map((proj: any) => ({
           id: proj.id, name: proj.name,
-          waves: (proj.waves || []).map((w: any) => ({ id: w.id, name: w.name, order: w.order, instrument: { code: w.instrument.code } })),
+          waves: (proj.waves || []).map((w: any) => ({ id: w.id, name: w.name, order: w.order, instruments: (w.instruments || []).map((i: any) => ({ code: i.code })) })),
         })));
       })
       .catch(() => setResearchProjects([]));
@@ -261,7 +313,7 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
   function resetForm() {
     setCompanyId('');
     setPurpose('LINEA247');
-    setInstrumentId('');
+    setInstrumentIds([]);
     setResearchProjectId('');
     setResearchWaveId('');
     setName('');
@@ -287,8 +339,8 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
       setFormError('Elige un convenio/cliente.');
       return;
     }
-    if (purpose === 'EVALUATION_CAMPAIGN' && !instrumentId && !researchWaveId) {
-      setFormError('Elige qué instrumento se asigna con este código, o una oleada de investigación.');
+    if (purpose === 'EVALUATION_CAMPAIGN' && instrumentIds.length === 0 && !researchWaveId) {
+      setFormError('Elige al menos un instrumento para asignar con este código, o una oleada de investigación.');
       return;
     }
     setSubmitting(true);
@@ -299,7 +351,7 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
         body: JSON.stringify({
           companyId,
           purpose,
-          instrumentId: purpose === 'EVALUATION_CAMPAIGN' && !researchWaveId ? instrumentId : undefined,
+          instrumentIds: purpose === 'EVALUATION_CAMPAIGN' && !researchWaveId ? instrumentIds : undefined,
           researchWaveId: purpose === 'EVALUATION_CAMPAIGN' ? researchWaveId || undefined : undefined,
           name: name.trim() || undefined,
           code: customCode.trim() || undefined,
@@ -588,10 +640,10 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
                                   {c.purpose === 'LINEA247' ? <Building2 className="h-3.5 w-3.5 text-toast-500" /> : <ClipboardList className="h-3.5 w-3.5 text-toast-500" />}
                                   {PURPOSE_LABELS[c.purpose] || c.purpose}
                                 </span>
-                                {c.instrument && <span className="mt-0.5 block text-[10.5px] text-slate-400">{c.instrument.name}</span>}
+                                {c.instruments.length > 0 && <span className="mt-0.5 block text-[10.5px] text-slate-400">{c.instruments.map((i) => i.name).join(' + ')}</span>}
                               </>
                             ) : (
-                              <span className="text-xs text-slate-600">{c.instrument?.name || '—'}</span>
+                              <span className="text-xs text-slate-600">{c.instruments.length ? c.instruments.map((i) => i.name).join(' + ') : '—'}</span>
                             )}
                           </td>
                         )}
@@ -759,12 +811,12 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
                       <label className="mb-1.5 block truncate text-[11px] font-semibold uppercase tracking-wide text-slate-500">Oleada *</label>
                       <select
                         value={researchWaveId}
-                        onChange={(e) => { setResearchWaveId(e.target.value); if (e.target.value) setInstrumentId(''); }}
+                        onChange={(e) => { setResearchWaveId(e.target.value); if (e.target.value) setInstrumentIds([]); }}
                         className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
                       >
                         <option value="">Selecciona...</option>
                         {researchProjects.find((p) => p.id === researchProjectId)?.waves.map((w) => (
-                          <option key={w.id} value={w.id}>{w.name || `Oleada ${w.order + 1}`} ({w.instrument.code})</option>
+                          <option key={w.id} value={w.id}>{w.name || `Oleada ${w.order + 1}`} ({w.instruments.map((i) => i.code).join(' + ')})</option>
                         ))}
                       </select>
                     </div>
@@ -779,17 +831,26 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
 
               {purpose === 'EVALUATION_CAMPAIGN' && !researchWaveId && (
                 <div>
-                  <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Instrumento a asignar *</label>
-                  <select
-                    value={instrumentId}
-                    onChange={(e) => setInstrumentId(e.target.value)}
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
-                  >
-                    <option value="">Selecciona...</option>
-                    {instruments.map((i) => (
-                      <option key={i.id} value={i.id}>{i.nameEs || i.name} ({i.code})</option>
-                    ))}
-                  </select>
+                  <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    Instrumentos a asignar * {instrumentIds.length > 0 && <span className="font-normal text-slate-400">({instrumentIds.length} elegido{instrumentIds.length > 1 ? 's' : ''})</span>}
+                  </label>
+                  <div className="max-h-44 space-y-1 overflow-y-auto rounded-lg border border-slate-200 bg-slate-50 p-2">
+                    {instruments.map((i) => {
+                      const checked = instrumentIds.includes(i.id);
+                      return (
+                        <label key={i.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-charcoal-900 hover:bg-white">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => setInstrumentIds((prev) => (checked ? prev.filter((id) => id !== i.id) : [...prev, i.id]))}
+                            className="h-4 w-4 rounded border-slate-300 text-toast-500 focus:ring-toast-500/30"
+                          />
+                          <span>{i.nameEs || i.name} <span className="text-slate-400">({i.code})</span></span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-1 text-[10.5px] text-slate-400">Quien canjee el código recibe una evaluación por cada instrumento elegido.</p>
                 </div>
               )}
 
@@ -920,6 +981,11 @@ function RedemptionsPanel({ code, onChanged }: { code: AccessCodeRecord; onChang
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null); // id del canje, o 'ALL'
   const [actionError, setActionError] = useState<string | null>(null);
+  // Aviso local, pegado a esta tabla — el de onChanged() sube hasta el panel
+  // principal de códigos, que queda lejos (arriba del todo) de esta tabla
+  // expandida, así que ahí no sirve de confirmación visible para quien acaba
+  // de hacer clic en "Recordar" aquí abajo.
+  const [localNotice, setLocalNotice] = useState<string | null>(null);
 
   const load = () => {
     apiFetch(`/api/access-codes/${code.id}/redemptions`)
@@ -935,13 +1001,17 @@ function RedemptionsPanel({ code, onChanged }: { code: AccessCodeRecord; onChang
   async function remind(redemptionId: string) {
     setBusy(redemptionId);
     setActionError(null);
+    setLocalNotice(null);
     try {
       const res = await apiFetch(`/api/access-codes/${code.id}/redemptions/${redemptionId}/remind`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setActionError(data.error || `HTTP ${res.status}`);
       } else {
-        onChanged('Recordatorio enviado.');
+        const msg = 'Recordatorio enviado.';
+        setLocalNotice(msg);
+        setTimeout(() => setLocalNotice(null), 4000);
+        onChanged(msg);
       }
       load();
     } catch {
@@ -954,6 +1024,7 @@ function RedemptionsPanel({ code, onChanged }: { code: AccessCodeRecord; onChang
   async function remindAll() {
     setBusy('ALL');
     setActionError(null);
+    setLocalNotice(null);
     try {
       const res = await apiFetch(`/api/access-codes/${code.id}/remind-pending`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
@@ -961,7 +1032,10 @@ function RedemptionsPanel({ code, onChanged }: { code: AccessCodeRecord; onChang
         setActionError(data.error || `HTTP ${res.status}`);
       } else {
         const skipped = data.skippedRecently ? ` (${data.skippedRecently} ya recibieron uno en las últimas 24 h)` : '';
-        onChanged(`Recordatorios enviados: ${data.sent}${skipped}.`);
+        const msg = `Recordatorios enviados: ${data.sent}${skipped}.`;
+        setLocalNotice(msg);
+        setTimeout(() => setLocalNotice(null), 4000);
+        onChanged(msg);
       }
       load();
     } catch {
@@ -995,6 +1069,7 @@ function RedemptionsPanel({ code, onChanged }: { code: AccessCodeRecord; onChang
         )}
       </div>
 
+      {localNotice && <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700">{localNotice}</p>}
       {actionError && <p className="rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-medium text-rose-700">{actionError}</p>}
 
       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -1003,7 +1078,7 @@ function RedemptionsPanel({ code, onChanged }: { code: AccessCodeRecord; onChang
             <tr className="border-b border-slate-100 text-left text-[10.5px] uppercase tracking-wide text-slate-400">
               <th className="px-3 py-2 font-semibold">Paciente</th>
               <th className="px-3 py-2 font-semibold">Canjeó</th>
-              <th className="px-3 py-2 font-semibold">Evaluación</th>
+              <th className="px-3 py-2 font-semibold">Evaluación(es)</th>
               <th className="px-3 py-2 font-semibold">Recordatorios</th>
               <th className="px-3 py-2 text-right font-semibold" />
             </tr>
@@ -1016,16 +1091,18 @@ function RedemptionsPanel({ code, onChanged }: { code: AccessCodeRecord; onChang
                   <span className="block text-[10.5px] text-slate-400">{r.patient.documentId}{r.patient.email ? ` · ${r.patient.email}` : ''}</span>
                 </td>
                 <td className="px-3 py-2 text-slate-500">{formatDate(r.redeemedAt)}</td>
-                <td className="px-3 py-2">
-                  {r.evaluation ? (
-                    <>
-                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${EVAL_STATE_STYLES[r.evaluation.state].badge}`}>
-                        {EVAL_STATE_STYLES[r.evaluation.state].label}
-                      </span>
-                      <span className="mt-0.5 block text-[10.5px] text-slate-400">
-                        {r.evaluation.completedAt ? `Terminó ${formatDate(r.evaluation.completedAt)}` : r.evaluation.dueAt ? `Plazo ${formatDate(r.evaluation.dueAt)}` : r.evaluation.instrumentName}
-                      </span>
-                    </>
+                <td className="px-3 py-2 space-y-1">
+                  {r.evaluations.length > 0 ? (
+                    r.evaluations.map((ev, idx) => (
+                      <div key={idx}>
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${EVAL_STATE_STYLES[ev.state].badge}`}>
+                          {EVAL_STATE_STYLES[ev.state].label}
+                        </span>
+                        <span className="mt-0.5 block text-[10.5px] text-slate-400">
+                          {ev.instrumentName}{ev.completedAt ? ` · Terminó ${formatDate(ev.completedAt)}` : ev.dueAt ? ` · Plazo ${formatDate(ev.dueAt)}` : ''}
+                        </span>
+                      </div>
+                    ))
                   ) : (
                     <span className="text-slate-300">Sin evaluación</span>
                   )}
@@ -1034,7 +1111,7 @@ function RedemptionsPanel({ code, onChanged }: { code: AccessCodeRecord; onChang
                   {r.reminderCount > 0 ? `${r.reminderCount} · último ${formatDate(r.lastRemindedAt)}` : '—'}
                 </td>
                 <td className="px-3 py-2 text-right">
-                  {r.evaluation && r.evaluation.state !== 'COMPLETADA' && r.evaluation.state !== 'INVALIDA' && (
+                  {r.evaluations.some((ev) => ev.state !== 'COMPLETADA' && ev.state !== 'INVALIDA') && (
                     <button
                       onClick={() => remind(r.id)}
                       disabled={!r.canRemind || busy !== null}

@@ -23,9 +23,10 @@
  *   GET  /api/research-projects/waves/:waveId/participants
  *   GET  /api/research-projects/waves/:waveId/export
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
-import { FlaskConical, Plus, Loader2, ChevronDown, ChevronRight, Send, BarChart3, Users, Download, KeyRound, X } from 'lucide-react';
+import { FlaskConical, Plus, Loader2, ChevronDown, ChevronRight, Send, BarChart3, Users, Download, KeyRound, X, MoreVertical, Pencil, UserCog, Trash2, FileText } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
 import { LugarAplicacionFields, camposDeLugar, type LugarTipo } from './LugarAplicacionFields';
@@ -50,8 +51,10 @@ interface WaveRecord {
   id: string;
   name: string | null;
   order: number;
+  startAt: string | null;
   dueAt: string | null;
-  instrument: { code: string; name: string };
+  // Varios instrumentos por oleada (decisión 2026-10-07) — no uno solo.
+  instruments: Array<{ id: string; code: string; name: string }>;
   assignedCount: number;
   completedCount: number;
   accessCodes: WaveAccessCode[];
@@ -82,7 +85,7 @@ interface WaveStat {
   waveId: string;
   name: string | null;
   order: number;
-  instrument: { code: string; name: string };
+  instruments: Array<{ id: string; code: string; name: string }>;
   assignedTotal: number;
   completedTotal: number;
   completionRate: number | null;
@@ -92,12 +95,22 @@ interface WaveStat {
 interface ParticipantScale {
   scaleId: string;
   scaleName: string;
+  // scaleId NO es único entre instrumentos (varias escalas "total" comparten
+  // el mismo scaleId genérico "TOTAL") — hace falta para no confundir dos
+  // escalas de instrumentos distintos que comparten scaleId (decisión
+  // 2026-10-07, ver participantRows en el backend).
+  instrumentId: string;
+  instrumentCode: string;
   rawScore: number | null;
   severity: string | null;
 }
 
 interface ParticipantRow {
   administrationId: string;
+  // Una fila es una PERSONA, no una administración — puede tener varias si
+  // la oleada lleva varios instrumentos (decisión 2026-10-07).
+  administrationIds: string[];
+  instrumentCodes: string[];
   patientId: string;
   firstName: string;
   lastName: string;
@@ -111,9 +124,16 @@ interface ParticipantRow {
 }
 
 interface ParticipantsResponse {
-  wave: { id: string; name: string | null; order: number; instrument: { code: string; name: string } };
-  scales: { scaleId: string; scaleName: string }[];
+  wave: { id: string; name: string | null; order: number; instruments: Array<{ id: string; code: string; name: string }> };
+  scales: { scaleId: string; scaleName: string; instrumentId: string; instrumentCode: string }[];
   participants: ParticipantRow[];
+}
+
+interface SupervisorRecord {
+  userId: string;
+  name: string | null;
+  email: string;
+  assignedAt: string;
 }
 
 const CODE_LIFECYCLE_STYLES: Record<WaveAccessCode['lifecycle'], { label: string; cls: string }> = {
@@ -128,6 +148,86 @@ function formatPct(v: number | null) {
 }
 function formatNum(v: number | null) {
   return v == null ? '—' : Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
+/**
+ * Menú "⋮" de una oleada — renderizado en un portal a document.body, NO como
+ * `absolute` dentro de la fila. La fila vive en una lista con scroll propio:
+ * un menú `absolute` anclado ahí se corta contra el borde del contenedor (o
+ * del viewport) cuando la oleada es de las últimas de la lista (reportado
+ * 2026-10-07). El portal + posición `fixed` calculada desde el botón evita
+ * el recorte, y se voltea hacia arriba solo si de verdad no cabe abajo.
+ */
+function WaveActionsMenu({ children }: { children: (close: () => void) => ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const [style, setStyle] = useState<{ top: number; left: number; visibility: 'hidden' | 'visible' }>({ top: 0, left: 0, visibility: 'hidden' });
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const MENU_WIDTH = 208;
+
+  const close = () => setOpen(false);
+
+  // Primero se posiciona "a ciegas" (debajo del botón, visibility: hidden)
+  // para poder MEDIR la altura real del menú ya renderizado, y recién con
+  // esa medida se decide si voltearlo hacia arriba — así nunca hay que
+  // adivinar cuántos ítems trae (varían según canManage, cupo, etc.).
+  useLayoutEffect(() => {
+    if (!open || !btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    setStyle({ top: rect.bottom + 4, left: Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8), visibility: 'hidden' });
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !menuRef.current || !btnRef.current || style.visibility === 'visible') return;
+    const btnRect = btnRef.current.getBoundingClientRect();
+    const menuHeight = menuRef.current.offsetHeight;
+    const openUp = window.innerHeight - btnRect.bottom < menuHeight + 8 && btnRect.top > menuHeight + 8;
+    setStyle({
+      top: openUp ? btnRect.top - menuHeight - 4 : btnRect.bottom + 4,
+      left: Math.min(btnRect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8),
+      visibility: 'visible',
+    });
+  }, [open, style]);
+
+  // Si se hace scroll o se cambia el tamaño de la ventana con el menú
+  // abierto, la posición calculada queda vieja — más simple y confiable
+  // cerrarlo que tratar de recalcular en cada evento de scroll.
+  useEffect(() => {
+    if (!open) return;
+    const onScrollOrResize = () => close();
+    window.addEventListener('scroll', onScrollOrResize, true);
+    window.addEventListener('resize', onScrollOrResize);
+    return () => {
+      window.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        onClick={() => setOpen((v) => !v)}
+        title="Más opciones"
+        className="flex items-center justify-center rounded-lg border border-slate-300 p-1.5 text-slate-500 hover:bg-slate-50"
+      >
+        <MoreVertical className="h-4 w-4" />
+      </button>
+      {open && createPortal(
+        <>
+          <div className="fixed inset-0 z-40" onClick={close} />
+          <div
+            ref={menuRef}
+            style={{ position: 'fixed', top: style.top, left: style.left, width: MENU_WIDTH, visibility: style.visibility }}
+            className="z-50 rounded-lg border border-slate-200 bg-white py-1 shadow-lg"
+          >
+            {children(close)}
+          </div>
+        </>,
+        document.body,
+      )}
+    </>
+  );
 }
 
 export default function ResearchProjectsPanel({ canManage }: { canManage: boolean }) {
@@ -150,10 +250,44 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
   const [creatingProject, setCreatingProject] = useState(false);
 
   const [waveFormFor, setWaveFormFor] = useState<string | null>(null);
-  const [waveInstrumentId, setWaveInstrumentId] = useState('');
+  // Varios instrumentos por oleada (decisión 2026-10-07) — checklist, no un
+  // solo select.
+  const [waveInstrumentIds, setWaveInstrumentIds] = useState<string[]>([]);
   const [waveName, setWaveName] = useState('');
+  const [waveStartAt, setWaveStartAt] = useState('');
   const [waveDueAt, setWaveDueAt] = useState('');
+  // Menú "⋮" por oleada — Participantes/Exportar/Crear código/Editar, para
+  // no apilar cinco botones en la fila (ver discusión 2026-10-07). El propio
+  // WaveActionsMenu lleva su estado "abierto/cerrado" (no hace falta uno acá).
+  const [editDatesFor, setEditDatesFor] = useState<{ project: ProjectRecord; wave: WaveRecord } | null>(null);
+  const [editWaveName, setEditWaveName] = useState('');
+  const [editStartAt, setEditStartAt] = useState('');
+  const [editDueAt, setEditDueAt] = useState('');
+  const [savingDates, setSavingDates] = useState(false);
+  const [editDatesError, setEditDatesError] = useState<string | null>(null);
   const [creatingWave, setCreatingWave] = useState(false);
+
+  // Cuentas SUPERVISOR_INVESTIGACION (decisión 2026-10-07) — psicólogos de
+  // MindPsic que ven el avance de ESTE proyecto desde la app, no el EHR.
+  // Solo CEO/DIRECTIVO pueden gestionarlas (más estricto que `canManage`).
+  const [supervisorsExpandedId, setSupervisorsExpandedId] = useState<string | null>(null);
+  const [supervisorsByProject, setSupervisorsByProject] = useState<Record<string, SupervisorRecord[] | undefined>>({});
+  const [loadingSupervisors, setLoadingSupervisors] = useState<string | null>(null);
+  const [addSupName, setAddSupName] = useState('');
+  const [addSupEmail, setAddSupEmail] = useState('');
+  const [addSupPassword, setAddSupPassword] = useState('');
+  const [addingSupervisor, setAddingSupervisor] = useState(false);
+  const [addSupervisorError, setAddSupervisorError] = useState<string | null>(null);
+  const [removingSupervisorId, setRemovingSupervisorId] = useState<string | null>(null);
+
+  // Guion del facilitador (decisión 2026-10-07) — texto plano, uno por
+  // proyecto. Es en lo único que se basa el asistente de IA que ve el
+  // Supervisor en la app; sin guion cargado, ese chat no funciona.
+  const [guionModalFor, setGuionModalFor] = useState<ProjectRecord | null>(null);
+  const [guionTexto, setGuionTexto] = useState('');
+  const [loadingGuion, setLoadingGuion] = useState(false);
+  const [savingGuion, setSavingGuion] = useState(false);
+  const [guionError, setGuionError] = useState<string | null>(null);
 
   const [assigningWaveId, setAssigningWaveId] = useState<string | null>(null);
   const [expandedWaveId, setExpandedWaveId] = useState<string | null>(null);
@@ -223,19 +357,23 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
   };
 
   const createWave = async (projectId: string) => {
-    if (!waveInstrumentId) { toast.error('Elige un instrumento.'); return; }
+    if (waveInstrumentIds.length === 0) { toast.error('Elige al menos un instrumento.'); return; }
     setCreatingWave(true);
     try {
       const res = await apiFetch(`/api/research-projects/${projectId}/waves`, {
         method: 'POST',
-        body: JSON.stringify({ instrumentId: waveInstrumentId, name: waveName.trim() || undefined, dueAt: waveDueAt || undefined }),
+        body: JSON.stringify({
+          instrumentIds: waveInstrumentIds, name: waveName.trim() || undefined,
+          startAt: waveStartAt || undefined, dueAt: waveDueAt || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) { toast.error(data.error || 'No se pudo crear la oleada.'); return; }
       toast.success('Oleada creada. Ya puedes generar un código de acceso para ella, o lanzarla a la cohorte.');
       setWaveFormFor(null);
-      setWaveInstrumentId('');
+      setWaveInstrumentIds([]);
       setWaveName('');
+      setWaveStartAt('');
       setWaveDueAt('');
       load();
     } finally {
@@ -305,6 +443,41 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
     }
   };
 
+  // 'en-CA' da YYYY-MM-DD directo, lo que espera un <input type="date">.
+  // Con timeZone fijo en Bogotá: si no, un dueAt guardado como "fin del día
+  // en Colombia" (ver utils/fecha-colombia.js) podía mostrar el día siguiente
+  // según la zona horaria del navegador.
+  const fechaInputColombia = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Bogota' }) : '';
+
+  const startEditWave = (project: ProjectRecord, wave: WaveRecord) => {
+    setEditDatesFor({ project, wave });
+    setEditWaveName(wave.name || '');
+    setEditStartAt(fechaInputColombia(wave.startAt));
+    setEditDueAt(fechaInputColombia(wave.dueAt));
+    setEditDatesError(null);
+  };
+
+  const saveWaveEdits = async () => {
+    if (!editDatesFor) return;
+    setSavingDates(true);
+    setEditDatesError(null);
+    try {
+      const res = await apiFetch(`/api/research-projects/waves/${editDatesFor.wave.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name: editWaveName.trim() || null, startAt: editStartAt || null, dueAt: editDueAt || null }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setEditDatesError(data.error || `HTTP ${res.status}`); return; }
+      setEditDatesFor(null);
+      load();
+    } catch {
+      setEditDatesError('No se pudo contactar el servidor.');
+    } finally {
+      setSavingDates(false);
+    }
+  };
+
   const toggleParticipants = async (waveId: string) => {
     if (expandedWaveId === waveId) { setExpandedWaveId(null); return; }
     setExpandedWaveId(waveId);
@@ -357,6 +530,98 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
       setExportError((e as Error).message);
     } finally {
       setExportingWaveId(null);
+    }
+  };
+
+  const loadSupervisors = async (projectId: string) => {
+    setLoadingSupervisors(projectId);
+    try {
+      const res = await apiFetch(`/api/research-projects/${projectId}/supervisors`);
+      const data = await res.json();
+      if (res.ok) setSupervisorsByProject((prev) => ({ ...prev, [projectId]: data.supervisors }));
+      else toast.error(data.error || 'No se pudo cargar los supervisores.');
+    } finally {
+      setLoadingSupervisors(null);
+    }
+  };
+
+  const toggleSupervisors = (project: ProjectRecord) => {
+    if (supervisorsExpandedId === project.id) { setSupervisorsExpandedId(null); return; }
+    setSupervisorsExpandedId(project.id);
+    setAddSupervisorError(null);
+    if (!supervisorsByProject[project.id]) loadSupervisors(project.id);
+  };
+
+  const submitAddSupervisor = async (projectId: string) => {
+    if (!addSupName.trim() || !addSupEmail.trim() || !addSupPassword.trim()) {
+      setAddSupervisorError('Completa nombre, correo y clave temporal.');
+      return;
+    }
+    setAddingSupervisor(true);
+    setAddSupervisorError(null);
+    try {
+      const res = await apiFetch(`/api/research-projects/${projectId}/supervisors`, {
+        method: 'POST',
+        body: JSON.stringify({ name: addSupName.trim(), email: addSupEmail.trim().toLowerCase(), password: addSupPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setAddSupervisorError(data.error || `Error ${res.status}`); return; }
+      toast.success(`${data.supervisor.name} ya puede entrar a la app y ver este proyecto.`);
+      setAddSupName(''); setAddSupEmail(''); setAddSupPassword('');
+      loadSupervisors(projectId);
+    } catch {
+      setAddSupervisorError('No se pudo contactar el servidor.');
+    } finally {
+      setAddingSupervisor(false);
+    }
+  };
+
+  const removeSupervisor = async (projectId: string, userId: string) => {
+    setRemovingSupervisorId(userId);
+    try {
+      const res = await apiFetch(`/api/research-projects/${projectId}/supervisors/${userId}`, { method: 'DELETE' });
+      if (!res.ok) { const data = await res.json().catch(() => ({})); toast.error(data.error || 'No se pudo quitar.'); return; }
+      toast.success('Supervisor quitado de este proyecto.');
+      loadSupervisors(projectId);
+    } finally {
+      setRemovingSupervisorId(null);
+    }
+  };
+
+  const openGuionModal = async (project: ProjectRecord) => {
+    setGuionModalFor(project);
+    setGuionTexto('');
+    setGuionError(null);
+    setLoadingGuion(true);
+    try {
+      const res = await apiFetch(`/api/research-projects/${project.id}/guion`);
+      const data = await res.json();
+      if (res.ok) setGuionTexto(data.guion || '');
+      else setGuionError(data.error || 'No se pudo cargar el guion.');
+    } catch {
+      setGuionError('No se pudo contactar el servidor.');
+    } finally {
+      setLoadingGuion(false);
+    }
+  };
+
+  const saveGuion = async () => {
+    if (!guionModalFor) return;
+    setSavingGuion(true);
+    setGuionError(null);
+    try {
+      const res = await apiFetch(`/api/research-projects/${guionModalFor.id}/guion`, {
+        method: 'PUT',
+        body: JSON.stringify({ guion: guionTexto }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setGuionError(data.error || `HTTP ${res.status}`); return; }
+      toast.success('Guion guardado.');
+      setGuionModalFor(null);
+    } catch {
+      setGuionError('No se pudo contactar el servidor.');
+    } finally {
+      setSavingGuion(false);
     }
   };
 
@@ -458,17 +723,106 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                 <BarChart3 className="h-3.5 w-3.5" /> Resultados
                 {expandedId === p.id ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               </button>
+              {canManage && (
+                <button
+                  onClick={() => toggleSupervisors(p)}
+                  title="Psicólogos de MindPsic que ven el avance de este proyecto desde la app"
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700"
+                >
+                  <UserCog className="h-3.5 w-3.5" /> Supervisores
+                  {supervisorsExpandedId === p.id ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                </button>
+              )}
+              {canManage && (
+                <button
+                  onClick={() => openGuionModal(p)}
+                  title="Guion del taller — en lo que se basa el asistente de IA del Supervisor en la app"
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700"
+                >
+                  <FileText className="h-3.5 w-3.5" /> Guion
+                </button>
+              )}
             </div>
           </div>
 
+          {supervisorsExpandedId === p.id && (
+            <div className="border-t border-slate-100 bg-slate-50 p-4 space-y-3">
+              <div>
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Supervisores de este proyecto</p>
+                {loadingSupervisors === p.id ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+                ) : (supervisorsByProject[p.id]?.length ?? 0) === 0 ? (
+                  <p className="text-xs text-slate-400">Ninguno todavía.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {supervisorsByProject[p.id]?.map((s) => (
+                      <li key={s.userId} className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
+                        <span className="text-slate-700">
+                          <span className="font-medium">{s.name || s.email}</span>
+                          {s.name && <span className="text-slate-400"> · {s.email}</span>}
+                        </span>
+                        <button
+                          onClick={() => removeSupervisor(p.id, s.userId)}
+                          disabled={removingSupervisorId === s.userId}
+                          title="Quitar de este proyecto (no borra la cuenta)"
+                          className="rounded-md p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600 disabled:opacity-40"
+                        >
+                          {removingSupervisorId === s.userId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Agregar supervisor</p>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <input value={addSupName} onChange={(e) => setAddSupName(e.target.value)} placeholder="Nombre completo" className="rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                  <input value={addSupEmail} onChange={(e) => setAddSupEmail(e.target.value)} placeholder="correo@mindpsic.co" type="email" className="rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                  <input value={addSupPassword} onChange={(e) => setAddSupPassword(e.target.value)} placeholder="Clave temporal (8+)" type="text" className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-mono" />
+                </div>
+                <p className="text-[10.5px] text-slate-400">
+                  Si el correo ya es de un supervisor en otro proyecto, solo se agrega aquí — no se crea una cuenta nueva ni se toca su clave.
+                </p>
+                {addSupervisorError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{addSupervisorError}</p>}
+                <button
+                  onClick={() => submitAddSupervisor(p.id)}
+                  disabled={addingSupervisor}
+                  className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:opacity-60"
+                >
+                  {addingSupervisor ? 'Agregando…' : 'Agregar supervisor'}
+                </button>
+              </div>
+            </div>
+          )}
+
           {waveFormFor === p.id && (
             <div className="border-t border-slate-100 p-4 space-y-2">
-              <select value={waveInstrumentId} onChange={(e) => setWaveInstrumentId(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
-                <option value="">Elige el instrumento…</option>
-                {instruments.map((i) => <option key={i.id} value={i.id}>{i.nameEs || i.name} ({i.code})</option>)}
-              </select>
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  Instrumentos a aplicar * {waveInstrumentIds.length > 0 && <span className="font-normal text-slate-400">({waveInstrumentIds.length} elegido{waveInstrumentIds.length > 1 ? 's' : ''})</span>}
+                </label>
+                <div className="max-h-44 space-y-1 overflow-y-auto rounded-lg border border-slate-300 p-2">
+                  {instruments.map((i) => {
+                    const checked = waveInstrumentIds.includes(i.id);
+                    return (
+                      <label key={i.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-slate-800 hover:bg-slate-50">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => setWaveInstrumentIds((prev) => (checked ? prev.filter((id) => id !== i.id) : [...prev, i.id]))}
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        <span>{i.nameEs || i.name} <span className="text-slate-400">({i.code})</span></span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
               <div className="flex gap-2">
                 <input value={waveName} onChange={(e) => setWaveName(e.target.value)} placeholder='Nombre — ej. "T0 — Basal"' className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                <input type="date" value={waveStartAt} onChange={(e) => setWaveStartAt(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm" title="Fecha de inicio (opcional, solo informativa)" />
                 <input type="date" value={waveDueAt} onChange={(e) => setWaveDueAt(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm" title="Fecha límite (opcional)" />
               </div>
               <button onClick={() => createWave(p.id)} disabled={creatingWave} className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60">
@@ -483,10 +837,11 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                 <div key={w.id}>
                   <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
                     <div>
-                      <p className="text-sm font-medium text-slate-800">{w.name || `Oleada ${w.order + 1}`} — {w.instrument.name}</p>
+                      <p className="text-sm font-medium text-slate-800">{w.name || `Oleada ${w.order + 1}`} — {w.instruments.map((i) => i.name).join(' + ')}</p>
                       <p className="text-xs text-slate-500">
                         {w.completedCount}/{w.assignedCount} completadas
-                        {w.dueAt ? ` · hasta ${new Date(w.dueAt).toLocaleDateString('es-CO')}` : ''}
+                        {w.startAt ? ` · desde ${new Date(w.startAt).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}` : ''}
+                        {w.dueAt ? ` · hasta ${new Date(w.dueAt).toLocaleDateString('es-CO', { timeZone: 'America/Bogota' })}` : ''}
                       </p>
                       {w.accessCodes.length > 0 && (
                         <div className="mt-1 flex flex-wrap items-center gap-1.5">
@@ -506,23 +861,6 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => toggleParticipants(w.id)}
-                        title="Quién respondió, su estado y su puntaje"
-                        className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700"
-                      >
-                        <Users className="h-3.5 w-3.5" /> Participantes
-                        {expandedWaveId === w.id ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                      </button>
-                      <button
-                        onClick={() => downloadWave(w.id)}
-                        disabled={exportingWaveId === w.id || w.assignedCount === 0}
-                        title="Excel con dos hojas: puntajes por escala, y las respuestas completas ítem por ítem"
-                        className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-60"
-                      >
-                        {exportingWaveId === w.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                        Exportar
-                      </button>
                       {canManage && (
                         <button
                           onClick={() => assignWave(w.id)}
@@ -534,16 +872,46 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                           Lanzar a la cohorte
                         </button>
                       )}
-                      {canManage && (
-                        <button
-                          onClick={() => openCodeModal(p, w)}
-                          title="Crea un código de acceso ya vinculado a esta oleada, sin tener que elegir proyecto y oleada aparte"
-                          className="flex items-center gap-1.5 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-semibold text-slate-700"
-                        >
-                          <KeyRound className="h-3.5 w-3.5" />
-                          Crear código
-                        </button>
-                      )}
+                      <WaveActionsMenu>
+                        {(close) => (
+                          <>
+                            <button
+                              onClick={() => { close(); toggleParticipants(w.id); }}
+                              title="Quién respondió, su estado y su puntaje"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                            >
+                              <Users className="h-3.5 w-3.5" /> Participantes
+                            </button>
+                            <button
+                              onClick={() => { close(); downloadWave(w.id); }}
+                              disabled={exportingWaveId === w.id || w.assignedCount === 0}
+                              title="Excel con dos hojas: puntajes por escala, y las respuestas completas ítem por ítem"
+                              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                            >
+                              {exportingWaveId === w.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                              Exportar
+                            </button>
+                            {canManage && (
+                              <button
+                                onClick={() => { close(); startEditWave(p, w); }}
+                                title="Cambiar el nombre de la oleada o sus fechas — las fechas son informativas"
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                              >
+                                <Pencil className="h-3.5 w-3.5" /> Editar
+                              </button>
+                            )}
+                            {canManage && (
+                              <button
+                                onClick={() => { close(); openCodeModal(p, w); }}
+                                title="Crea un código de acceso ya vinculado a esta oleada, sin tener que elegir proyecto y oleada aparte"
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                              >
+                                <KeyRound className="h-3.5 w-3.5" /> Crear código
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </WaveActionsMenu>
                     </div>
                   </div>
 
@@ -560,22 +928,26 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                               <tr className="text-left text-slate-500">
                                 <th className="pb-1 pr-3">Participante</th>
                                 <th className="pb-1 pr-3">Documento</th>
+                                {(participantsByWave[w.id]?.wave.instruments.length ?? 0) > 1 && <th className="pb-1 pr-3">Instrumentos</th>}
                                 <th className="pb-1 pr-3">Estado</th>
                                 <th className="pb-1 pr-3">Completada</th>
                                 {participantsByWave[w.id]?.scales.map((sc) => (
-                                  <th key={sc.scaleId} className="pb-1 pr-3 text-right">{sc.scaleName}</th>
+                                  <th key={`${sc.instrumentId}-${sc.scaleId}`} className="pb-1 pr-3 text-right">{sc.scaleName}</th>
                                 ))}
                               </tr>
                             </thead>
                             <tbody>
                               {participantsByWave[w.id]?.participants.map((row) => (
-                                <tr key={row.administrationId} className="border-t border-slate-200">
+                                <tr key={row.patientId} className="border-t border-slate-200">
                                   <td className="py-1 pr-3 font-medium text-slate-700">{row.firstName} {row.lastName}</td>
                                   <td className="py-1 pr-3 text-slate-600">{row.documentType ? `${row.documentType} ` : ''}{row.documentId}</td>
+                                  {(participantsByWave[w.id]?.wave.instruments.length ?? 0) > 1 && (
+                                    <td className="py-1 pr-3 text-slate-600">{row.instrumentCodes.join(', ')}</td>
+                                  )}
                                   <td className="py-1 pr-3 text-slate-600">{row.statusLabel}</td>
                                   <td className="py-1 pr-3 text-slate-600">{row.completedAt ? new Date(row.completedAt).toLocaleDateString('es-CO') : '—'}</td>
                                   {row.scales.map((sc) => (
-                                    <td key={sc.scaleId} className="py-1 pr-3 text-right text-slate-600">
+                                    <td key={`${sc.instrumentId}-${sc.scaleId}`} className="py-1 pr-3 text-right text-slate-600">
                                       {sc.rawScore == null ? '—' : sc.rawScore}
                                       {sc.severity ? <span className="text-slate-400"> ({sc.severity})</span> : null}
                                     </td>
@@ -609,7 +981,7 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                 <div className="space-y-3">
                   {(statsByProject[p.id]?.waves || []).map((ws) => (
                     <div key={ws.waveId} className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="text-sm font-semibold text-slate-800">{ws.name || `Oleada ${ws.order + 1}`}</p>
+                      <p className="text-sm font-semibold text-slate-800">{ws.name || `Oleada ${ws.order + 1}`} <span className="font-normal text-slate-400">— {ws.instruments.map((i) => i.name).join(' + ')}</span></p>
                       <p className="text-xs text-slate-500 mb-2">
                         {ws.completedTotal}/{ws.assignedTotal} completadas · tasa de finalización {formatPct(ws.completionRate)}
                       </p>
@@ -628,7 +1000,7 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                           </thead>
                           <tbody>
                             {ws.scales.map((s) => (
-                              <tr key={s.scaleId} className="border-t border-slate-100">
+                              <tr key={`${s.scaleId}-${s.scaleName}`} className="border-t border-slate-100">
                                 <td className="py-1 font-medium text-slate-700">{s.scaleName}{s.isPrimary ? ' ★' : ''}</td>
                                 <td className="py-1 text-right">{s.n}</td>
                                 <td className="py-1 text-right">{formatNum(s.avg)}</td>
@@ -714,6 +1086,105 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
               >
                 {codeSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
                 Crear código
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editDatesFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Editar oleada</h2>
+                <p className="text-xs text-slate-500">
+                  {editDatesFor.wave.instruments.map((i) => i.name).join(' + ')}
+                </p>
+              </div>
+              <button onClick={() => setEditDatesFor(null)} className="text-slate-400 hover:text-slate-900 cursor-pointer">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Nombre</label>
+                <input
+                  value={editWaveName}
+                  onChange={(e) => setEditWaveName(e.target.value)}
+                  placeholder={`Oleada ${editDatesFor.wave.order + 1}`}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+                <p className="mt-1 text-[10.5px] text-slate-400">Solo la etiqueta — los instrumentos que aplica no se pueden cambiar aquí (créala de nuevo si necesitas otros).</p>
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fecha de inicio</label>
+                <input type="date" value={editStartAt} onChange={(e) => setEditStartAt(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fecha de cierre</label>
+                <input type="date" value={editDueAt} onChange={(e) => setEditDueAt(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+              </div>
+              <p className="text-[10.5px] text-slate-400">
+                Las fechas son informativas: no bloquean el código ni "Lanzar a la cohorte", ni impiden responder después de la fecha de cierre. Deja un campo vacío para quitar esa fecha.
+              </p>
+              {editDatesError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{editDatesError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-slate-100 px-5 py-4">
+              <button onClick={() => setEditDatesFor(null)} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-500 hover:text-slate-900 cursor-pointer">Cancelar</button>
+              <button
+                onClick={saveWaveEdits}
+                disabled={savingDates}
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 cursor-pointer"
+              >
+                {savingDates && <Loader2 className="h-4 w-4 animate-spin" />}
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {guionModalFor && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+          <div className="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <h2 className="text-sm font-bold text-slate-900">Guion del taller</h2>
+                <p className="text-xs text-slate-500">{guionModalFor.name}</p>
+              </div>
+              <button onClick={() => setGuionModalFor(null)} className="text-slate-400 hover:text-slate-900 cursor-pointer">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-5 py-4">
+              <p className="text-[11px] text-slate-500">
+                Pega aquí el texto completo del guion del facilitador. Es la única fuente que usa el asistente de IA del
+                Supervisor en la app — sin esto, ese chat no funciona para este proyecto.
+              </p>
+              {loadingGuion ? (
+                <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+              ) : (
+                <textarea
+                  value={guionTexto}
+                  onChange={(e) => setGuionTexto(e.target.value)}
+                  rows={16}
+                  placeholder="Pega el texto completo del guion…"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs text-slate-900"
+                />
+              )}
+              <p className="text-[10.5px] text-slate-400">{guionTexto.length.toLocaleString('es-CO')} caracteres. Déjalo vacío para quitar el guion.</p>
+              {guionError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{guionError}</p>}
+            </div>
+            <div className="flex shrink-0 items-center justify-end gap-3 border-t border-slate-100 px-5 py-4">
+              <button onClick={() => setGuionModalFor(null)} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-500 hover:text-slate-900 cursor-pointer">Cancelar</button>
+              <button
+                onClick={saveGuion}
+                disabled={savingGuion || loadingGuion}
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 cursor-pointer"
+              >
+                {savingGuion && <Loader2 className="h-4 w-4 animate-spin" />}
+                Guardar
               </button>
             </div>
           </div>
