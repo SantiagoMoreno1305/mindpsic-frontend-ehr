@@ -20,20 +20,30 @@ const API = `${getApiBase()}/api/training/tasks`;
 const SESSION_KEY = 'mind_training_task_session';
 const DEVICE_KEY = 'mind_training_task_device';
 
-interface Field { key: string; label: string }
+type FieldDef =
+  | { type: 'bool'; key: string; label: string; requiredIf?: { key: string; value: unknown }; optional?: boolean }
+  | { type: 'text'; key: string; label: string; requiredIf?: { key: string; value: unknown }; optional?: boolean }
+  | { type: 'option'; key: string; label: string; options: { value: string; label: string }[] }
+  | { type: 'day_table'; key: string; label: string; days: string[] };
 interface Task {
   code: string; title: string; instructions: string;
-  kind: 'alert_or_na' | 'text_fields' | 'option_text' | 'week_table';
-  fields?: Field[]; naLabel?: string; options?: string[]; days?: string[];
+  kind: 'alert_or_na' | 'text_fields' | 'form';
+  fields: (FieldDef | { key: string; label: string })[];
+  naLabel?: string;
 }
 type Answers = Record<string, any>;
-interface StateTask { code: string; title: string; status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED'; visitOrder: number }
-interface StateWindow { visitOrder: number; closesAt: string; allDone: boolean; tasks: StateTask[] }
+type TaskStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'EXPIRED';
+interface StateTask { code: string; title: string; block: number; kind: string; status: TaskStatus }
+interface StateSession {
+  visitOrder: number; status: 'LOCKED' | 'ACTIVE' | 'CLOSED'; opensAt: string; closesAt: string;
+  allDone: boolean; needsBrigadista: boolean; tasks: StateTask[];
+}
 type ParticipantState =
-  | { phase: 'NOT_STARTED'; nextVisitOrder: number | null; nextDate: string | null }
-  | { phase: 'OPEN'; windows: StateWindow[]; allDone: boolean; tasks: StateTask[] }
-  | { phase: 'WAITING'; nextVisitOrder: number; nextDate: string }
-  | { phase: 'CLOSED' };
+  | { phase: 'NOT_STARTED'; sessions: StateSession[]; nextVisitOrder: number | null; nextDate: string | null }
+  | { phase: 'OPEN'; sessions: StateSession[] }
+  | { phase: 'WAITING'; sessions: StateSession[]; nextVisitOrder: number; nextDate: string }
+  | { phase: 'CLOSED'; sessions: StateSession[] };
+
 
 const safeGet = (k: string) => { try { return sessionStorage.getItem(k); } catch { return null; } };
 const safeSet = (k: string, v: string) => { try { sessionStorage.setItem(k, v); } catch { /* sin almacenamiento */ } };
@@ -176,21 +186,29 @@ export default function TrainingTaskParticipant() {
     return () => window.removeEventListener('popstate', onPopState);
   }, [taskCode, closeTask]);
 
+  // Obligatorio según requiredIf; los opcionales no bloquean el envío.
+  const fieldRequired = (f: FieldDef, a: Answers) =>
+    'requiredIf' in f && f.requiredIf ? a[f.requiredIf.key] === f.requiredIf.value : !('optional' in f && f.optional);
+
   const isComplete = (): boolean => {
     if (!task) return false;
     if (task.kind === 'alert_or_na') {
       if (answers.na) return true;
-      return (task.fields || []).every((f) => (answers[f.key] || '').trim());
+      return task.fields.every((f) => (answers[f.key] || '').trim());
     }
-    if (task.kind === 'text_fields') return (task.fields || []).every((f) => (answers[f.key] || '').trim());
-    if (task.kind === 'option_text') return !!answers.option && !!(answers.detalle || '').trim();
-    if (task.kind === 'week_table') {
-      return (task.days || []).every((d) => {
-        const row = answers[d];
-        return row && (row.did === true || row.did === false) && Number.isInteger(row.fatigue) && row.fatigue >= 0 && row.fatigue <= 10;
-      });
-    }
-    return false;
+    if (task.kind === 'text_fields') return task.fields.every((f) => (answers[f.key] || '').trim());
+    return (task.fields as FieldDef[]).every((f) => {
+      if (f.type === 'bool') return !fieldRequired(f, answers) || typeof answers[f.key] === 'boolean';
+      if (f.type === 'option') return f.options.some((o) => o.value === answers[f.key]);
+      if (f.type === 'text') return !fieldRequired(f, answers) || !!String(answers[f.key] ?? '').trim();
+      if (f.type === 'day_table') {
+        return f.days.every((d) => {
+          const row = answers[f.key]?.[d];
+          return row && typeof row.did === 'boolean' && Number.isInteger(row.fatigue) && row.fatigue >= 0 && row.fatigue <= 10;
+        });
+      }
+      return true;
+    });
   };
 
   const submitTask = async () => {
@@ -206,6 +224,15 @@ export default function TrainingTaskParticipant() {
       if (err.code === 'SESSION_INVALID') { dropSession(); setStage('cedula'); }
       setError(err.message);
     } finally { setBusy(false); }
+  };
+
+  const answerBrigadista = async (esBrigadista: boolean) => {
+    if (!session) return;
+    setBusy(true); setError(null);
+    try {
+      const r = await api<{ state: ParticipantState }>('/session/brigadista', { method: 'POST', session, body: JSON.stringify({ esBrigadista }) });
+      setPState(r.state);
+    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
 
   if (stage === 'loading') return <Shell><div className="flex justify-center py-24"><Loader2 className="h-6 w-6 animate-spin text-toast-500" aria-label="Cargando" /></div></Shell>;
@@ -259,16 +286,6 @@ export default function TrainingTaskParticipant() {
   }
 
   if (stage === 'form' && pState) {
-    if (pState.phase === 'NOT_STARTED') {
-      return <Shell><Card className="text-center"><Clock className="mx-auto mb-3 h-8 w-8 text-toast-400" aria-hidden /><h1 className="text-xl font-semibold">Todavía no hay tareas disponibles</h1><p className="mt-2 text-sm text-charcoal-900/70">Vuelve a entrar después de la primera sesión.</p></Card></Shell>;
-    }
-    if (pState.phase === 'WAITING') {
-      return <Shell><Card className="text-center"><Clock className="mx-auto mb-3 h-8 w-8 text-toast-400" aria-hidden /><h1 className="text-xl font-semibold">Tu próxima tarea aún no está disponible</h1><p className="mt-2 text-sm text-charcoal-900/70">Se habilita el {formatDate(pState.nextDate)}, con la Visita {pState.nextVisitOrder}.</p></Card></Shell>;
-    }
-    if (pState.phase === 'CLOSED') {
-      return <Shell><Card className="text-center"><Clock className="mx-auto mb-3 h-8 w-8 text-toast-400" aria-hidden /><h1 className="text-xl font-semibold">El plazo para esta tarea ya venció</h1></Card></Shell>;
-    }
-    // OPEN
     if (task && taskCode) {
       return (
         <Shell>
@@ -276,7 +293,7 @@ export default function TrainingTaskParticipant() {
             type="button" onClick={() => window.history.back()}
             className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-charcoal-900/60 hover:text-charcoal-900"
           >
-            <ArrowLeft className="h-4 w-4" aria-hidden /> Volver a mis tareas
+            <ArrowLeft className="h-4 w-4" aria-hidden /> Volver a mis sesiones
           </button>
           <Card>
             <h1 className="text-xl font-semibold tracking-tight">{task.title}</h1>
@@ -289,58 +306,20 @@ export default function TrainingTaskParticipant() {
                     <input type="checkbox" checked={!!answers.na} onChange={(e) => setAnswers({ na: e.target.checked })} className="mt-0.5" />
                     <span className="text-sm">{task.naLabel}</span>
                   </label>
-                  {!answers.na && (task.fields || []).map((f) => (
+                  {!answers.na && task.fields.map((f) => (
                     <TextArea key={f.key} label={f.label} value={answers[f.key] || ''} onChange={(v) => setAnswers((a) => ({ ...a, [f.key]: v }))} />
                   ))}
                 </>
               )}
-              {task.kind === 'text_fields' && (task.fields || []).map((f) => (
+              {task.kind === 'text_fields' && task.fields.map((f) => (
                 <TextArea key={f.key} label={f.label} value={answers[f.key] || ''} onChange={(v) => setAnswers((a) => ({ ...a, [f.key]: v }))} />
               ))}
-              {task.kind === 'option_text' && (
-                <>
-                  <fieldset className="space-y-2">
-                    <legend className="mb-1 text-sm font-medium">¿Cuál realizó?</legend>
-                    {(task.options || []).map((o) => (
-                      <label key={o} className={`flex cursor-pointer items-center gap-2.5 rounded-xl border p-3 text-sm ${answers.option === o ? 'border-toast-500 bg-toast-500/10' : 'border-charcoal-900/10'}`}>
-                        <input type="radio" name="option" checked={answers.option === o} onChange={() => setAnswers((a) => ({ ...a, option: o }))} />
-                        {o}
-                      </label>
-                    ))}
-                  </fieldset>
-                  <TextArea label={(task.fields || [])[0]?.label || 'Detalle'} value={answers.detalle || ''} onChange={(v) => setAnswers((a) => ({ ...a, detalle: v }))} />
-                </>
-              )}
-              {task.kind === 'week_table' && (
-                <div className="overflow-hidden rounded-xl border border-charcoal-900/10">
-                  <table className="w-full text-sm">
-                    <thead><tr className="bg-toast-50 text-left text-xs text-charcoal-900/60"><th className="p-2">Día</th><th className="p-2">¿Hizo la rutina?</th><th className="p-2">Fatiga (0-10)</th></tr></thead>
-                    <tbody>
-                      {(task.days || []).map((d) => {
-                        const row = answers[d] || {};
-                        return (
-                          <tr key={d} className="border-t border-charcoal-900/10">
-                            <td className="p-2 font-medium">{d}</td>
-                            <td className="p-2">
-                              <div className="flex gap-1.5">
-                                {[['Sí', true], ['No', false]].map(([lbl, val]) => (
-                                  <button key={String(val)} type="button" onClick={() => setAnswers((a) => ({ ...a, [d]: { ...row, did: val } }))} className={`rounded-lg border px-2.5 py-1 text-xs ${row.did === val ? 'border-toast-500 bg-toast-500 text-white' : 'border-charcoal-900/15'}`}>{lbl as string}</button>
-                                ))}
-                              </div>
-                            </td>
-                            <td className="p-2">
-                              <select value={row.fatigue ?? ''} onChange={(e) => setAnswers((a) => ({ ...a, [d]: { ...row, fatigue: Number(e.target.value) } }))} className="w-16 rounded-lg border border-charcoal-900/15 px-1.5 py-1 text-xs">
-                                <option value="">—</option>
-                                {[...Array(11)].map((_, i) => <option key={i} value={i}>{i}</option>)}
-                              </select>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+              {task.kind === 'form' && (task.fields as FieldDef[]).map((f) => (
+                <FormField
+                  key={f.key} field={f} answers={answers}
+                  onChange={(v) => setAnswers((a) => ({ ...a, [f.key]: v }))}
+                />
+              ))}
             </div>
 
             {error && <div className="mt-4"><ErrorNote message={error} /></div>}
@@ -353,47 +332,191 @@ export default function TrainingTaskParticipant() {
         </Shell>
       );
     }
-    // Una sección por ventana abierta: pendientes de la visita anterior arriba,
-    // con su fecha de cierre, y las de la visita nueva debajo.
+
+    const sessions = pState.sessions;
+    const anyOpen = sessions.some((s) => s.status === 'ACTIVE');
+    const allDoneOpen = sessions.filter((s) => s.status === 'ACTIVE').every((s) => s.allDone);
     return (
       <Shell>
-        {pState.allDone ? (
-          <Card className="text-center">
+        {pState.phase === 'NOT_STARTED' && (
+          <Card className="mb-4 text-center">
+            <Clock className="mx-auto mb-3 h-8 w-8 text-toast-400" aria-hidden />
+            <h1 className="text-xl font-semibold">Todavía no hay tareas disponibles</h1>
+            <p className="mt-2 text-sm text-charcoal-900/70">Estas son las sesiones del programa. Vuelve a entrar cuando abra la primera.</p>
+          </Card>
+        )}
+        {pState.phase === 'WAITING' && (
+          <Card className="mb-4 text-center">
+            <Clock className="mx-auto mb-3 h-8 w-8 text-toast-400" aria-hidden />
+            <h1 className="text-xl font-semibold">Tu próxima sesión aún no está disponible</h1>
+            <p className="mt-2 text-sm text-charcoal-900/70">Se abre el {formatDate(pState.nextDate)}, con la Visita {pState.nextVisitOrder}.</p>
+          </Card>
+        )}
+        {pState.phase === 'CLOSED' && (
+          <Card className="mb-4 text-center">
+            <Clock className="mx-auto mb-3 h-8 w-8 text-toast-400" aria-hidden />
+            <h1 className="text-xl font-semibold">El programa ya cerró</h1>
+          </Card>
+        )}
+        {anyOpen && allDoneOpen && (
+          <Card className="mb-4 text-center">
             <CheckCircle2 className="mx-auto mb-3 h-10 w-10 text-toast-500" aria-hidden />
             <h1 className="text-xl font-semibold">¡Ya enviaste tus tareas!</h1>
-            <p className="mt-2 text-sm text-charcoal-900/70">Vuelve a entrar con tu cédula cuando llegue tu próxima visita.</p>
+            <p className="mt-2 text-sm text-charcoal-900/70">Vuelve a entrar con tu cédula cuando llegue tu próxima sesión.</p>
           </Card>
-        ) : (
-          <div className="space-y-6">
-            {pState.windows.map((w) => (
-              <section key={w.visitOrder} className="space-y-3">
-                <div className="flex items-center justify-between text-xs text-charcoal-900/60">
-                  <span className="font-semibold">Visita {w.visitOrder}</span>
-                  <span>Tienes hasta el {formatDate(w.closesAt)}</span>
-                </div>
-                {w.allDone && (
-                  <p className="rounded-xl bg-emerald-50 px-3 py-2 text-xs text-emerald-800">Ya enviaste las tareas de esta visita.</p>
-                )}
-                {w.tasks.map((t) => (
-                  <button
-                    key={t.code} onClick={() => void openTask(t.code)} disabled={t.status === 'COMPLETED' || busy}
-                    className={`flex w-full items-center justify-between rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:border-toast-500 disabled:cursor-default disabled:opacity-60 ${t.status === 'COMPLETED' ? 'border-emerald-200' : 'border-charcoal-900/10'}`}
-                  >
-                    <div>
-                      <p className="text-sm font-semibold text-charcoal-900">{t.title}</p>
-                      <p className="text-xs text-charcoal-900/50">{t.status === 'COMPLETED' ? 'Enviada' : 'Por responder'}</p>
-                    </div>
-                    {t.status === 'COMPLETED' ? <CheckCircle2 className="h-5 w-5 text-emerald-500" aria-hidden /> : <ArrowRight className="h-5 w-5 text-charcoal-900/30" aria-hidden />}
-                  </button>
-                ))}
-              </section>
-            ))}
-            {error && <ErrorNote message={error} />}
-          </div>
         )}
+
+        <div className="space-y-3">
+          {sessions.map((s) => (
+            <SessionCard
+              key={s.visitOrder} session={s} busy={busy}
+              onOpenTask={(code) => void openTask(code)}
+              onBrigadista={(v) => void answerBrigadista(v)}
+            />
+          ))}
+        </div>
+        {error && <div className="mt-4"><ErrorNote message={error} /></div>}
       </Shell>
     );
   }
 
   return <Shell><div className="flex justify-center py-24"><Loader2 className="h-6 w-6 animate-spin text-toast-500" aria-label="Cargando" /></div></Shell>;
+}
+
+const SESSION_STATUS: Record<StateSession['status'], { label: string; cls: string }> = {
+  LOCKED: { label: 'Bloqueada', cls: 'bg-slate-100 text-slate-600' },
+  ACTIVE: { label: 'Activa', cls: 'bg-emerald-50 text-emerald-700' },
+  CLOSED: { label: 'Cerrada', cls: 'bg-charcoal-900/5 text-charcoal-900/60' },
+};
+
+function SessionCard({ session: s, busy, onOpenTask, onBrigadista }: {
+  session: StateSession; busy: boolean; onOpenTask: (code: string) => void; onBrigadista: (v: boolean) => void;
+}) {
+  // Activa: abierta por defecto. Bloqueada o cerrada: colapsada, para no saturar la vista.
+  const [open, setOpen] = useState(s.status === 'ACTIVE');
+  const st = SESSION_STATUS[s.status];
+  const dateLine = s.status === 'LOCKED'
+    ? `Abre el ${formatDate(s.opensAt)}`
+    : s.status === 'ACTIVE' ? `Tienes hasta el ${formatDate(s.closesAt)}` : `Cerró el ${formatDate(s.closesAt)}`;
+  return (
+    <section className="rounded-2xl border border-charcoal-900/10 bg-white shadow-sm">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full items-center justify-between gap-3 p-4 text-left">
+        <div>
+          <p className="text-sm font-semibold text-charcoal-900">Sesión {s.visitOrder}</p>
+          <p className="text-xs text-charcoal-900/60">{dateLine}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {s.allDone && <CheckCircle2 className="h-4 w-4 text-emerald-500" aria-label="Resuelta" />}
+          <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${st.cls}`}>{st.label}</span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="space-y-2 border-t border-charcoal-900/5 p-4">
+          {s.needsBrigadista && (
+            <div className="rounded-xl border border-toast-200 bg-toast-50 p-3">
+              <p className="text-sm font-semibold text-charcoal-900">¿Eres brigadista?</p>
+              <p className="mt-1 text-xs text-charcoal-900/60">Responde con sinceridad: de tu respuesta depende qué tareas te asignamos en esta sesión.</p>
+              <div className="mt-3 flex gap-2">
+                {[['Sí', true], ['No', false]].map(([lbl, val]) => (
+                  <button key={String(val)} type="button" disabled={busy} onClick={() => onBrigadista(val as boolean)}
+                    className="rounded-lg border border-charcoal-900/15 bg-white px-4 py-2 text-sm font-medium hover:border-toast-500 disabled:opacity-50">
+                    {lbl as string}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {s.tasks.length === 0 && <p className="text-xs text-charcoal-900/50">No tienes tareas en esta sesión.</p>}
+          {s.tasks.map((t) => {
+            const clickable = s.status === 'ACTIVE' && t.status === 'PENDING' && !busy;
+            const label = t.status === 'COMPLETED' ? 'Enviada'
+              : s.status === 'LOCKED' ? `Disponible el ${formatDate(s.opensAt)}`
+              : t.status === 'EXPIRED' ? 'Vencida'
+              : 'Por responder';
+            return (
+              <button
+                key={t.code} type="button" disabled={!clickable} onClick={() => onOpenTask(t.code)}
+                className={`flex w-full items-center justify-between rounded-xl border bg-white p-3 text-left transition hover:border-toast-500 disabled:cursor-default disabled:opacity-60 ${t.status === 'COMPLETED' ? 'border-emerald-200' : 'border-charcoal-900/10'}`}
+              >
+                <div>
+                  <p className="text-sm font-semibold text-charcoal-900">{t.title}</p>
+                  <p className="text-xs text-charcoal-900/50">{label}</p>
+                </div>
+                {t.status === 'COMPLETED' ? <CheckCircle2 className="h-5 w-5 text-emerald-500" aria-hidden /> : clickable ? <ArrowRight className="h-5 w-5 text-charcoal-900/30" aria-hidden /> : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FormField({ field: f, answers, onChange }: { field: FieldDef; answers: Answers; onChange: (v: any) => void }) {
+  const value = answers[f.key];
+  if (f.type === 'bool') {
+    return (
+      <div>
+        <p className="mb-2 text-sm font-medium">{f.label}</p>
+        <div className="flex gap-2">
+          {[['Sí', true], ['No', false]].map(([lbl, val]) => (
+            <button key={String(val)} type="button" onClick={() => onChange(val)}
+              className={`rounded-lg border px-4 py-2 text-sm font-medium ${value === val ? 'border-toast-500 bg-toast-500 text-white' : 'border-charcoal-900/15 bg-white hover:border-toast-300'}`}>
+              {lbl as string}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  if (f.type === 'option') {
+    return (
+      <fieldset className="space-y-2">
+        <legend className="mb-1 text-sm font-medium">{f.label}</legend>
+        {f.options.map((o) => (
+          <label key={o.value} className={`flex cursor-pointer items-center gap-2.5 rounded-xl border p-3 text-sm ${value === o.value ? 'border-toast-500 bg-toast-500/10' : 'border-charcoal-900/10'}`}>
+            <input type="radio" name={f.key} checked={value === o.value} onChange={() => onChange(o.value)} />
+            {o.label}
+          </label>
+        ))}
+      </fieldset>
+    );
+  }
+  if (f.type === 'text') {
+    return <TextArea label={f.label} value={value || ''} onChange={onChange} />;
+  }
+  // day_table
+  return (
+    <div className="overflow-hidden rounded-xl border border-charcoal-900/10">
+      <table className="w-full text-sm">
+        <thead><tr className="bg-toast-50 text-left text-xs text-charcoal-900/60"><th className="p-2">Día</th><th className="p-2">¿Hizo la rutina?</th><th className="p-2">Fatiga (0-10)</th></tr></thead>
+        <tbody>
+          {f.days.map((d) => {
+            const row = value?.[d] || {};
+            return (
+              <tr key={d} className="border-t border-charcoal-900/10">
+                <td className="p-2 font-medium">{d}</td>
+                <td className="p-2">
+                  <div className="flex gap-1.5">
+                    {[['Sí', true], ['No', false]].map(([lbl, val]) => (
+                      <button key={String(val)} type="button" onClick={() => onChange({ ...value, [d]: { ...row, did: val } })}
+                        className={`rounded-lg border px-2.5 py-1 text-xs ${row.did === val ? 'border-toast-500 bg-toast-500 text-white' : 'border-charcoal-900/15'}`}>{lbl as string}</button>
+                    ))}
+                  </div>
+                </td>
+                <td className="p-2">
+                  <select value={row.fatigue ?? ''} onChange={(e) => onChange({ ...value, [d]: { ...row, fatigue: Number(e.target.value) } })}
+                    className="w-16 rounded-lg border border-charcoal-900/15 px-1.5 py-1 text-xs">
+                    <option value="">—</option>
+                    {[...Array(11)].map((_, i) => <option key={i} value={i}>{i}</option>)}
+                  </select>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }

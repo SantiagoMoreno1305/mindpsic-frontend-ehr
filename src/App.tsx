@@ -620,19 +620,21 @@ export default function App() {
         {renderPortal()}
       </div>
 
-      {/* 3. DR.MIND BUBBLE — oculto para USUARIO_B2C */}
+      {/* 3. DR.MIND BUBBLE — oculto para USUARIO_B2C. Círculo chico (no
+          píldora con texto): así ocupa poco espacio fijo en la esquina y no
+          tapa menús "⋮"/listas con scroll que terminan ahí (reportado
+          2026-10-07) — el nombre queda como tooltip nativo (title). */}
       {currentUser && currentUser.role !== 'USUARIO_B2C' && !isDrMindOpen && (
         <button
           onClick={() => setIsDrMindOpen(true)}
           id="btn-floating-drmind-bubble"
-          className="fixed bottom-6 right-6 z-40 bg-gradient-to-r from-charcoal-900 to-charcoal-800 text-white p-4 rounded-2xl shadow-xl hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer flex items-center space-x-2 border border-toast-300 group font-semibold"
+          className="fixed bottom-5 right-5 z-40 flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-r from-charcoal-900 to-charcoal-800 text-white shadow-xl hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer border border-toast-300 group"
           title="Abrir Asistente Dr.Mind AI"
         >
           <div className="relative">
             <Bot className="w-5 h-5 text-toast-200 group-hover:animate-bounce" />
             <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-toast-400 animate-ping" />
           </div>
-          <span className="text-xs tracking-wide">Dr.Mind AI</span>
         </button>
       )}
 
