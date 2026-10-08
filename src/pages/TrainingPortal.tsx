@@ -22,7 +22,7 @@ interface Schedule { id: string; name: string | null; facilitatorUrl: string; ta
 interface Program { id: string; name: string; clientName: string; schedules: Schedule[] }
 interface TaskStat { code: string; title: string; visitOrder: number; started: number; completed: number }
 interface Stats { participants: number; checklists: number; roster: { total: number; conPersonal: number; sinPersonal: number }; tasks: TaskStat[] }
-interface RosterSection { name: string; total: number; conPersonal: number; sinPersonal: number }
+interface RosterSection { name: string; total: number; conPersonal: number }
 
 const inputCls = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm focus:border-toast-500 focus:outline-none focus:ring-2 focus:ring-toast-500/30';
 const fmt = (iso: string) => new Date(iso).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'America/Bogota' });
@@ -131,11 +131,25 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
   const [showWindows, setShowWindows] = useState(false);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const [showRoster, setShowRoster] = useState(false);
-  const [rosterFile, setRosterFile] = useState<string | null>(null);
-  const [rosterSections, setRosterSections] = useState<RosterSection[] | null>(null);
-  const [rosterChoice, setRosterChoice] = useState('');
   const [rosterBusy, setRosterBusy] = useState(false);
   const [rosterSummary, setRosterSummary] = useState<{ total: number; conPersonal: number; sinPersonal: number } | null>(null);
+
+  // El resumen de la lista solo se llenaba al importar un Excel EN ESTA
+  // sesión, o al abrir "Ver avance" a mano — así que recargar la página (o
+  // volver más tarde) mostraba "Sin lista cargada" aunque el Excel ya
+  // estuviera guardado (reportado 2026-10-08). Se trae silenciosamente al
+  // montar la tarjeta, de una vez junto con las estadísticas: así "Ver
+  // avance" también abre al instante, sin esperar la primera carga.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const st = await call<Stats>(`/schedules/${schedule.id}/stats`);
+        if (!cancelled) { setStats(st); setRosterSummary(st.roster); }
+      } catch { /* silencioso — "Ver avance" lo reintenta si esto falló */ }
+    })();
+    return () => { cancelled = true; };
+  }, [schedule.id]);
 
   const readAsBase64 = async (file: File) => {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -144,30 +158,22 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
     return btoa(bin);
   };
 
+  // Un solo paso: el Excel puede traer varias obras (secciones "OBRA: ...",
+  // "OFICINA PRINCIPAL", etc.) pero el cronograma no distingue entre
+  // ellas — se importan TODAS juntas de una vez, sin pedir elegir cuál
+  // (antes había un paso de "elige la obra" que solo frenaba, ver
+  // discusión 2026-10-08). Reemplaza la lista completa del cronograma.
   const onRosterFile = async (file: File | undefined) => {
-    setRosterSections(null); setRosterChoice('');
     if (!file) return;
     setRosterBusy(true);
     try {
       const b64 = await readAsBase64(file);
-      setRosterFile(b64);
-      const r = await call<{ sections: RosterSection[] }>(`/schedules/${schedule.id}/roster/preview`, { method: 'POST', body: JSON.stringify({ file: b64 }) });
-      setRosterSections(r.sections);
-      if (r.sections.length === 1) setRosterChoice(r.sections[0].name);
-    } catch (e) {
-      setRosterFile(null);
-      toast.error(`No se pudo leer el archivo: ${(e as Error).message}`);
-    } finally { setRosterBusy(false); }
-  };
-
-  const importRoster = async () => {
-    if (!rosterFile || !rosterChoice) return;
-    setRosterBusy(true);
-    try {
-      const r = await call<{ roster: { total: number; conPersonal: number; sinPersonal: number } }>(`/schedules/${schedule.id}/roster`, { method: 'POST', body: JSON.stringify({ file: rosterFile, section: rosterChoice }) });
+      const r = await call<{ roster: { total: number; conPersonal: number; sinPersonal: number }; sections: RosterSection[] }>(
+        `/schedules/${schedule.id}/roster`, { method: 'POST', body: JSON.stringify({ file: b64 }) },
+      );
       setRosterSummary(r.roster);
-      setRosterSections(null); setRosterFile(null); setRosterChoice('');
-      toast.success(`Lista importada: ${r.roster.total} colaboradores (${r.roster.conPersonal} con personal a cargo).`);
+      const obras = r.sections.length > 1 ? ` de ${r.sections.length} obras` : '';
+      toast.success(`Lista importada: ${r.roster.total} colaboradores${obras} (${r.roster.conPersonal} con personal a cargo).`);
     } catch (e) {
       toast.error(`No se importó la lista: ${(e as Error).message}`);
     } finally { setRosterBusy(false); }
@@ -257,32 +263,17 @@ function ScheduleCard({ schedule, onChanged }: { schedule: Schedule; onChanged: 
         {showRoster && (
           <div className="mt-3 space-y-3">
             <p className="text-[11px] text-slate-400">
-              Sube el Excel de la obra. Quien aparece como NO tiene personal a cargo y solo ve el Bloque 1; quien no está en la lista ve ambos bloques.
+              Sube el Excel completo — si trae varias obras se importan todas juntas, sin distinguir una de otra. Quien
+              aparece como NO tiene personal a cargo y solo ve el Bloque 1; quien no está en la lista ve ambos bloques.
             </p>
             <input
               type="file" accept=".xlsx"
-              onChange={(e) => void onRosterFile(e.target.files?.[0])}
+              onChange={(e) => { void onRosterFile(e.target.files?.[0]); e.target.value = ''; }}
               disabled={rosterBusy}
-              className="block w-full text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-xs file:font-semibold"
+              className="block w-full text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-xs file:font-semibold disabled:opacity-40"
             />
-            {rosterSections && (
-              <div className="space-y-2">
-                <label className="block text-[11px] text-slate-500">
-                  Obra a importar
-                  <select value={rosterChoice} onChange={(e) => setRosterChoice(e.target.value)} className={`${inputCls} mt-1`}>
-                    <option value="">Selecciona…</option>
-                    {rosterSections.map((r) => (
-                      <option key={r.name} value={r.name}>{r.name} — {r.total} colaboradores ({r.conPersonal} con personal a cargo)</option>
-                    ))}
-                  </select>
-                </label>
-                <button onClick={importRoster} disabled={!rosterChoice || rosterBusy} className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-40">
-                  {rosterBusy && <Loader2 className="h-3.5 w-3.5 animate-spin" />} Importar lista de esta obra
-                </button>
-              </div>
-            )}
-            {rosterBusy && !rosterSections && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
-            {rosterSummary && !rosterSections && (
+            {rosterBusy && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
+            {rosterSummary && !rosterBusy && (
               <p className="text-xs text-slate-600">
                 Lista actual: {rosterSummary.total} colaboradores · {rosterSummary.conPersonal} con personal a cargo · {rosterSummary.sinPersonal} sin personal a cargo.
               </p>
