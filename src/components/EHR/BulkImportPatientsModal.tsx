@@ -96,6 +96,10 @@ interface ParsedRow {
   fechaAgendamiento: string;
   fechaFinalizacion: string;
   sessionsAuthorized: string;
+  sessionsCumplidas: string;
+  sessionsReprogramadas: string;
+  sessionsCanceladas: string;
+  sessionsPendientes: string;
 }
 
 interface BulkImportPatientsModalProps {
@@ -166,6 +170,15 @@ const COL_FECHA_SOLICITUD = 'Fecha de solicitud (dd/mm/aaaa)';
 const COL_FECHA_AGENDAMIENTO = 'Fecha de agendamiento (dd/mm/aaaa)';
 const COL_FECHA_FINALIZACION = 'Fecha de finalización (dd/mm/aaaa)';
 const COL_SESIONES_APROBADAS = 'Sesiones aprobadas (número o "Libres")';
+// Historial de sesiones — solo para precargar el panel "Seguimiento de
+// sesiones" de un paciente migrado de otro sistema (ver discusión
+// 2026-10-10): son cantidades, no fechas reales de cada cita, así que no
+// pasan por el código de aprobación de dos personas (eso es solo para cupo
+// nuevo — ver COL_SESIONES_APROBADAS/hasInitialSessions).
+const COL_SESIONES_CUMPLIDAS = 'Sesiones cumplidas (historial)';
+const COL_SESIONES_REPROGRAMADAS = 'Sesiones reprogramadas (historial)';
+const COL_SESIONES_CANCELADAS = 'Sesiones canceladas (historial)';
+const COL_SESIONES_PENDIENTES = 'Sesiones pendientes (historial)';
 
 const COLUMN_HEADERS = [
   COL_NOMBRES, COL_APELLIDOS, COL_TIPO_DOC, COL_NUM_DOC, COL_FECHA_NAC,
@@ -178,6 +191,7 @@ const COLUMN_HEADERS = [
   COL_REQUIERE_REP_LEGAL, COL_REP_NOMBRES, COL_REP_APELLIDOS, COL_REP_TEL, COL_REP_PARENTESCO, COL_REP_CORREO,
   COL_PSICOLOGO, COL_TIPO_CONVENIO, COL_RELACION, COL_TIPO_ATENCION,
   COL_FECHA_SOLICITUD, COL_FECHA_AGENDAMIENTO, COL_FECHA_FINALIZACION, COL_SESIONES_APROBADAS,
+  COL_SESIONES_CUMPLIDAS, COL_SESIONES_REPROGRAMADAS, COL_SESIONES_CANCELADAS, COL_SESIONES_PENDIENTES,
 ];
 
 // Filas con select real que se preparan en la plantilla — más allá de esto,
@@ -511,6 +525,10 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         [COL_FECHA_AGENDAMIENTO, 'No', 'Formato dd/mm/aaaa — normalmente se deja vacía, la completa el sistema al agendar la primera cita'],
         [COL_FECHA_FINALIZACION, 'No', 'Formato dd/mm/aaaa — normalmente se deja vacía, la completa el sistema al cerrar el proceso'],
         [COL_SESIONES_APROBADAS, 'No', 'Un número entero mayor a 0, o "Libres" (sin tope) — abre el cupo inicial del paciente con el convenio del lote. NO es una lista desplegable (acepta cualquier número).'],
+        [COL_SESIONES_CUMPLIDAS, 'No', 'Número entero entre 0 y 500 — cuántas sesiones ya cumplió este paciente ANTES de cargarlo (en otro sistema, por ejemplo). Solo precarga el contador del panel "Seguimiento de sesiones"; no crea citas reales ni descuenta cupo.'],
+        [COL_SESIONES_REPROGRAMADAS, 'No', 'Igual que la anterior, pero para sesiones reprogramadas.'],
+        [COL_SESIONES_CANCELADAS, 'No', 'Igual que la anterior, pero para sesiones canceladas.'],
+        [COL_SESIONES_PENDIENTES, 'No', 'Igual que la anterior, pero para sesiones pendientes.'],
         [''],
         ['Valores válidos de "Estado de contacto":', statusValues],
         ['Valores válidos de "Régimen de salud":', REGIMEN_OPTIONS.join(' / ')],
@@ -737,6 +755,21 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           }
         }
 
+        const parseHistoryCount = (col: string, field: string, label: string): string => {
+          const raw = String(r[col] || '').trim();
+          if (!raw) return '';
+          const n = Number(raw);
+          if (!Number.isInteger(n) || n < 0 || n > 500) {
+            errors.push({ row: rowNumber, field, message: `${label} debe ser un número entero entre 0 y 500.` });
+            return '';
+          }
+          return String(n);
+        };
+        const sessionsCumplidas = parseHistoryCount(COL_SESIONES_CUMPLIDAS, 'sessionsCumplidas', 'Sesiones cumplidas');
+        const sessionsReprogramadas = parseHistoryCount(COL_SESIONES_REPROGRAMADAS, 'sessionsReprogramadas', 'Sesiones reprogramadas');
+        const sessionsCanceladas = parseHistoryCount(COL_SESIONES_CANCELADAS, 'sessionsCanceladas', 'Sesiones canceladas');
+        const sessionsPendientes = parseHistoryCount(COL_SESIONES_PENDIENTES, 'sessionsPendientes', 'Sesiones pendientes');
+
         return {
           firstName: String(r[COL_NOMBRES] || '').trim(),
           lastName: String(r[COL_APELLIDOS] || '').trim(),
@@ -776,6 +809,10 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           fechaAgendamiento,
           fechaFinalizacion,
           sessionsAuthorized,
+          sessionsCumplidas,
+          sessionsReprogramadas,
+          sessionsCanceladas,
+          sessionsPendientes,
         };
       });
 
