@@ -932,10 +932,26 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   useEffect(() => {
     localStorage.setItem('mind_admin_active_tab', activeTab);
   }, [activeTab]);
+
+  // Cambiar de pestaña del sidebar/navbar es "navegar" para quien usa el
+  // navegador — sin empujar una entrada de historial por cada clic, el
+  // botón "atrás" no tenía NADA que deshacer (salvo el único caso aparte de
+  // la ficha de paciente, ver más abajo) y sacaba a la persona de la app
+  // entera, sin importar en qué pestaña estuviera (reportado 2026-10-13).
+  // `goToTab` es el reemplazo de `setActiveTab` para cualquier clic de
+  // navegación real — los `setActiveTab` que quedan sueltos en el archivo
+  // son restauraciones programáticas (ej. el propio handler de popstate),
+  // que NO deben volver a empujar otra entrada.
+  const goToTab = (tab: AdminTab) => {
+    if (tab === activeTab) return;
+    window.history.pushState({ mindpsicTab: tab }, '', window.location.href);
+    setActiveTab(tab);
+  };
+
   // Logo → inicio; nombre/foto del Navbar → Mi perfil (ver navRequest en App.tsx).
   useEffect(() => {
     if (!navRequest || navRequest.n === 0) return;
-    setActiveTab(navRequest.target === 'profile' ? 'mi_perfil' : 'metrics');
+    goToTab(navRequest.target === 'profile' ? 'mi_perfil' : 'metrics');
   }, [navRequest?.n]);
 
   // Igual que activeTab: sin esto, un refresh estando dentro de la ficha de
@@ -970,12 +986,21 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
     }
   };
   useEffect(() => {
-    const handlePopState = () => {
+    const handlePopState = (event: PopStateEvent) => {
+      // Caso ficha de paciente — ya establecido, se mantiene igual.
       if (selectedPatientId && clinicalHistoryReturnTab) {
         setSelectedPatientId(null);
         setActiveTab(clinicalHistoryReturnTab);
         setClinicalHistoryReturnTab(null);
+        return;
       }
+      // Caso general (ver goToTab): la entrada a la que se aterriza ya trae
+      // en su `state` qué pestaña estaba activa ahí. Si no trae nada (se
+      // llegó hasta la entrada original, de antes de cualquier clic), vuelve
+      // al tablero — nunca se queda "pegada" en la pestaña de la que se
+      // intentó salir.
+      const tab = (event.state as { mindpsicTab?: string } | null)?.mindpsicTab;
+      setActiveTab(tab && (ADMIN_TABS as string[]).includes(tab) ? (tab as AdminTab) : 'metrics');
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -1818,7 +1843,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           
           {/* Metrics Panel Switch */}
           <button
-            onClick={() => setActiveTab('metrics')}
+            onClick={() => goToTab('metrics')}
             id="tab-adm-metrics"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'metrics' 
@@ -1834,7 +1859,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           {/* Telehealth Controls Panel */}
           {['CEO', 'DIRECTIVO', 'SUPER ADMIN', 'C-LEVEL', 'ESPECIALISTA_B2B'].includes(currentUser.role) && (
             <button
-              onClick={() => setActiveTab('video_admin')}
+              onClick={() => goToTab('video_admin')}
               id="tab-adm-video"
               className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
                 activeTab === 'video_admin' 
@@ -1850,7 +1875,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
           {/* advanced Document processing (RAG / AI Loading) */}
           <button
-            onClick={() => setActiveTab('advanced_docs')}
+            onClick={() => goToTab('advanced_docs')}
             id="tab-adm-documental"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'advanced_docs' 
@@ -1865,7 +1890,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
           {/* Pacientes */}
           <button
-            onClick={() => setActiveTab('patients')}
+            onClick={() => goToTab('patients')}
             id="tab-adm-pacientes"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'patients'
@@ -1880,7 +1905,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
           {/* Historias Clínicas — el administrador puede consultarlas */}
           <button
-            onClick={() => { setSelectedPatientId(null); setActiveTab('clinical_history'); }}
+            onClick={() => { setSelectedPatientId(null); goToTab('clinical_history'); }}
             id="tab-adm-historias"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'clinical_history'
@@ -1896,7 +1921,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           {/* Pruebas y Evaluaciones — el administrativo asigna y hace seguimiento;
               la lectura clínica del resultado sigue siendo del profesional. */}
           <button
-            onClick={() => setActiveTab('evaluations')}
+            onClick={() => goToTab('evaluations')}
             id="tab-adm-evaluaciones"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'evaluations'
@@ -1911,7 +1936,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
           {/* Equipo / Aprovisionamiento RBAC */}
           <button
-            onClick={() => setActiveTab('equipo')}
+            onClick={() => goToTab('equipo')}
             id="tab-adm-equipo"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'equipo' 
@@ -1926,7 +1951,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
           {/* Convenios / Clientes Corporativos */}
           <button
-            onClick={() => setActiveTab('convenios')}
+            onClick={() => goToTab('convenios')}
             id="tab-adm-convenios"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'convenios'
@@ -1941,7 +1966,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
           {/* Tarifas por sesión — por convenio y por estrato (particular) */}
           <button
-            onClick={() => setActiveTab('tariffs')}
+            onClick={() => goToTab('tariffs')}
             id="tab-adm-tariffs"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'tariffs'
@@ -1957,7 +1982,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           {/* Proyectos de investigación — evaluar una cohorte propia por oleadas */}
           {showResearchTab && (
             <button
-              onClick={() => setActiveTab('research_projects')}
+              onClick={() => goToTab('research_projects')}
               id="tab-adm-research-projects"
               className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
                 activeTab === 'research_projects'
@@ -1974,7 +1999,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           {/* Códigos de acceso — línea24/7 y campañas de evaluación */}
           {showAccessCodesTab && (
             <button
-              onClick={() => setActiveTab('access_codes')}
+              onClick={() => goToTab('access_codes')}
               id="tab-adm-access-codes"
               className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
                 activeTab === 'access_codes'
@@ -1992,7 +2017,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
               quien tiene el permiso (o CEO, respaldo de MindPsic) */}
           {canGrantSessionChangePermission && (
             <button
-              onClick={() => setActiveTab('approvals')}
+              onClick={() => goToTab('approvals')}
               id="tab-adm-approvals"
               className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
                 activeTab === 'approvals'
@@ -2008,7 +2033,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
           {/* Billing & RIPS configurations */}
           <button
-            onClick={() => setActiveTab('billing_rips')}
+            onClick={() => goToTab('billing_rips')}
             id="tab-adm-billing"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'billing_rips' 
@@ -2023,7 +2048,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
           {/* Dedicated Internal Messaging (Chat) */}
           <button
-            onClick={() => setActiveTab('chat')}
+            onClick={() => goToTab('chat')}
             id="tab-adm-chat"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'chat' 
@@ -2057,7 +2082,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             </span>
           </div>
           <button
-            onClick={() => setActiveTab('mi_perfil')}
+            onClick={() => goToTab('mi_perfil')}
             id="tab-adm-mi-perfil"
             className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs transition-colors cursor-pointer ${
               activeTab === 'mi_perfil' ? 'bg-white/10 text-white font-semibold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
@@ -3752,7 +3777,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           <MiPerfilPage
             user={currentUser}
             onUserUpdated={(u) => { setCurrentUser(u); onUserUpdated?.(u); }}
-            onBack={() => setActiveTab('metrics')}
+            onBack={() => window.history.back()}
           />
         )}
 
