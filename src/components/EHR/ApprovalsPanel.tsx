@@ -17,13 +17,16 @@
  *   POST /api/session-changes/:id/reject
  */
 import { useEffect, useState } from 'react';
-import { Inbox, Ban, Check, Clock, X, Loader2 } from 'lucide-react';
+import { Inbox, Ban, Check, Clock, X, Loader2, Plus, Minus } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 
 interface ChangeRequest {
   id: string;
   kind: 'SINGLE' | 'BULK_IMPORT';
   status: 'PENDING' | 'VERIFIED' | 'EXPIRED' | 'REVOKED';
+  // Solo aplica a kind:SINGLE — BULK_IMPORT siempre es ADD (alta inicial),
+  // igual que en el modelo (ver schema.prisma).
+  changeType: 'ADD' | 'SUBTRACT';
   requestedSessionsAuthorized: number | null;
   requestedUnlimited: boolean;
   bulkPatientCount: number | null;
@@ -32,8 +35,35 @@ interface ChangeRequest {
   expiresAt: string;
   createdAt: string;
   requestedBy: { id: string; name: string; email: string };
+  // Quien queda como aprobador asignado de esta solicitud — en ESTA bandeja
+  // siempre soy yo (está filtrada por approverId), pero se muestra explícito
+  // igual, no asumido.
+  approver?: { id: string; name: string; email: string };
   patient: { id: string; firstName: string; lastName: string } | null;
   company: { id: string; name: string } | null;
+}
+
+// Columna "Sesiones" — suma o resta, bien distinguible (verde/+ vs rojo/-).
+function SessionsChange({ r }: { r: ChangeRequest }) {
+  if (r.kind === 'BULK_IMPORT') {
+    return (
+      <span className="inline-flex items-center gap-1 font-semibold text-emerald-600">
+        <Plus className="h-3 w-3" /> {r.bulkTotalSessions ?? '?'}
+      </span>
+    );
+  }
+  if (r.changeType === 'SUBTRACT') {
+    return (
+      <span className="inline-flex items-center gap-1 font-semibold text-rose-600">
+        <Minus className="h-3 w-3" /> {r.requestedSessionsAuthorized ?? '?'}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 font-semibold text-emerald-600">
+      <Plus className="h-3 w-3" /> {r.requestedUnlimited ? 'Libres' : r.requestedSessionsAuthorized}
+    </span>
+  );
 }
 
 const STATUS_STYLES: Record<ChangeRequest['status'], { chip: string; label: string }> = {
@@ -49,7 +79,15 @@ function describeChange(r: ChangeRequest): string {
   }
   const patientName = r.patient ? `${r.patient.firstName} ${r.patient.lastName}` : 'paciente';
   const sessions = r.requestedUnlimited ? 'libres (sin tope)' : `${r.requestedSessionsAuthorized} sesión(es)`;
-  return `${patientName} — ${sessions}${r.company ? ` con ${r.company.name}` : ''}`;
+  const verbo = r.changeType === 'SUBTRACT' ? 'resta' : 'agrega';
+  return `${patientName} — ${verbo} ${sessions}${r.company ? ` con ${r.company.name}` : ''}`;
+}
+
+// "Solicitud" en la tabla de Historial — solo el paciente/lote, sin repetir
+// sesiones/convenio (eso ya tiene su propia columna, ver SessionsChange).
+function requestLabel(r: ChangeRequest): string {
+  if (r.kind === 'BULK_IMPORT') return `Carga masiva — ${r.bulkPatientCount ?? '?'} paciente(s)`;
+  return r.patient ? `${r.patient.firstName} ${r.patient.lastName}` : 'Paciente';
 }
 
 export default function ApprovalsPanel() {
@@ -190,7 +228,10 @@ export default function ApprovalsPanel() {
                   <thead>
                     <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-400">
                       <th className="px-4 py-3 font-semibold">Solicitud</th>
+                      <th className="px-4 py-3 font-semibold">Sesiones</th>
+                      <th className="px-4 py-3 font-semibold">Convenio</th>
                       <th className="px-4 py-3 font-semibold">Quién pidió</th>
+                      <th className="px-4 py-3 font-semibold">Quién aprobó</th>
                       <th className="px-4 py-3 font-semibold">Estado</th>
                       <th className="px-4 py-3 font-semibold">Fecha</th>
                     </tr>
@@ -201,10 +242,15 @@ export default function ApprovalsPanel() {
                       return (
                         <tr key={r.id}>
                           <td className="px-4 py-3 text-slate-700">
-                            {describeChange(r)}
+                            {requestLabel(r)}
                             {r.rejectionReason && <p className="mt-0.5 text-[10.5px] text-rose-500">Motivo: {r.rejectionReason}</p>}
                           </td>
+                          <td className="px-4 py-3"><SessionsChange r={r} /></td>
+                          <td className="px-4 py-3 text-slate-500">{r.company?.name ?? '—'}</td>
                           <td className="px-4 py-3 text-slate-500">{r.requestedBy.name}</td>
+                          <td className="px-4 py-3 text-slate-500">
+                            {r.status === 'VERIFIED' ? (r.approver?.name ?? '—') : '—'}
+                          </td>
                           <td className="px-4 py-3">
                             <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10.5px] font-semibold ${s.chip}`}>
                               {s.label}
