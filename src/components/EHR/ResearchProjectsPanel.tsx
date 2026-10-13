@@ -26,7 +26,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
-import { FlaskConical, Plus, Loader2, ChevronDown, ChevronRight, Send, BarChart3, Users, Download, KeyRound, X, MoreVertical, Pencil, UserCog, Trash2, FileText } from 'lucide-react';
+import { FlaskConical, Plus, Loader2, ChevronDown, ChevronRight, Send, BarChart3, Users, Download, KeyRound, X, MoreVertical, Pencil, UserCog, Trash2, FileText, Archive, ArchiveRestore } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
 import { LugarAplicacionFields, camposDeLugar, type LugarTipo } from './LugarAplicacionFields';
@@ -233,6 +233,7 @@ function WaveActionsMenu({ children }: { children: (close: () => void) => ReactN
 export default function ResearchProjectsPanel({ canManage }: { canManage: boolean }) {
   const { companies } = useCompanies();
   const [projects, setProjects] = useState<ProjectRecord[] | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
   // Distingue "tu clínica no tiene esto habilitado" de "sí lo tienes, pero
   // todavía no creaste ningún proyecto" — antes las dos se veían igual
@@ -315,7 +316,7 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
   const load = () => {
     setLoading(true);
     setLoadError(null);
-    apiFetch('/api/research-projects')
+    apiFetch(`/api/research-projects${showArchived ? '?archived=true' : ''}`)
       .then(async (res) => {
         if (res.ok) return res.json();
         const body = await res.json().catch(() => ({}));
@@ -328,13 +329,53 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
       .finally(() => setLoading(false));
   };
 
+  // Recarga al cambiar entre "activos" y "archivados" — son dos listas
+  // separadas (ver listProjects en el backend), no un filtro sobre la misma.
   useEffect(() => {
     load();
+  }, [showArchived]);
+
+  useEffect(() => {
     apiFetch('/api/assessments/catalog')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => { if (data?.instruments) setInstruments(data.instruments.filter((i: any) => i.modality !== 'heteroaplicada')); })
       .catch(() => {});
   }, []);
+
+  const archiveOrUnarchive = async (project: ProjectRecord) => {
+    const archiving = project.status !== 'CLOSED';
+    try {
+      const res = await apiFetch(`/api/research-projects/${project.id}/${archiving ? 'archive' : 'unarchive'}`, { method: 'PATCH' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { toast.error(data.error || `Error ${res.status}`); return; }
+      toast.success(archiving ? 'Proyecto archivado.' : 'Proyecto reactivado.');
+      load();
+    } catch {
+      toast.error('No se pudo contactar el servidor.');
+    }
+  };
+
+  const [deletingProject, setDeletingProject] = useState<ProjectRecord | null>(null);
+  const [deletingBusy, setDeletingBusy] = useState(false);
+  const [deletingError, setDeletingError] = useState<string | null>(null);
+
+  const confirmDeleteProject = async () => {
+    if (!deletingProject) return;
+    setDeletingBusy(true);
+    setDeletingError(null);
+    try {
+      const res = await apiFetch(`/api/research-projects/${deletingProject.id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { setDeletingError(data.error || `Error ${res.status}`); return; }
+      toast.success('Proyecto eliminado.');
+      setDeletingProject(null);
+      load();
+    } catch {
+      setDeletingError('No se pudo contactar el servidor.');
+    } finally {
+      setDeletingBusy(false);
+    }
+  };
 
   const createProject = async () => {
     if (!newProjectName.trim()) { toast.error('Ponle un nombre al proyecto.'); return; }
@@ -653,14 +694,22 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
             código — ver la pestaña "Códigos de acceso" para vincular uno a una oleada.
           </p>
         </div>
-        {canManage && (
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => setShowNewProject((v) => !v)}
-            className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+            onClick={() => setShowArchived((v) => !v)}
+            className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-semibold ${showArchived ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 text-slate-700'}`}
           >
-            <Plus className="h-4 w-4" /> Nuevo proyecto
+            <Archive className="h-4 w-4" /> {showArchived ? 'Ver activos' : 'Ver archivados'}
           </button>
-        )}
+          {canManage && !showArchived && (
+            <button
+              onClick={() => setShowNewProject((v) => !v)}
+              className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+            >
+              <Plus className="h-4 w-4" /> Nuevo proyecto
+            </button>
+          )}
+        </div>
       </div>
 
       {showNewProject && (
@@ -697,7 +746,7 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
       {!loadError && projects && projects.length === 0 && (
         <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
           <FlaskConical className="mx-auto mb-2 h-6 w-6 text-slate-400" />
-          Todavía no hay proyectos de investigación.
+          {showArchived ? 'No hay proyectos archivados.' : 'Todavía no hay proyectos de investigación.'}
         </div>
       )}
 
@@ -707,7 +756,7 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-semibold text-slate-900">{p.name}</h3>
-                {p.status === 'CLOSED' && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">Cerrado</span>}
+                {p.status === 'CLOSED' && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">Archivado</span>}
               </div>
               <p className="text-xs text-slate-500">
                 {p.company ? `${p.company.name} · ` : ''}{p.participantsCount} participante{p.participantsCount === 1 ? '' : 's'}
@@ -741,6 +790,29 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
                 >
                   <FileText className="h-3.5 w-3.5" /> Guion
                 </button>
+              )}
+              {canManage && (
+                <WaveActionsMenu>
+                  {(close) => (
+                    <>
+                      <button
+                        onClick={() => { close(); archiveOrUnarchive(p); }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        {p.status === 'CLOSED' ? <ArchiveRestore className="h-3.5 w-3.5" /> : <Archive className="h-3.5 w-3.5" />}
+                        {p.status === 'CLOSED' ? 'Reactivar' : 'Archivar'}
+                      </button>
+                      <button
+                        onClick={() => { close(); setDeletingProject(p); setDeletingError(null); }}
+                        disabled={p.participantsCount > 0}
+                        title={p.participantsCount > 0 ? 'Tiene participantes — archívalo en vez de eliminarlo.' : 'Eliminar este proyecto (no se puede deshacer)'}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-semibold text-rose-600 hover:bg-rose-50 disabled:opacity-40 disabled:hover:bg-transparent"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Eliminar
+                      </button>
+                    </>
+                  )}
+                </WaveActionsMenu>
               )}
             </div>
           </div>
@@ -1185,6 +1257,37 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
               >
                 {savingGuion && <Loader2 className="h-4 w-4 animate-spin" />}
                 Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deletingProject && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <h2 className="text-sm font-bold text-slate-900">Eliminar proyecto</h2>
+              <button onClick={() => setDeletingProject(null)} className="text-slate-400 hover:text-slate-900 cursor-pointer">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <p className="text-sm text-slate-600">
+                ¿Eliminar <span className="font-semibold text-slate-900">{deletingProject.name}</span>? Esto borra también
+                sus oleadas y supervisores — no se puede deshacer.
+              </p>
+              {deletingError && <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{deletingError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-slate-100 px-5 py-4">
+              <button onClick={() => setDeletingProject(null)} className="rounded-lg px-3 py-2 text-sm font-semibold text-slate-500 hover:text-slate-900 cursor-pointer">Cancelar</button>
+              <button
+                onClick={confirmDeleteProject}
+                disabled={deletingBusy}
+                className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 cursor-pointer"
+              >
+                {deletingBusy && <Loader2 className="h-4 w-4 animate-spin" />}
+                Eliminar
               </button>
             </div>
           </div>
