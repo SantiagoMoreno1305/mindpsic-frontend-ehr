@@ -355,6 +355,18 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   const [teamUsersLoading, setTeamUsersLoading] = useState(false);
   const [teamUsersError, setTeamUsersError] = useState<string | null>(null);
   const [deletingStaffId, setDeletingStaffId] = useState<string | null>(null);
+  // Filtro por convenio (decisión 2026-10-14) — el profesional no tiene un
+  // convenio propio, se deriva de sus pacientes asignados (ver ?companyId=
+  // en GET /api/users): "psicólogos que atienden al menos un paciente de
+  // este convenio". '' = sin filtro, ve a todo el equipo.
+  const [staffCompanyFilter, setStaffCompanyFilter] = useState('');
+  // Filtro por socio/tenant (decisión 2026-10-14) — GET /api/users ya admite
+  // ?tenantId= (CEO sin filtro ve a TODOS los socios, DIRECTIVO solo al
+  // propio salvo que lo pida explícito); esto solo expone ese filtro en la
+  // UI. GET /api/tenants es CEO/DIRECTIVO-only — si el caller no tiene ese
+  // rol, la lista queda vacía y el selector simplemente no se muestra.
+  const [staffTenantFilter, setStaffTenantFilter] = useState('');
+  const [tenantsForFilter, setTenantsForFilter] = useState<{ id: string; name: string }[]>([]);
   // Enmascarado por defecto (principio de acceso mínimo) — correo y tarjeta
   // profesional se ocultan parcialmente hasta que el DIRECTIVO pulsa "Revelar
   // datos". Es un toggle de visualización: los datos ya llegaron completos
@@ -380,12 +392,16 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
     setStaffPage((p) => Math.min(p, staffTotalPages));
   }, [staffTotalPages]);
 
-  const fetchTeamUsers = async () => {
+  const fetchTeamUsers = async (companyId: string = staffCompanyFilter, tenantId: string = staffTenantFilter) => {
     setTeamUsersLoading(true);
     setTeamUsersError(null);
     try {
       const apiUrl = getApiBase();
-      const res = await fetch(`${apiUrl}/api/users`, {
+      const params = new URLSearchParams();
+      if (companyId) params.set('companyId', companyId);
+      if (tenantId) params.set('tenantId', tenantId);
+      const qs = params.toString();
+      const res = await fetch(`${apiUrl}/api/users${qs ? `?${qs}` : ''}`, {
         headers: { 'Authorization': `Bearer ${token}` },
       });
       const data = await res.json().catch(() => ({}));
@@ -1010,6 +1026,19 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   useEffect(() => {
     if (activeTab !== 'equipo') return;
     fetchTeamUsers();
+    // Lista de socios para el filtro — CEO/DIRECTIVO-only (ver GET
+    // /api/tenants); si el caller no tiene ese rol, 403 y el catch la deja
+    // vacía, así el selector de "Socio" simplemente no se muestra.
+    (async () => {
+      try {
+        const res = await fetch(`${getApiBase()}/api/tenants`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!res.ok) { setTenantsForFilter([]); return; }
+        const data = await res.json().catch(() => []);
+        setTenantsForFilter(Array.isArray(data) ? data.map((t: any) => ({ id: t.id, name: t.name })) : []);
+      } catch {
+        setTenantsForFilter([]);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
@@ -2905,6 +2934,30 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   <p className="text-[10.5px] text-slate-400 mt-0.5">Datos sensibles enmascarados por defecto (principio de acceso mínimo).</p>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
+                  {tenantsForFilter.length > 0 && (
+                    <select
+                      value={staffTenantFilter}
+                      onChange={(e) => { const v = e.target.value; setStaffTenantFilter(v); setStaffPage(1); fetchTeamUsers(staffCompanyFilter, v); }}
+                      className="text-xs font-bold rounded-lg px-3 py-1.5 border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 cursor-pointer"
+                      title="Filtrar por socio/tenant"
+                    >
+                      <option value="">Todos los socios</option>
+                      {tenantsForFilter.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  )}
+                  <select
+                    value={staffCompanyFilter}
+                    onChange={(e) => { const v = e.target.value; setStaffCompanyFilter(v); setStaffPage(1); fetchTeamUsers(v); }}
+                    className="text-xs font-bold rounded-lg px-3 py-1.5 border border-slate-200 text-slate-600 bg-white hover:bg-slate-50 cursor-pointer"
+                    title="Filtrar por convenio — solo psicólogos que atienden al menos un paciente de ese convenio"
+                  >
+                    <option value="">Todos los convenios</option>
+                    {companies.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
                   <button
                     onClick={() => { setStaffRecentFirst(v => !v); setStaffPage(1); }}
                     className={`flex items-center gap-1.5 text-xs font-bold rounded-lg px-3 py-1.5 border cursor-pointer ${
