@@ -74,6 +74,17 @@ interface HouseholdMember {
   age?: number | null;
 }
 
+// Información complementaria POST-FIRMA (ver InitialAssessment.addendums,
+// schema.prisma) — `section` agrupa bajo el mismo bloque de esta pantalla:
+// "motivo" | "contextoFamiliar" | "cierreProfesional".
+interface AssessmentAddendum {
+  id: string;
+  section: string;
+  content: string;
+  createdByName?: string | null;
+  createdAt: string;
+}
+
 interface InitialAssessmentData {
   id: string;
   signedAt?: string | null;
@@ -129,6 +140,7 @@ interface InitialAssessmentData {
   aspectosAPA?: string | null;
   hipotesisPreliminares?: string | null;
   householdMembers: HouseholdMember[];
+  addendums: AssessmentAddendum[];
 }
 
 interface PendingAdministration {
@@ -309,6 +321,23 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
     updateLocalPatient(updated);
   };
 
+  // Agrega información complementaria POST-FIRMA (ver comentario en
+  // InitialAssessment.addendums, schema.prisma) — nunca sobreescribe los
+  // campos congelados, solo acumula nuevas entradas por sección.
+  const handleAddAssessmentAddendum = async (section: string, content: string) => {
+    const res = await fetch(`${apiBase()}/api/initial-assessment/${patientId}/addendums`, {
+      method: 'POST', headers: authHeaders(), body: JSON.stringify({ section, content }),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || 'failed');
+    }
+    const addendum = await res.json();
+    setData((prev) => (prev && prev.initialAssessment
+      ? { ...prev, initialAssessment: { ...prev.initialAssessment, addendums: [...prev.initialAssessment.addendums, addendum] } }
+      : prev));
+  };
+
   if (accessDenied) {
     return (
       <div className="space-y-4">
@@ -465,7 +494,7 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
             patientId={patientId}
           />
         )}
-        {tab === 'historia' && <HistoriaTab initialAssessment={initialAssessment} patient={patient} onSaveContact={handleSaveContact} />}
+        {tab === 'historia' && <HistoriaTab initialAssessment={initialAssessment} patient={patient} onSaveContact={handleSaveContact} onAddAddendum={handleAddAssessmentAddendum} />}
         {tab === 'evoluciones' && <ClinicalHistoryEditor patientId={patientId} />}
         {tab === 'evaluaciones' && (
           <EvaluacionesTab
@@ -801,6 +830,334 @@ function InfoRow({ label, value }: { label: string; value?: string | number | nu
   );
 }
 
+// Decisión 2026-10-14: algunos campos opcionales de la Valoración Individual
+// (duración/intensidad/frecuencia, contexto familiar, cierre profesional)
+// quedan vacíos al firmar y, como el resto de la valoración, se congelan para
+// siempre — hoy no hay forma de completarlos después. Este bloque agrega esa
+// información como un ADDENDUM (nunca sobreescribe el campo original): si
+// falta algo y todavía no hay ningún addendum para esta sección, muestra un
+// aviso pequeño; al hacer clic, abre un mini-formulario de texto libre que se
+// guarda aparte, con su propia fecha y autor, sin tocar lo ya firmado.
+// `renderForm` — decisión 2026-10-14: algunas secciones necesitan datos
+// ESTRUCTURADOS para completar lo que falta (personas con quienes vive,
+// contacto de emergencia — nombre/parentesco/teléfono, no un párrafo), así
+// que pueden pasar su propio formulario en vez del textarea libre genérico.
+// El contenido final sigue siendo un solo string (mismo InitialAssessmentAddendum
+// de siempre) — el formulario estructurado solo arma un texto legible antes
+// de guardar.
+function AddendumBlock({ section, missing, addendums, onAdd, renderForm }: {
+  section: string;
+  missing: boolean;
+  addendums: AssessmentAddendum[];
+  onAdd: (section: string, content: string) => Promise<void>;
+  renderForm?: (opts: { onSubmit: (content: string) => Promise<void>; onCancel: () => void; saving: boolean }) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [content, setContent] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (value: string) => {
+    if (!value.trim()) return;
+    setSaving(true);
+    try {
+      await onAdd(section, value.trim());
+      setContent('');
+      setOpen(false);
+    } catch (err: any) {
+      toast.error(err?.message || 'No se pudo guardar la información.');
+    } finally {
+      setSaving(false);
+    }
+  };
+  const cancel = () => { setOpen(false); setContent(''); };
+
+  return (
+    <div className="mt-3 border-t border-slate-100 pt-3">
+      {addendums.length > 0 && (
+        <div className="mb-3 flex flex-col gap-2">
+          {addendums.map((ad) => (
+            <div key={ad.id} className="rounded-lg border border-toast-100 bg-toast-50/50 p-3">
+              <p className="whitespace-pre-wrap text-sm text-charcoal-900">{ad.content}</p>
+              <p className="mt-1.5 text-[10.5px] text-slate-400">
+                Agregado después de firmar — {ad.createdByName || 'Desconocido'}, {formatDateTime(ad.createdAt)}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {missing && !open && (
+        <button
+          type="button" onClick={() => setOpen(true)}
+          className="flex items-center gap-1.5 rounded-lg border border-dashed border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-colors hover:border-amber-400"
+        >
+          <AlertTriangle className="h-3.5 w-3.5" /> Falta información — clic para completarla
+        </button>
+      )}
+
+      {open && (
+        renderForm ? renderForm({ onSubmit: submit, onCancel: cancel, saving }) : (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <textarea
+              value={content} onChange={(e) => setContent(e.target.value)}
+              rows={3} autoFocus
+              placeholder="Escribe la información que faltaba..."
+              className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:ring-2 focus:ring-toast-500/20"
+            />
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button" disabled={saving || !content.trim()} onClick={() => submit(content)}
+                className="rounded-lg bg-toast-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-toast-600 disabled:opacity-50"
+              >
+                {saving ? 'Guardando...' : 'Guardar'}
+              </button>
+              <button
+                type="button" onClick={cancel}
+                className="text-xs font-semibold text-slate-500 hover:text-slate-700"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+// Mini-formulario de "Contexto familiar" — reemplaza el textarea genérico
+// para esta sección: agrega personas con quienes vive (mismos 3 campos que
+// el paso 5 del wizard) + expectativas, y arma un texto legible con eso para
+// guardarlo como un solo addendum.
+function FamilyContextAddendumForm({ onSubmit, onCancel, saving }: {
+  onSubmit: (content: string) => Promise<void>;
+  onCancel: () => void;
+  saving: boolean;
+}) {
+  const [rows, setRows] = useState<{ fullName: string; relationship: string; age: string }[]>([]);
+  const [fullName, setFullName] = useState('');
+  const [relationship, setRelationship] = useState('');
+  const [age, setAge] = useState('');
+  const [expectativas, setExpectativas] = useState('');
+
+  const addRow = () => {
+    if (!fullName.trim() || !relationship.trim()) return;
+    setRows((prev) => [...prev, { fullName: fullName.trim(), relationship: relationship.trim(), age: age.trim() }]);
+    setFullName(''); setRelationship(''); setAge('');
+  };
+  const removeRow = (i: number) => setRows((prev) => prev.filter((_, idx) => idx !== i));
+
+  const handleSubmit = () => {
+    const parts: string[] = [];
+    if (rows.length > 0) {
+      parts.push(
+        'Personas con quienes vive:\n' + rows.map((r) => `- ${r.fullName} — ${r.relationship}${r.age ? ` (${r.age} años)` : ''}`).join('\n')
+      );
+    }
+    if (expectativas.trim()) {
+      parts.push(`Expectativas frente al proceso:\n${expectativas.trim()}`);
+    }
+    onSubmit(parts.join('\n\n'));
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <p className="mb-2 text-xs font-semibold text-slate-500">Personas con quienes vive</p>
+      {rows.length > 0 && (
+        <ul className="mb-2 flex flex-col gap-1">
+          {rows.map((r, i) => (
+            <li key={i} className="flex items-center justify-between gap-2 rounded-lg bg-white px-2.5 py-1.5 text-xs">
+              <span>{r.fullName} — {r.relationship}{r.age ? ` · ${r.age} años` : ''}</span>
+              <button type="button" onClick={() => removeRow(i)} className="text-slate-400 hover:text-rose-600"><Trash2 className="h-3.5 w-3.5" /></button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mb-3 grid grid-cols-3 gap-2">
+        <input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Nombre"
+          className="rounded-lg border border-slate-200 p-2 text-xs outline-none focus:border-toast-400" />
+        <input value={relationship} onChange={(e) => setRelationship(e.target.value)} placeholder="Parentesco"
+          className="rounded-lg border border-slate-200 p-2 text-xs outline-none focus:border-toast-400" />
+        <div className="flex gap-1">
+          <input value={age} onChange={(e) => setAge(e.target.value.replace(/\D/g, ''))} placeholder="Edad"
+            className="w-full rounded-lg border border-slate-200 p-2 text-xs outline-none focus:border-toast-400" />
+          <button type="button" onClick={addRow} className="shrink-0 rounded-lg bg-charcoal-900 px-2.5 text-xs font-semibold text-white hover:bg-charcoal-800">
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+      <p className="mb-1 text-xs font-semibold text-slate-500">Expectativas frente al proceso</p>
+      <textarea
+        value={expectativas} onChange={(e) => setExpectativas(e.target.value)} rows={2}
+        placeholder="Opcional..."
+        className="w-full rounded-lg border border-slate-200 bg-white p-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:ring-2 focus:ring-toast-500/20"
+      />
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button" disabled={saving || (rows.length === 0 && !expectativas.trim())} onClick={handleSubmit}
+          className="rounded-lg bg-toast-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-toast-600 disabled:opacity-50"
+        >
+          {saving ? 'Guardando...' : 'Guardar'}
+        </button>
+        <button type="button" onClick={onCancel} className="text-xs font-semibold text-slate-500 hover:text-slate-700">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+// Mini-formulario de "Contacto de emergencia" — mismos 4 campos que ya
+// captura la Valoración Individual (step 2 del wizard), pero expuestos acá
+// como addendum porque ese dato queda congelado tras la firma igual que el
+// resto (a diferencia de orientación/escolaridad/ocupación, que sí viven en
+// Patient y son editables directo — ver EditContactModal).
+function EmergencyContactAddendumForm({ onSubmit, onCancel, saving }: {
+  onSubmit: (content: string) => Promise<void>;
+  onCancel: () => void;
+  saving: boolean;
+}) {
+  const [nombres, setNombres] = useState('');
+  const [apellidos, setApellidos] = useState('');
+  const [telefono, setTelefono] = useState('');
+  const [parentesco, setParentesco] = useState('');
+
+  const canSubmit = nombres.trim() && apellidos.trim() && telefono.trim() && parentesco.trim();
+
+  const handleSubmit = () => {
+    const parts = [
+      `Contacto de emergencia: ${nombres.trim()} ${apellidos.trim()}`,
+      `Teléfono: ${telefono.trim()}`,
+      `Parentesco: ${parentesco.trim()}`,
+    ];
+    onSubmit(parts.join('\n'));
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <p className="mb-2 text-xs font-semibold text-slate-500">Agregar contacto de emergencia</p>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="mb-1 block text-[10.5px] font-semibold text-slate-400">Nombres</label>
+          <input value={nombres} onChange={(e) => setNombres(e.target.value)}
+            className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:border-toast-400" />
+        </div>
+        <div>
+          <label className="mb-1 block text-[10.5px] font-semibold text-slate-400">Apellidos</label>
+          <input value={apellidos} onChange={(e) => setApellidos(e.target.value)}
+            className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:border-toast-400" />
+        </div>
+        <div>
+          <label className="mb-1 block text-[10.5px] font-semibold text-slate-400">Teléfono</label>
+          <input value={telefono} onChange={(e) => setTelefono(e.target.value.replace(/\D/g, ''))}
+            className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:border-toast-400" />
+        </div>
+        <div>
+          <label className="mb-1 block text-[10.5px] font-semibold text-slate-400">Parentesco</label>
+          <input value={parentesco} onChange={(e) => setParentesco(e.target.value)}
+            className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:border-toast-400" />
+        </div>
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button" disabled={saving || !canSubmit} onClick={handleSubmit}
+          className="rounded-lg bg-toast-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-toast-600 disabled:opacity-50"
+        >
+          {saving ? 'Guardando...' : 'Guardar'}
+        </button>
+        <button type="button" onClick={onCancel} className="text-xs font-semibold text-slate-500 hover:text-slate-700">Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+// Decisión 2026-10-14: antes esto eran DOS avisos "Falta información"
+// apilados (uno para personas con quienes vive/expectativas, otro para
+// contacto de emergencia) — confuso, dos cajas iguales sin explicar la
+// diferencia. Ahora es UN solo aviso; si falta más de una cosa, al abrirlo
+// aparece un selector para elegir cuál completar primero (y, tras guardar
+// esa, si todavía falta la otra, el aviso vuelve a aparecer). Si solo falta
+// una, se salta el selector y va directo a su formulario.
+function FamilyContextAddendumSection({ familyAddendums, contactAddendums, missingFamily, missingContact, onAdd }: {
+  familyAddendums: AssessmentAddendum[];
+  contactAddendums: AssessmentAddendum[];
+  missingFamily: boolean;
+  missingContact: boolean;
+  onAdd: (section: string, content: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [kind, setKind] = useState<'familia' | 'contacto'>(missingFamily ? 'familia' : 'contacto');
+  const [saving, setSaving] = useState(false);
+
+  const allAddendums = [...familyAddendums, ...contactAddendums].sort((x, y) => x.createdAt.localeCompare(y.createdAt));
+  const missingCount = (missingFamily ? 1 : 0) + (missingContact ? 1 : 0);
+
+  const submit = async (section: string, content: string) => {
+    if (!content.trim()) return;
+    setSaving(true);
+    try {
+      await onAdd(section, content.trim());
+      setOpen(false);
+    } catch (err: any) {
+      toast.error(err?.message || 'No se pudo guardar la información.');
+    } finally {
+      setSaving(false);
+    }
+  };
+  const cancel = () => setOpen(false);
+
+  const effectiveKind = missingCount > 1 ? kind : (missingFamily ? 'familia' : 'contacto');
+
+  return (
+    <div className="mt-3 border-t border-slate-100 pt-3">
+      {allAddendums.length > 0 && (
+        <div className="mb-3 flex flex-col gap-2">
+          {allAddendums.map((ad) => (
+            <div key={ad.id} className="rounded-lg border border-toast-100 bg-toast-50/50 p-3">
+              <p className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-toast-500">
+                {ad.section === 'contactoEmergencia' ? 'Contacto de emergencia' : 'Personas con quienes vive / expectativas'}
+              </p>
+              <p className="whitespace-pre-wrap text-sm text-charcoal-900">{ad.content}</p>
+              <p className="mt-1.5 text-[10.5px] text-slate-400">
+                Agregado después de firmar — {ad.createdByName || 'Desconocido'}, {formatDateTime(ad.createdAt)}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {missingCount > 0 && !open && (
+        <button
+          type="button" onClick={() => setOpen(true)}
+          className="flex items-center gap-1.5 rounded-lg border border-dashed border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-colors hover:border-amber-400"
+        >
+          <AlertTriangle className="h-3.5 w-3.5" /> Falta información — clic para completarla
+        </button>
+      )}
+
+      {open && (
+        <div className="flex flex-col gap-2">
+          {missingCount > 1 && (
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-500">¿Qué quieres agregar?</label>
+              <select
+                value={kind} onChange={(e) => setKind(e.target.value as 'familia' | 'contacto')}
+                className="w-full rounded-lg border border-slate-200 bg-white p-2 text-xs outline-none focus:border-toast-400"
+              >
+                <option value="familia">Personas con quienes vive / expectativas</option>
+                <option value="contacto">Contacto de emergencia</option>
+              </select>
+            </div>
+          )}
+          {effectiveKind === 'familia' ? (
+            <FamilyContextAddendumForm onSubmit={(content) => submit('contextoFamiliar', content)} onCancel={cancel} saving={saving} />
+          ) : (
+            <EmergencyContactAddendumForm onSubmit={(content) => submit('contactoEmergencia', content)} onCancel={cancel} saving={saving} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Anamnesis / Historia se alimenta por completo de la Valoración Individual
 // firmada — ya no existen los 3 campos de texto libre por separado.
 //
@@ -811,10 +1168,11 @@ function InfoRow({ label, value }: { label: string; value?: string | number | nu
 // el paciente aún no tiene su propio valor), no de `initialAssessment` (que
 // queda congelado para siempre). El resto de la valoración (motivo, conducta,
 // contexto familiar, cierre profesional) sigue viniendo de `a` y no se toca.
-function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
+function HistoriaTab({ initialAssessment, patient, onSaveContact, onAddAddendum }: {
   initialAssessment: InitialAssessmentData | null;
   patient: PatientChart;
   onSaveContact: (payload: Record<string, unknown>) => Promise<void>;
+  onAddAddendum: (section: string, content: string) => Promise<void>;
 }) {
   const [editingContact, setEditingContact] = useState(false);
 
@@ -829,6 +1187,13 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
   }
 
   const a = initialAssessment;
+  const addendumsBySection = (section: string) => a.addendums.filter((ad) => ad.section === section);
+  // ¿Falta algún campo de los que EditContactModal deja llenar? (ver ese
+  // componente más abajo) — estudiaActualmente se compara contra null
+  // específicamente: false es una respuesta real ("No"), no un vacío.
+  const sociodemoMissing = !patient.orientacionSexual || !patient.escolaridad || !patient.ocupacion
+    || patient.estudiaActualmente == null || !patient.email || !patient.phone
+    || !patient.direccionResidencia || patient.estrato == null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -851,12 +1216,26 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
       <Card>
         <div className="mb-3 flex items-center justify-between">
           <SectionTitle>Información sociodemográfica</SectionTitle>
-          <button
-            type="button" onClick={() => setEditingContact(true)}
-            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-toast-500 hover:text-toast-500"
-          >
-            <Pencil className="h-3.5 w-3.5" /> Editar
-          </button>
+          {/* Mismo botón, mismo destino (EditContactModal) — pero si falta
+              alguno de los campos que esa misma modal deja llenar, se avisa
+              con el mismo estilo que AddendumBlock en vez del "Editar" neutro:
+              el usuario no quiere "editar" un dato que nunca existió, quiere
+              completarlo (decisión 2026-10-14). */}
+          {sociodemoMissing ? (
+            <button
+              type="button" onClick={() => setEditingContact(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-dashed border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-colors hover:border-amber-400"
+            >
+              <AlertTriangle className="h-3.5 w-3.5" /> Falta información — clic para completarla
+            </button>
+          ) : (
+            <button
+              type="button" onClick={() => setEditingContact(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-toast-500 hover:text-toast-500"
+            >
+              <Pencil className="h-3.5 w-3.5" /> Editar
+            </button>
+          )}
         </div>
         <p className="mb-3 -mt-1 text-xs text-slate-400">Estos datos reflejan la situación actual del paciente — se pueden actualizar en cualquier momento, a diferencia del resto de la valoración, que queda fija tras la firma.</p>
         <div className="grid gap-4 sm:grid-cols-3">
@@ -866,14 +1245,6 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
           <InfoRow label="Estudia actualmente" value={patient.estudiaActualmente ? `Sí — ${[patient.semestreGradoTrimestre, patient.carrera].filter(Boolean).join(', ')}` : 'No'} />
           <InfoRow label="Correo electrónico" value={patient.email} />
           <InfoRow label="Teléfono" value={patient.phone} />
-          {/* contactoEmergencia* reemplazó al antiguo telefonoEmergencia
-              (solo teléfono, sin nombre/parentesco) — ver comentario en
-              schema.prisma. Se conserva telefonoEmergencia como respaldo
-              para valoraciones firmadas antes de ese cambio, que nunca
-              llegaron a llenar los campos nuevos. */}
-          <InfoRow label="Contacto de emergencia" value={[a.contactoEmergenciaNombres, a.contactoEmergenciaApellidos].filter(Boolean).join(' ')} />
-          <InfoRow label="Teléfono de emergencia" value={a.contactoEmergenciaTelefono || a.telefonoEmergencia} />
-          <InfoRow label="Parentesco" value={a.contactoEmergenciaParentesco} />
           <InfoRow label="Dirección" value={[patient.direccionResidencia, patient.barrio].filter(Boolean).join(', ')} />
           <InfoRow label="Estrato" value={patient.estrato} />
         </div>
@@ -933,6 +1304,12 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
             <InfoRow label="Frecuencia" value={a.frecuencia} />
           </div>
         </div>
+        <AddendumBlock
+          section="motivo"
+          missing={!a.duracion && !a.intensidad && !a.frecuencia && addendumsBySection('motivo').length === 0}
+          addendums={addendumsBySection('motivo')}
+          onAdd={onAddAddendum}
+        />
       </Card>
 
       <Card>
@@ -950,6 +1327,23 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
           </div>
         )}
         <InfoRow label="Expectativas frente al proceso" value={a.expectativas} />
+        {/* contactoEmergencia* reemplazó al antiguo telefonoEmergencia (solo
+            teléfono, sin nombre/parentesco) — ver comentario en
+            schema.prisma. Se conserva telefonoEmergencia como respaldo para
+            valoraciones firmadas antes de ese cambio, que nunca llegaron a
+            llenar los campos nuevos. */}
+        <div className="mt-3 grid gap-4 border-t border-slate-100 pt-3 sm:grid-cols-3">
+          <InfoRow label="Contacto de emergencia" value={[a.contactoEmergenciaNombres, a.contactoEmergenciaApellidos].filter(Boolean).join(' ')} />
+          <InfoRow label="Teléfono de emergencia" value={a.contactoEmergenciaTelefono || a.telefonoEmergencia} />
+          <InfoRow label="Parentesco" value={a.contactoEmergenciaParentesco} />
+        </div>
+        <FamilyContextAddendumSection
+          familyAddendums={addendumsBySection('contextoFamiliar')}
+          contactAddendums={addendumsBySection('contactoEmergencia')}
+          missingFamily={!a.expectativas && (!a.householdMembers || a.householdMembers.length === 0) && addendumsBySection('contextoFamiliar').length === 0}
+          missingContact={!a.contactoEmergenciaNombres && !a.telefonoEmergencia && addendumsBySection('contactoEmergencia').length === 0}
+          onAdd={onAddAddendum}
+        />
       </Card>
 
       <Card>
@@ -965,6 +1359,12 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact }: {
           <InfoRow label="Aspectos sobresalientes del APA" value={a.aspectosAPA} />
           <InfoRow label="Hipótesis preliminares" value={a.hipotesisPreliminares} />
         </div>
+        <AddendumBlock
+          section="cierreProfesional"
+          missing={!a.aspectosAPA && !a.hipotesisPreliminares && addendumsBySection('cierreProfesional').length === 0}
+          addendums={addendumsBySection('cierreProfesional')}
+          onAdd={onAddAddendum}
+        />
         {a.signedAt && (
           <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-400">
             Valoración firmada por {a.signedByName} el {formatDateTime(a.signedAt)}.
