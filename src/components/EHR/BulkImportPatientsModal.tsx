@@ -44,6 +44,12 @@ interface SpecialistOption {
 interface AgreementTypeOption {
   id: string;
   name: string;
+  companyId: string | null;
+}
+
+interface SpecialtyOption {
+  id: string;
+  name: string;
 }
 
 interface EpsOption {
@@ -69,6 +75,7 @@ interface ParsedRow {
   departamentoNacimiento: string;
   ciudadNacimiento: string;
   phone: string;
+  phoneAlternativo: string;
   email: string;
   epsCodigo: string;
   regimenSalud: string;
@@ -89,7 +96,9 @@ interface ParsedRow {
   legalRep1Parentesco: string;
   legalRep1Correo: string;
   psychologistId: string | null;
+  company: string;
   agreementType: string;
+  specialty: string;
   relacion: string;
   tipoAtencion: string;
   fechaSolicitud: string;
@@ -110,9 +119,12 @@ interface BulkImportPatientsModalProps {
 
 const SIN_ASIGNAR_LABEL = 'Sin asignar (se define después)';
 
-// Mismo subconjunto que valida el backend (BULK_IMPORT_STATUS_VALUES) —
-// "agendado"/"finalizado" quedan fuera a propósito, el sistema los asigna solo.
-const BULK_STATUS_KEYS = ['notificado_1', 'notificado_2', 'notificado_3', 'notificado_4', 'anulado', 'activo', 'alta', 'pausa'];
+// Catálogo completo (igual que BULK_IMPORT_STATUS_VALUES en el backend) —
+// antes dejaba fuera "agendado"/"finalizado" a propósito, pero eso era
+// inconsistente con que fechaAgendamiento/fechaFinalizacion SÍ se puedan
+// importar desde siempre (decisión 2026-10-13, ver mismo comentario en
+// patient.controller.js).
+const BULK_STATUS_KEYS = Object.keys(PATIENT_STATUS_LABELS);
 
 // Mismos catálogos fijos que CreatePatientModal — deben coincidir EXACTAMENTE
 // con los que valida el backend (BULK_IMPORT_* en patient.controller.js).
@@ -143,6 +155,7 @@ const COL_ESTADO_CIVIL = 'Estado civil';
 const COL_DEP_NACIMIENTO = 'Lugar de nacimiento - Departamento';
 const COL_CIUDAD_NACIMIENTO = 'Lugar de nacimiento - Ciudad/Municipio';
 const COL_TEL = 'Teléfono (10 dígitos)';
+const COL_TEL2 = 'Teléfono alternativo (10 dígitos, opcional)';
 const COL_EMAIL = 'Correo electrónico';
 const COL_EPS = 'EPS';
 const COL_REGIMEN = 'Régimen de salud';
@@ -163,7 +176,9 @@ const COL_REP_TEL = 'Representante legal - Teléfono';
 const COL_REP_PARENTESCO = 'Representante legal - Parentesco';
 const COL_REP_CORREO = 'Representante legal - Correo';
 const COL_PSICOLOGO = 'Psicólogo asignado';
+const COL_CONVENIO = 'Convenio';
 const COL_TIPO_CONVENIO = 'Tipo de convenio';
+const COL_ESPECIALIDAD = 'Especialidad';
 const COL_RELACION = 'Relación';
 const COL_TIPO_ATENCION = 'Tipo de atención';
 const COL_FECHA_SOLICITUD = 'Fecha de solicitud (dd/mm/aaaa)';
@@ -183,13 +198,13 @@ const COL_SESIONES_PENDIENTES = 'Sesiones pendientes (historial)';
 const COLUMN_HEADERS = [
   COL_NOMBRES, COL_APELLIDOS, COL_TIPO_DOC, COL_NUM_DOC, COL_FECHA_NAC,
   COL_SEXO_BIO, COL_GENERO, COL_ESTADO_CIVIL, COL_DEP_NACIMIENTO, COL_CIUDAD_NACIMIENTO,
-  COL_TEL, COL_EMAIL,
+  COL_TEL, COL_TEL2, COL_EMAIL,
   COL_EPS, COL_REGIMEN, COL_ESTRATO,
   COL_DIRECCION_RESIDENCIA, COL_DEP_RESIDENCIA, COL_CIUDAD_RESIDENCIA, COL_BARRIO,
   COL_ESTADO,
   COL_EC_NOMBRES, COL_EC_APELLIDOS, COL_EC_TEL, COL_EC_PARENTESCO,
   COL_REQUIERE_REP_LEGAL, COL_REP_NOMBRES, COL_REP_APELLIDOS, COL_REP_TEL, COL_REP_PARENTESCO, COL_REP_CORREO,
-  COL_PSICOLOGO, COL_TIPO_CONVENIO, COL_RELACION, COL_TIPO_ATENCION,
+  COL_PSICOLOGO, COL_CONVENIO, COL_TIPO_CONVENIO, COL_ESPECIALIDAD, COL_RELACION, COL_TIPO_ATENCION,
   COL_FECHA_SOLICITUD, COL_FECHA_AGENDAMIENTO, COL_FECHA_FINALIZACION, COL_SESIONES_APROBADAS,
   COL_SESIONES_CUMPLIDAS, COL_SESIONES_REPROGRAMADAS, COL_SESIONES_CANCELADAS, COL_SESIONES_PENDIENTES,
 ];
@@ -235,9 +250,9 @@ function cellPlainText(value: any): string {
 
 export default function BulkImportPatientsModal({ isOpen, onClose, onImported }: BulkImportPatientsModalProps) {
   const { companies } = useCompanies();
-  const [companyId, setCompanyId] = useState('');
   const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
   const [agreementTypes, setAgreementTypes] = useState<AgreementTypeOption[]>([]);
+  const [specialties, setSpecialties] = useState<SpecialtyOption[]>([]);
   const [epsCatalog, setEpsCatalog] = useState<EpsOption[]>([]);
   const [fileName, setFileName] = useState('');
   const [parsedRows, setParsedRows] = useState<ParsedRow[] | null>(null);
@@ -247,6 +262,19 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
   const [submitting, setSubmitting] = useState(false);
   const [generatingTemplate, setGeneratingTemplate] = useState(false);
   const [successCount, setSuccessCount] = useState<number | null>(null);
+
+  // Convenio por defecto del tenant (el que se usa cuando una fila deja la
+  // columna "Convenio" vacía) — mismo criterio que el backend (Company.
+  // isDefault), ver bulkImportPatients.
+  const defaultCompany = companies.find(c => c.isDefault) || null;
+  // Tipos de convenio agrupados por convenio — alimenta, por cada convenio,
+  // su propio desplegable de "Tipo de convenio" en cascada.
+  const agreementTypesByCompanyId = new Map<string, AgreementTypeOption[]>();
+  agreementTypes.forEach((t) => {
+    if (!t.companyId) return;
+    if (!agreementTypesByCompanyId.has(t.companyId)) agreementTypesByCompanyId.set(t.companyId, []);
+    agreementTypesByCompanyId.get(t.companyId)!.push(t);
+  });
 
   // ── Control de dos personas para el cupo inicial (ver session-change.
   // service.js) — si AL MENOS UNA fila trae "Sesiones autorizadas", todo el
@@ -279,22 +307,29 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       .then(res => res.ok ? res.json() : [])
       .then(data => setEpsCatalog(Array.isArray(data) ? data : []))
       .catch(() => setEpsCatalog([]));
+    // Catálogo único de la clínica (no por convenio, a diferencia de
+    // agreementType) — mismo endpoint que alimenta el selector de
+    // "Especialidad" al agendar una cita.
+    apiFetch('/api/specialties/options')
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setSpecialties(Array.isArray(data) ? data : []))
+      .catch(() => setSpecialties([]));
   }, [isOpen]);
 
-  // Propio de CADA convenio (companyId) — no un catálogo compartido de todo
-  // el tenant, ver comentario en schema.prisma. Se recarga cada vez que
-  // cambia el convenio del lote elegido arriba; "Particular (sin convenio)"
-  // (companyId vacío) no tiene catálogo propio que mostrar.
+  // TODOS los tipos de convenio del tenant, de TODOS los convenios a la vez
+  // (decisión 2026-10-13: ya no se elige un convenio fijo antes de
+  // descargar — cada fila trae el suyo en la columna "Convenio", así que la
+  // plantilla necesita el catálogo completo para armar, por cada convenio,
+  // su propio desplegable en cascada de "Tipo de convenio").
   useEffect(() => {
-    if (!isOpen || !companyId) { setAgreementTypes([]); return; }
-    apiFetch(`/api/agreement-types?companyId=${companyId}`)
+    if (!isOpen) return;
+    apiFetch('/api/agreement-types/all')
       .then(res => res.ok ? res.json() : [])
       .then(data => setAgreementTypes(Array.isArray(data) ? data : []))
       .catch(() => setAgreementTypes([]));
-  }, [isOpen, companyId]);
+  }, [isOpen]);
 
   function reset() {
-    setCompanyId('');
     setFileName('');
     setParsedRows(null);
     setClientErrors([]);
@@ -323,8 +358,6 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
   async function handleDownloadTemplate() {
     setGeneratingTemplate(true);
     try {
-      const selectedCompanyName = companyId ? (companies.find(c => c.id === companyId)?.name || 'Particular') : 'Particular (sin convenio)';
-
       const wb = new ExcelJS.Workbook();
       wb.creator = 'MindPsic';
 
@@ -359,8 +392,10 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       const listaSiNo = writeFlatList(col++, SI_NO_OPTIONS);
       const psicologoNames = [SIN_ASIGNAR_LABEL, ...specialists.map(s => s.name)];
       const listaPsicologos = writeFlatList(col++, psicologoNames);
-      const tipoConvenioNames = agreementTypes.map(t => t.name);
-      const listaTiposConvenio = writeFlatList(col++, tipoConvenioNames);
+      const convenioNames = companies.map(c => c.name);
+      const listaConvenios = writeFlatList(col++, convenioNames);
+      const especialidadNames = specialties.map(s => s.name);
+      const listaEspecialidades = writeFlatList(col++, especialidadNames);
 
       addDefinedName(listaTipoDoc.colIndex, listaTipoDoc.count, 'ListaTipoDoc');
       addDefinedName(listaSexo.colIndex, listaSexo.count, 'ListaSexo');
@@ -375,7 +410,27 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       addDefinedName(listaTipoAtencion.colIndex, listaTipoAtencion.count, 'ListaTipoAtencion');
       addDefinedName(listaSiNo.colIndex, listaSiNo.count, 'ListaSiNo');
       addDefinedName(listaPsicologos.colIndex, listaPsicologos.count, 'ListaPsicologos');
-      addDefinedName(listaTiposConvenio.colIndex, listaTiposConvenio.count, 'ListaTiposConvenio');
+      addDefinedName(listaConvenios.colIndex, listaConvenios.count, 'ListaConvenios');
+      addDefinedName(listaEspecialidades.colIndex, listaEspecialidades.count, 'ListaEspecialidades');
+
+      // Tipo de convenio POR convenio — un bloque de dos filas por cada
+      // convenio: el encabezado (nombre REAL del convenio, sin sanear — a
+      // diferencia de Departamento/Ciudad, acá no se puede reconstruir el
+      // nombre con una fórmula porque los nombres de convenio pueden traer
+      // cualquier caracter) y debajo su lista de tipos. La celda de "Tipo de
+      // convenio" busca su columna con MATCH(convenio-de-la-fila, encabezados)
+      // y lee esa columna con INDEX — así se filtra según el "Convenio" de la
+      // MISMA fila (ver applyConvenioTipoCascadeValidation más abajo).
+      const companyBlockFirstCol = col;
+      let companyBlockMaxLen = 0;
+      companies.forEach((c) => {
+        const list = (agreementTypesByCompanyId.get(c.id) || []).map(t => t.name);
+        wsListas.getCell(1, col).value = c.name;
+        list.forEach((v, i) => { wsListas.getCell(i + 2, col).value = v; });
+        companyBlockMaxLen = Math.max(companyBlockMaxLen, list.length);
+        col++;
+      });
+      const companyBlockLastCol = col - 1;
 
       // Una columna por departamento con sus ciudades — el nombre del rango es
       // el nombre del departamento saneado (ver sanitizeDefinedName). La
@@ -401,14 +456,15 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       const exampleRow = [
         'Juan', 'Pérez', 'CC', '1024556778', '15/03/1990',
         'Hombre', 'Masculino', 'Soltero/a', 'Antioquia', 'Medellín',
-        '3132220587', 'juan@correo.com',
+        '3132220587', '', 'juan@correo.com',
         firstEps ? epsCellLabel(firstEps) : '', 'Contributivo', '3',
         'Calle 10 # 5-23', 'Bogotá D.C.', 'Bogotá D.C.', 'Chapinero',
         'Notificado 1°vez',
         'María', 'Pérez', '3132220587', 'Madre',
         'No', '', '', '', '', '',
         SIN_ASIGNAR_LABEL,
-        '', 'Estudiante', 'Presencial', '02/09/2026', '', '', '8',
+        '', '', '', 'Estudiante', 'Presencial', '02/09/2026', '', '', '8',
+        '', '', '', '',
       ];
       ws.addRow(exampleRow);
 
@@ -445,7 +501,8 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       applyListValidation(COL_REQUIERE_REP_LEGAL, 'ListaSiNo', listaSiNo.count);
       applyListValidation(COL_REP_PARENTESCO, 'ListaParentesco', listaParentesco.count);
       applyListValidation(COL_PSICOLOGO, 'ListaPsicologos', listaPsicologos.count);
-      applyListValidation(COL_TIPO_CONVENIO, 'ListaTiposConvenio', listaTiposConvenio.count);
+      applyListValidation(COL_CONVENIO, 'ListaConvenios', listaConvenios.count);
+      applyListValidation(COL_ESPECIALIDAD, 'ListaEspecialidades', listaEspecialidades.count);
       applyListValidation(COL_RELACION, 'ListaRelacion', listaRelacion.count);
       applyListValidation(COL_TIPO_ATENCION, 'ListaTipoAtencion', listaTipoAtencion.count);
 
@@ -474,6 +531,35 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       applyCityCascadeValidation(COL_CIUDAD_NACIMIENTO, COL_DEP_NACIMIENTO);
       applyCityCascadeValidation(COL_CIUDAD_RESIDENCIA, COL_DEP_RESIDENCIA);
 
+      // Tipo de convenio depende de Convenio (misma fila) — a diferencia de
+      // Ciudad/Departamento, acá NO se puede usar INDIRECT con un nombre de
+      // rango reconstruido (los nombres de convenio pueden traer cualquier
+      // caracter) así que se busca la columna del convenio con MATCH contra
+      // los encabezados del bloque (ver companyBlockFirstCol/LastCol arriba)
+      // y se lee esa columna completa con INDEX. IFERROR(...,"") evita que la
+      // celda quede en error cuando el convenio está vacío o no coincide —
+      // mismo criterio 'warning' de abajo: nunca bloquea, solo sugiere.
+      if (companies.length > 0) {
+        const cTipo = colIndexOf(COL_TIPO_CONVENIO);
+        const cConvenio = colIndexOf(COL_CONVENIO);
+        const firstColLetter = wsListas.getColumn(companyBlockFirstCol).letter;
+        const lastColLetter = wsListas.getColumn(companyBlockLastCol).letter;
+        const headerRowRef = `Listas!$${firstColLetter}$1:$${lastColLetter}$1`;
+        const dataRangeRef = `Listas!$${firstColLetter}$2:$${lastColLetter}$${companyBlockMaxLen + 1}`;
+        for (let r = 2; r <= TEMPLATE_VALIDATION_ROWS + 1; r++) {
+          const convenioAddress = ws.getCell(r, cConvenio).address;
+          ws.getCell(r, cTipo).dataValidation = {
+            type: 'list',
+            allowBlank: true,
+            formulae: [`IFERROR(INDEX(${dataRangeRef},0,MATCH(${convenioAddress},${headerRowRef},0)),"")`],
+            showErrorMessage: true,
+            errorStyle: 'warning',
+            errorTitle: 'Tipo de convenio no reconocido',
+            error: 'Elige primero un convenio válido en la columna "Convenio", o escribe el tipo manualmente si no aparece en la lista.',
+          };
+        }
+      }
+
       // ── Hoja "Instrucciones" — documentación de respaldo (obligatoriedad,
       // formatos de texto libre) — los valores enumerados ya no dependen de
       // copiar el texto exacto de aquí porque ahora son selects reales, pero
@@ -483,7 +569,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       const instructions: (string | number)[][] = [
         ['Instrucciones para llenar la plantilla'],
         [''],
-        [`Este archivo se importará bajo el convenio: ${selectedCompanyName}`],
+        [`Cada fila trae su PROPIO convenio en la columna "Convenio" — si la dejas vacía, se usa el convenio por defecto de tu clínica${defaultCompany ? ` (${defaultCompany.name})` : ''}.`],
         ['Las columnas marcadas "Lista desplegable" ya traen el select armado en la celda — haz clic y elige un valor, no hace falta escribirlo a mano.'],
         [''],
         ['Campo', 'Obligatorio', 'Cómo se llena'],
@@ -498,6 +584,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         [COL_DEP_NACIMIENTO, 'No', 'Lista desplegable'],
         [COL_CIUDAD_NACIMIENTO, 'No', 'Lista desplegable (depende del departamento de la misma fila)'],
         [COL_TEL, 'No', 'Exactamente 10 dígitos si se llena'],
+        [COL_TEL2, 'No', 'Exactamente 10 dígitos si se llena — para cuando la persona da un segundo número (ej. el de un acudiente)'],
         [COL_EMAIL, 'No', 'Formato válido (ej. nombre@dominio.com)'],
         [COL_EPS, 'No', 'Lista desplegable'],
         [COL_REGIMEN, 'No', 'Lista desplegable'],
@@ -518,13 +605,15 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         [COL_REP_PARENTESCO, 'No', 'Lista desplegable'],
         [COL_REP_CORREO, 'No', 'Formato válido (ej. nombre@dominio.com)'],
         [COL_PSICOLOGO, 'No', 'Lista desplegable'],
-        [COL_TIPO_CONVENIO, 'No', tipoConvenioNames.length > 0 ? 'Lista desplegable' : 'Este convenio todavía no tiene tipos configurados — deja la columna vacía'],
+        [COL_CONVENIO, 'No', convenioNames.length > 0 ? 'Lista desplegable — si se deja vacía, se usa el convenio por defecto de la clínica' : 'Esta clínica todavía no tiene convenios configurados — deja la columna vacía'],
+        [COL_TIPO_CONVENIO, 'No', 'Lista desplegable que depende del "Convenio" de la misma fila — elige primero el convenio'],
+        [COL_ESPECIALIDAD, 'No', especialidadNames.length > 0 ? 'Lista desplegable' : 'Esta clínica todavía no tiene especialidades configuradas — deja la columna vacía'],
         [COL_RELACION, 'No', 'Lista desplegable'],
         [COL_TIPO_ATENCION, 'No', 'Lista desplegable'],
         [COL_FECHA_SOLICITUD, 'No', 'Formato dd/mm/aaaa — si se deja vacía, se usa la fecha de hoy'],
         [COL_FECHA_AGENDAMIENTO, 'No', 'Formato dd/mm/aaaa — normalmente se deja vacía, la completa el sistema al agendar la primera cita'],
         [COL_FECHA_FINALIZACION, 'No', 'Formato dd/mm/aaaa — normalmente se deja vacía, la completa el sistema al cerrar el proceso'],
-        [COL_SESIONES_APROBADAS, 'No', 'Un número entero mayor a 0, o "Libres" (sin tope) — abre el cupo inicial del paciente con el convenio del lote. NO es una lista desplegable (acepta cualquier número).'],
+        [COL_SESIONES_APROBADAS, 'No', 'Un número entero mayor a 0, o "Libres" (sin tope) — abre el cupo inicial del paciente con el convenio de esa misma fila. NO es una lista desplegable (acepta cualquier número).'],
         [COL_SESIONES_CUMPLIDAS, 'No', 'Número entero entre 0 y 500 — cuántas sesiones ya cumplió este paciente ANTES de cargarlo (en otro sistema, por ejemplo). Solo precarga el contador del panel "Seguimiento de sesiones"; no crea citas reales ni descuenta cupo.'],
         [COL_SESIONES_REPROGRAMADAS, 'No', 'Igual que la anterior, pero para sesiones reprogramadas.'],
         [COL_SESIONES_CANCELADAS, 'No', 'Igual que la anterior, pero para sesiones canceladas.'],
@@ -621,7 +710,14 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       }
 
       const specialistByName = new Map(specialists.map(s => [s.name.trim().toLowerCase(), s.id]));
-      const agreementTypeByName = new Map(agreementTypes.map(t => [t.name.trim().toLowerCase(), t.name]));
+      const companyByName = new Map(companies.map(c => [c.name.trim().toLowerCase(), c]));
+      // Clave compuesta (companyId::nombre) — el mismo nombre de tipo puede
+      // existir en dos convenios distintos con significados distintos (ver
+      // mismo criterio en bulkImportPatients del backend).
+      const agreementTypeByCompanyAndName = new Map(
+        agreementTypes.filter(t => t.companyId).map(t => [`${t.companyId}::${t.name.trim().toLowerCase()}`, t.name])
+      );
+      const specialtyByName = new Map(specialties.map(s => [s.name.trim().toLowerCase(), s.name]));
       const epsByLabel = new Map(epsCatalog.map(eps => [epsCellLabel(eps).toLowerCase(), eps.code]));
       const epsByCode = new Map(epsCatalog.map(eps => [eps.code.toLowerCase(), eps.code]));
       const departamentosSet = new Set(DEPARTAMENTOS_ORDENADOS.map(d => d.toLowerCase()));
@@ -709,14 +805,46 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           errors.push({ row: rowNumber, field: 'legalRep1Parentesco', message: `Parentesco del representante legal "${legalRep1Parentesco}" no reconocido — usa el selector de la celda.` });
         }
 
+        // Convenio de la fila — vacío cae al convenio por defecto de la
+        // clínica (mismo criterio de fallback que bulkImportPatients).
+        const convenioRaw = String(r[COL_CONVENIO] || '').trim();
+        let company = '';
+        let rowCompanyForValidation = defaultCompany;
+        if (convenioRaw) {
+          const match = companyByName.get(convenioRaw.toLowerCase());
+          if (!match) {
+            errors.push({ row: rowNumber, field: 'company', message: `Convenio "${convenioRaw}" no reconocido — usa el selector de la celda.` });
+            rowCompanyForValidation = null;
+          } else {
+            company = match.name;
+            rowCompanyForValidation = match;
+          }
+        }
+
+        // Tipo de convenio depende del convenio de ESTA fila (ver arriba) —
+        // el mismo nombre puede existir en dos convenios con significados
+        // distintos, así que se valida contra el PAR (convenio, nombre).
         const tipoConvenioRaw = String(r[COL_TIPO_CONVENIO] || '').trim();
         let agreementType = '';
         if (tipoConvenioRaw) {
-          const match = agreementTypeByName.get(tipoConvenioRaw.toLowerCase());
+          const match = rowCompanyForValidation
+            ? agreementTypeByCompanyAndName.get(`${rowCompanyForValidation.id}::${tipoConvenioRaw.toLowerCase()}`)
+            : undefined;
           if (!match) {
-            errors.push({ row: rowNumber, field: 'agreementType', message: `Tipo de convenio "${tipoConvenioRaw}" no reconocido — usa el selector de la celda.` });
+            errors.push({ row: rowNumber, field: 'agreementType', message: `Tipo de convenio "${tipoConvenioRaw}" no reconocido para el convenio de esta fila — usa el selector de la celda.` });
           } else {
             agreementType = match;
+          }
+        }
+
+        const especialidadRaw = String(r[COL_ESPECIALIDAD] || '').trim();
+        let specialty = '';
+        if (especialidadRaw) {
+          const match = specialtyByName.get(especialidadRaw.toLowerCase());
+          if (!match) {
+            errors.push({ row: rowNumber, field: 'specialty', message: `Especialidad "${especialidadRaw}" no reconocida — usa el selector de la celda.` });
+          } else {
+            specialty = match;
           }
         }
 
@@ -782,6 +910,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           departamentoNacimiento,
           ciudadNacimiento,
           phone: String(r[COL_TEL] || '').trim(),
+          phoneAlternativo: String(r[COL_TEL2] || '').trim(),
           email: String(r[COL_EMAIL] || '').trim(),
           epsCodigo,
           regimenSalud,
@@ -802,7 +931,9 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           legalRep1Parentesco,
           legalRep1Correo: String(r[COL_REP_CORREO] || '').trim(),
           psychologistId,
+          company,
           agreementType,
+          specialty,
           relacion,
           tipoAtencion,
           fechaSolicitud,
@@ -888,7 +1019,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       try {
         const res = await apiFetch('/api/session-changes/bulk-import/request', {
           method: 'POST',
-          body: JSON.stringify({ companyId: companyId || undefined, rows: parsedRows, approverId }),
+          body: JSON.stringify({ rows: parsedRows, approverId }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -913,7 +1044,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
     try {
       const res = await apiFetch('/api/patients/bulk-import', {
         method: 'POST',
-        body: JSON.stringify({ companyId: companyId || undefined, rows: parsedRows }),
+        body: JSON.stringify({ rows: parsedRows }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -957,33 +1088,22 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 py-5">
-          {/* Paso 1: convenio + plantilla */}
+          {/* Paso 1: descargar plantilla */}
           <div>
             <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              1. Convenio / Cliente corporativo del lote
+              1. Descargar plantilla
             </label>
-            <select
-              value={companyId}
-              onChange={(e) => setCompanyId(e.target.value)}
-              className="w-full appearance-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+            <p className="mb-2 text-[10.5px] text-slate-400">Cada paciente trae su propio convenio en la columna "Convenio" — si la dejas vacía, se usa el convenio por defecto de tu clínica.</p>
+            <button
+              type="button"
+              onClick={handleDownloadTemplate}
+              disabled={generatingTemplate}
+              className="inline-flex items-center gap-2 self-start rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 shadow-sm transition-colors hover:bg-toast-50 cursor-pointer disabled:opacity-50"
             >
-              <option value="">Particular (sin convenio)</option>
-              {companies.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
-            <p className="mt-1 text-[10.5px] text-slate-400">Todo el lote se importa bajo este convenio — por eso la plantilla no trae una columna aparte para elegirlo fila por fila.</p>
+              {generatingTemplate ? <Loader2 className="h-4 w-4 animate-spin text-toast-500" /> : <Download className="h-4 w-4 text-toast-500" />}
+              {generatingTemplate ? 'Generando plantilla...' : 'Descargar plantilla (.xlsx)'}
+            </button>
           </div>
-
-          <button
-            type="button"
-            onClick={handleDownloadTemplate}
-            disabled={generatingTemplate}
-            className="inline-flex items-center gap-2 self-start rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 shadow-sm transition-colors hover:bg-toast-50 cursor-pointer disabled:opacity-50"
-          >
-            {generatingTemplate ? <Loader2 className="h-4 w-4 animate-spin text-toast-500" /> : <Download className="h-4 w-4 text-toast-500" />}
-            {generatingTemplate ? 'Generando plantilla...' : 'Descargar plantilla (.xlsx)'}
-          </button>
 
           {/* Paso 2: subir archivo */}
           <div className="border-t border-slate-100 pt-4">

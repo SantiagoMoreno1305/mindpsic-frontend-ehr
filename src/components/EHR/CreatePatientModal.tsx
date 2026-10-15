@@ -47,6 +47,11 @@ interface AgreementTypeOption {
   name: string;
 }
 
+interface SpecialtyOption {
+  id: string;
+  name: string;
+}
+
 // Sesiones del cupo vigente del paciente, agrupadas por estado — ver
 // GET /api/patients/:id/schedule-summary. "aprobadas" es el total del lote
 // activo (null = sesiones libres/ilimitadas); las otras cuatro son conteos
@@ -277,6 +282,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   const [ciudadNacimiento, setCiudadNacimiento] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [phoneAlternativo, setPhoneAlternativo] = useState('');
   const [status, setStatus] = useState<string>(INITIAL_CONTACT_STATUS_OPTIONS[0]);
 
   // ── Salud y residencia ──
@@ -323,6 +329,11 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   const [loadingSpecialists, setLoadingSpecialists] = useState(false);
   const [agreementType, setAgreementType] = useState('');
   const [agreementTypes, setAgreementTypes] = useState<AgreementTypeOption[]>([]);
+  // Especialidad clínica del paciente — catálogo ÚNICO de la clínica (no por
+  // convenio, a diferencia de agreementType), decisión 2026-10-13: antes solo
+  // se elegía POR CITA, nunca al crear/editar el paciente.
+  const [specialtyId, setSpecialtyId] = useState('');
+  const [specialties, setSpecialties] = useState<SpecialtyOption[]>([]);
   const [relacion, setRelacion] = useState('');
   const [tipoAtencion, setTipoAtencion] = useState('');
 
@@ -359,6 +370,16 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
       .catch(() => setAgreementTypes([]));
   }, [isOpen, companyId]);
 
+  // Catálogo único de la clínica (no depende del convenio elegido) — mismo
+  // endpoint que usa el selector de "Especialidad" al agendar una cita.
+  useEffect(() => {
+    if (!isOpen) return;
+    apiFetch('/api/specialties/options')
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setSpecialties(Array.isArray(data) ? data : []))
+      .catch(() => setSpecialties([]));
+  }, [isOpen]);
+
   // Precarga los campos del paciente al abrir en modo edición. En modo
   // creación, fechaSolicitud arranca en "hoy" (editable) — es el default que
   // igual aplicaría el backend si se enviara vacía, pero mostrarla ya
@@ -382,6 +403,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setCiudadNacimiento(patient.ciudadNacimiento || '');
     setEmail(patient.email || '');
     setPhone(patient.phone || '');
+    setPhoneAlternativo(patient.phoneAlternativo || '');
     setStatus(patient.status || 'activo');
     setEpsCodigo(patient.epsCodigo || '');
     setEpsNombre(patient.epsNombre || '');
@@ -394,6 +416,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setCompanyId(patient.companyId || '');
     setPsychologistId(patient.psychologist?.id || '');
     setAgreementType(patient.agreementType || '');
+    setSpecialtyId(patient.specialtyId || '');
     setRelacion(patient.relacion || '');
     setTipoAtencion(patient.tipoAtencion || '');
     setFechaSolicitud(patient.fechaSolicitud ? patient.fechaSolicitud.slice(0, 10) : '');
@@ -495,6 +518,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setCiudadNacimiento('');
     setEmail('');
     setPhone('');
+    setPhoneAlternativo('');
     setStatus(INITIAL_CONTACT_STATUS_OPTIONS[0]);
     setEpsCodigo('');
     setEpsNombre('');
@@ -519,6 +543,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setCompanyId('');
     setPsychologistId('');
     setAgreementType('');
+    setSpecialtyId('');
     setRelacion('');
     setTipoAtencion('');
     setFechaSolicitud('');
@@ -595,6 +620,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
             ciudadNacimiento: ciudadNacimiento || null,
             email: email.trim() || undefined,
             phone: phone.trim() || undefined,
+            phoneAlternativo: phoneAlternativo.trim() || undefined,
             epsCodigo: epsCodigo || null,
             regimenSalud: regimenSalud || null,
             direccionResidencia: direccionResidencia || null,
@@ -607,6 +633,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
             corporateClient: selectedCompany?.name || 'Particular',
             psychologistId: psychologistId || null,
             agreementType: agreementType || null,
+            specialtyId: specialtyId || null,
             relacion: relacion || null,
             tipoAtencion: tipoAtencion || null,
             fechaSolicitud: fechaSolicitud || null,
@@ -663,6 +690,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
           ciudadNacimiento: ciudadNacimiento || undefined,
           email: email.trim() || undefined,
           phone: phone.trim() || undefined,
+          phoneAlternativo: phoneAlternativo.trim() || undefined,
           epsCodigo: epsCodigo || undefined,
           regimenSalud: regimenSalud || undefined,
           direccionResidencia: direccionResidencia || undefined,
@@ -685,6 +713,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
           corporateClient: selectedCompany?.name || 'Particular',
           psychologistId: psychologistId || undefined,
           agreementType: agreementType || undefined,
+          specialtyId: specialtyId || undefined,
           relacion: relacion || undefined,
           tipoAtencion: tipoAtencion || undefined,
           fechaSolicitud: fechaSolicitud || undefined,
@@ -926,6 +955,20 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                   />
                 </div>
                 <div>
+                  <label htmlFor="patient-phone-2" className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Teléfono alternativo</label>
+                  <input
+                    id="patient-phone-2"
+                    name="patient-phone-2"
+                    autoComplete="off"
+                    value={phoneAlternativo}
+                    onChange={(e) => setPhoneAlternativo(onlyDigits(e.target.value, 10))}
+                    placeholder="Ej. 3132220587 — opcional"
+                    inputMode="numeric"
+                    maxLength={10}
+                    className={INPUT_CLASS}
+                  />
+                </div>
+                <div>
                   <FieldLabel>Correo electrónico</FieldLabel>
                   <input
                     type="email"
@@ -1053,6 +1096,15 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                     <option value="">Sin especificar</option>
                     {agreementTypes.map((t) => (
                       <option key={t.id} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <FieldLabel>Especialidad</FieldLabel>
+                  <select value={specialtyId} onChange={(e) => setSpecialtyId(e.target.value)} className={SELECT_CLASS}>
+                    <option value="">Sin especificar</option>
+                    {specialties.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
                     ))}
                   </select>
                 </div>

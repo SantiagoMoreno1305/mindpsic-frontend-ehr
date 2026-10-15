@@ -294,6 +294,7 @@ export interface BackendPatient {
   documentType?: string | null;
   email?: string;
   phone?: string;
+  phoneAlternativo?: string | null;
   corporateClient?: string;
   companyId?: string | null;
   birthDate?: string | null;
@@ -306,6 +307,8 @@ export interface BackendPatient {
   lastAppointmentStatus?: string | null;
   lastAppointmentDate?: string | null;
   agreementType?: string | null;
+  specialtyId?: string | null;
+  specialtyName?: string | null;
   relacion?: string | null;
   tipoAtencion?: string | null;
   fechaSolicitud?: string | null;
