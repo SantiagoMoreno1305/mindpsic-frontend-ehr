@@ -185,6 +185,19 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   // errores de negocio normales, no una suspensión — se maneja con fetch directo.
   const ACADEMIC_LEVEL_OPTIONS = ['Técnico', 'Tecnólogo', 'Pregrado', 'Especialización', 'Maestría', 'Doctorado'];
 
+  // Perfil público del profesional (decisión 2026-10-16) — catálogos fijos
+  // para idiomas y rango etario (checkboxes, no texto libre: evita que cada
+  // quien escriba "Inglés"/"inglés"/"ingles" distinto). Las palabras clave sí
+  // son texto libre — ver keywordInput más abajo.
+  const LANGUAGE_OPTIONS = ['Español', 'Inglés', 'Francés', 'Portugués', 'Alemán'];
+  const AGE_GROUP_OPTIONS = [
+    'Niños (6 a 12 años)',
+    'Adolescentes (13 a 17 años)',
+    'Adultos (18 a 64 años)',
+    'Adultos mayores (65+ años)',
+  ];
+  const MODALITY_OPTIONS = ['Presencial', 'Virtual'];
+
   const emptyStaffForm = {
     firstName: '', lastName: '', email: '', phone: '',
     role: 'ESPECIALISTA_B2B' as 'ESPECIALISTA_B2B' | 'OPERATIVO',
@@ -349,6 +362,19 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
     joinedDate: string;
     canApproveSessionChanges: boolean;
     canManageResearchProjects: boolean;
+    /** Solo importa en MindPsic — ver publishedInApp en schema.prisma. */
+    publishedInApp: boolean;
+    // Perfil público que ve el paciente en la app al elegir especialista
+    // (decisión 2026-10-16) — ver ProfessionalProfile.bio/languages/
+    // ageGroups/keywords y el modelo ProfessionalCertification.
+    bio: string | null;
+    languages: string[];
+    ageGroups: string[];
+    keywords: string[];
+    certifications: { id?: string; title: string; institution: string | null }[];
+    therapeuticApproach: string | null;
+    firstSessionInfo: string | null;
+    modality: string[];
   }
 
   const [teamUsers, setTeamUsers] = useState<TeamUser[]>([]);
@@ -467,6 +493,15 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
     canApproveSessionChanges: false,
     canManageResearchProjects: false,
+    publishedInApp: false,
+    bio: '',
+    languages: [] as string[],
+    ageGroups: [] as string[],
+    keywords: [] as string[],
+    certifications: [] as { title: string; institution: string }[],
+    therapeuticApproach: '',
+    firstSessionInfo: '',
+    modality: [] as string[],
   };
   const [showEditStaffModal, setShowEditStaffModal] = useState(false);
   const [editingStaffId, setEditingStaffId] = useState<string | null>(null);
@@ -481,6 +516,46 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   const [savingStaff, setSavingStaff] = useState(false);
   const [editStaffError, setEditStaffError] = useState<string | null>(null);
   const editStaffEpsSearch = useEpsSearch();
+  // Texto que se está escribiendo para la próxima palabra clave — separado
+  // de editStaffForm.keywords (la lista ya confirmada) hasta que se presione
+  // Enter/coma o el botón de agregar.
+  const [keywordInput, setKeywordInput] = useState('');
+
+  const toggleEnLista = (campo: 'languages' | 'ageGroups' | 'modality', valor: string) => {
+    setEditStaffForm((f) => ({
+      ...f,
+      [campo]: f[campo].includes(valor) ? f[campo].filter((v) => v !== valor) : [...f[campo], valor],
+    }));
+  };
+
+  const agregarKeyword = () => {
+    const limpio = keywordInput.trim();
+    if (!limpio || editStaffForm.keywords.includes(limpio)) {
+      setKeywordInput('');
+      return;
+    }
+    setEditStaffForm((f) => ({ ...f, keywords: [...f.keywords, limpio] }));
+    setKeywordInput('');
+  };
+
+  const quitarKeyword = (valor: string) => {
+    setEditStaffForm((f) => ({ ...f, keywords: f.keywords.filter((k) => k !== valor) }));
+  };
+
+  const agregarCertificacion = () => {
+    setEditStaffForm((f) => ({ ...f, certifications: [...f.certifications, { title: '', institution: '' }] }));
+  };
+
+  const actualizarCertificacion = (index: number, campo: 'title' | 'institution', valor: string) => {
+    setEditStaffForm((f) => ({
+      ...f,
+      certifications: f.certifications.map((c, i) => (i === index ? { ...c, [campo]: valor } : c)),
+    }));
+  };
+
+  const quitarCertificacion = (index: number) => {
+    setEditStaffForm((f) => ({ ...f, certifications: f.certifications.filter((_, i) => i !== index) }));
+  };
 
   const openEditStaffModal = (member: TeamUser) => {
     // Colaboradores creados por vías que solo guardaron `name` completo
@@ -504,9 +579,19 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
       epsLabel: member.epsName || '',
       canApproveSessionChanges: member.canApproveSessionChanges || false,
       canManageResearchProjects: member.canManageResearchProjects || false,
+      publishedInApp: member.publishedInApp || false,
+      bio: member.bio || '',
+      languages: member.languages || [],
+      ageGroups: member.ageGroups || [],
+      keywords: member.keywords || [],
+      certifications: (member.certifications || []).map((c) => ({ title: c.title, institution: c.institution || '' })),
+      therapeuticApproach: member.therapeuticApproach || '',
+      firstSessionInfo: member.firstSessionInfo || '',
+      modality: member.modality || [],
     });
     editStaffEpsSearch.setQuery('');
     editStaffEpsSearch.setResults([]);
+    setKeywordInput('');
     setEditStaffError(null);
     setShowEditStaffModal(true);
   };
@@ -539,6 +624,17 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           academicLevel: f.academicLevel || null,
           experienceYears: f.experienceYears || null,
           epsCode: f.epsCode || null,
+          publishedInApp: f.publishedInApp,
+          bio: f.bio.trim() || null,
+          languages: f.languages,
+          ageGroups: f.ageGroups,
+          keywords: f.keywords,
+          certifications: f.certifications
+            .filter((c) => c.title.trim())
+            .map((c) => ({ title: c.title.trim(), institution: c.institution.trim() || null })),
+          therapeuticApproach: f.therapeuticApproach.trim() || null,
+          firstSessionInfo: f.firstSessionInfo.trim() || null,
+          modality: f.modality,
           // Solo se manda si YO puedo tocarlo (ver canGrantSessionChangePermission
           // más abajo) — el backend rechaza el PUT COMPLETO si este campo viene
           // presente y el caller no tiene autoridad, así que un DIRECTIVO sin el
@@ -2217,7 +2313,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             </div>
 
             {/* COMPLEJO PANEL DE FILTROS CRUZADOS (REQUERIMIENTO PRINCIPAL DE UX/UI) */}
-            <div className="bg-white rounded-2xl border border-slate-150 p-5 shadow-2xs space-y-4 text-left">
+            <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-2xs space-y-4 text-left">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-2.5 gap-2">
                 <div>
                   <h3 className="font-bold text-xs text-slate-800 uppercase tracking-wider flex items-center gap-2">
@@ -2238,7 +2334,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                         setSelectedMonth('todos');
                         setAppointmentSearchTerm('');
                       }}
-                      className="text-[10px] font-bold text-toast-500 hover:text-toast-600 hover:underline px-2.5 py-1 bg-toast-50 rounded-lg border border-toast-200 transition-all cursor-pointer shadow-3xs"
+                      className="text-[10px] font-bold text-toast-500 hover:text-charcoal-900 hover:underline px-2.5 py-1 bg-toast-50 rounded-lg border border-toast-200 transition-all cursor-pointer shadow-3xs"
                     >
                       Restablecer Filtros
                     </button>
@@ -2253,7 +2349,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   value={appointmentSearchTerm}
                   onChange={(e) => setAppointmentSearchTerm(e.target.value)}
                   placeholder="Buscar por nombre del paciente..."
-                  className="w-full rounded-xl border border-slate-205 bg-slate-50 py-2 pl-10 pr-3 text-xs font-semibold text-slate-900 outline-none transition-colors focus:ring-2 focus:ring-toast-500"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2 pl-10 pr-3 text-xs font-semibold text-slate-900 outline-none transition-colors hover:border-slate-300 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
                 />
               </div>
 
@@ -2264,7 +2360,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   <select
                     value={selectedAgreement}
                     onChange={(e) => setSelectedAgreement(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-xl px-2.5 py-2 outline-none transition-colors hover:border-slate-300 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todos los Convenios</option>
                     {agreementOptions.map((name) => (
@@ -2279,7 +2375,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   <select
                     value={selectedProfessional}
                     onChange={(e) => setSelectedProfessional(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-xl px-2.5 py-2 outline-none transition-colors hover:border-slate-300 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todos los Profesionales</option>
                     {professionalOptions.map((name) => (
@@ -2294,7 +2390,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   <select
                     value={selectedSpecialty}
                     onChange={(e) => setSelectedSpecialty(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-xl px-2.5 py-2 outline-none transition-colors hover:border-slate-300 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todas las Especialidades</option>
                     {specialtyOptions.map((name) => (
@@ -2309,7 +2405,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   <select
                     value={selectedDay}
                     onChange={(e) => setSelectedDay(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-xl px-2.5 py-2 outline-none transition-colors hover:border-slate-300 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todos los Días</option>
                     {dayOptions.map((name) => (
@@ -2324,7 +2420,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   <select
                     value={selectedMonth}
                     onChange={(e) => setSelectedMonth(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-205 text-slate-900 text-xs rounded-xl px-2.5 py-2 focus:ring-2 focus:ring-toast-500 font-semibold cursor-pointer"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs rounded-xl px-2.5 py-2 outline-none transition-colors hover:border-slate-300 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20 font-semibold cursor-pointer"
                   >
                     <option value="todos">Todos los Meses</option>
                     {monthOptions.map((name) => (
@@ -2338,15 +2434,15 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             {/* COMPARATIVA DE ESTADOS: ATENDIDOS VS. NO ATENDIDOS / REPROGRAMADOS */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-left">
               {/* ESTADO: PACIENTES ATENDIDOS CARD */}
-              <div className="bg-white rounded-2xl border border-toast-300 p-5 md:p-6 shadow-xs flex flex-col space-y-4">
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6 shadow-xs flex flex-col space-y-4">
                 <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                   <div className="flex items-center space-x-2">
-                    <span className="w-3 h-3 rounded-full bg-charcoal-900 animate-pulse" />
+                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
                     <h3 className="font-extrabold text-xs text-slate-800 uppercase tracking-wider">
                       Consultas Clínicas: Pacientes Atendidos ({attendedCount})
                     </h3>
                   </div>
-                  <span className="text-xs font-mono font-extrabold text-charcoal-900 bg-toast-100 p-1 px-2 rounded-lg border border-toast-300">
+                  <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 py-1 px-2.5 rounded-lg border border-emerald-200 tabular-nums">
                     {totalFilteredCount > 0 ? Math.round((attendedCount / totalFilteredCount) * 100) : 0}% efectividad
                   </span>
                 </div>
@@ -2359,10 +2455,10 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   ) : (
                     <>
                       {filteredAppointments.filter(app => ['Atendida', 'Atendido', 'ATENDIDO'].includes(app.status)).map(app => (
-                        <div key={app.id} className="p-3 bg-toast-50/50 border border-toast-200 rounded-xl text-xs space-y-1">
+                        <div key={app.id} className="p-3 bg-emerald-50/40 border border-emerald-100 rounded-xl text-xs space-y-1.5">
                           <div className="flex justify-between items-center gap-2">
                             <strong className="text-slate-900 truncate">{app.patientName}</strong>
-                            <div className="flex items-center gap-1 shrink-0">
+                            <div className="flex items-center gap-0.5 shrink-0">
                               <button
                                 onClick={() => {
                                   const realAppt = realAppointments?.find((r: any) => r.id === app.id);
@@ -2392,19 +2488,27 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
-                              <span className="ml-1 text-[9px] font-mono font-bold uppercase tracking-wider bg-charcoal-900 text-white px-1.5 py-0.5 rounded">
+                              <span className="ml-1 text-[9px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-md">
                                 {app.status}
                               </span>
                             </div>
                           </div>
-                          <p className="text-[11px] text-slate-600 font-sans">
-                            <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} • <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
+                          <p className="text-[11px] text-slate-600">
+                            <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} <span className="text-slate-300">·</span> <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
                           </p>
-                          <p className="text-[10px] text-slate-400 font-mono">
-                            {app.day} • {app.month} • {app.modality} • {app.agreement}
-                          </p>
+                          <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                            <span className="inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-500 border border-slate-100">
+                              <Clock className="h-2.5 w-2.5 shrink-0" />{app.day}, {app.month}
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-500 border border-slate-100">
+                              <Video className="h-2.5 w-2.5 shrink-0" />{app.modality}
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-500 border border-slate-100">
+                              <Building2 className="h-2.5 w-2.5 shrink-0" />{app.agreement}
+                            </span>
+                          </div>
                           {app.reason && (
-                            <p className="text-[11px] text-charcoal-800 leading-relaxed bg-white/70 p-2 rounded-lg border border-toast-200/35 mt-1 italic font-sans text-left">
+                            <p className="text-[11px] text-charcoal-800 leading-relaxed bg-white/70 p-2 rounded-lg border border-emerald-100 mt-1 italic text-left">
                               &ldquo;{app.reason}&rdquo;
                             </p>
                           )}
@@ -2422,15 +2526,15 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
               </div>
 
               {/* ESTADO: PACIENTES NO ATENDIDOS / REPROGRAMADOS CARD */}
-              <div className="bg-white rounded-2xl border border-toast-300 p-5 md:p-6 shadow-xs flex flex-col space-y-4">
+              <div className="bg-white rounded-2xl border border-slate-200 p-5 md:p-6 shadow-xs flex flex-col space-y-4">
                 <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                   <div className="flex items-center space-x-2">
-                    <span className="w-3 h-3 rounded-full bg-toast-500 animate-pulse" />
+                    <span className="w-2 h-2 rounded-full bg-toast-500" />
                     <h3 className="font-extrabold text-xs text-slate-800 uppercase tracking-wider">
                       Consultas Clínicas: No Atendidos / Reprogramados / Pendientes ({unattendedOrReprogrammedCount})
                     </h3>
                   </div>
-                  <span className="text-xs font-mono font-extrabold text-toast-500 bg-toast-100 p-1 px-2 rounded-lg border border-toast-300">
+                  <span className="text-xs font-mono font-bold text-toast-500 bg-toast-50 py-1 px-2.5 rounded-lg border border-toast-200 tabular-nums">
                     {totalFilteredCount > 0 ? Math.round((unattendedOrReprogrammedCount / totalFilteredCount) * 100) : 0}% sin completar
                   </span>
                 </div>
@@ -2443,12 +2547,12 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   ) : (
                     <>
                       {filteredAppointments.filter(app => app.status === 'No Atendido' || app.status === 'Reprogramada' || app.status === 'Pendiente').map(app => (
-                        <div key={app.id} className={`p-3 border rounded-xl text-xs space-y-1 ${
+                        <div key={app.id} className={`p-3 border rounded-xl text-xs space-y-1.5 ${
                           app.status === 'Reprogramada' ? 'bg-toast-50/40 border-toast-200' : app.status === 'Pendiente' ? 'bg-indigo-50/40 border-indigo-200' : 'bg-slate-50 border-slate-200'
                         }`}>
                           <div className="flex justify-between items-center gap-2">
                             <strong className="text-slate-900 truncate">{app.patientName}</strong>
-                            <div className="flex items-center gap-1 shrink-0">
+                            <div className="flex items-center gap-0.5 shrink-0">
                               <button
                                 onClick={() => {
                                   const realAppt = realAppointments?.find((r: any) => r.id === app.id);
@@ -2478,22 +2582,30 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
-                              <span className={`ml-1 text-[9px] font-mono font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
-                                app.status === 'Reprogramada' ? 'bg-toast-200 text-toast-500' : app.status === 'Pendiente' ? 'bg-indigo-200 text-indigo-700' : 'bg-slate-200 text-slate-800'
+                              <span className={`ml-1 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md ${
+                                app.status === 'Reprogramada' ? 'bg-toast-100 text-toast-500' : app.status === 'Pendiente' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-200 text-slate-700'
                               }`}>
                                 {app.status === 'Reprogramada' ? 'Reprogramada' : app.status === 'Pendiente' ? 'Pendiente' : 'No asistió'}
                               </span>
                             </div>
                           </div>
-                          <p className="text-[11px] text-slate-600 font-sans">
-                            <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} • <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
+                          <p className="text-[11px] text-slate-600">
+                            <span className="font-semibold text-slate-800">Clínico:</span> {app.professional} <span className="text-slate-300">·</span> <span className="font-semibold text-slate-800">Línea:</span> {app.specialty}
                           </p>
-                          <p className="text-[10px] text-slate-400 font-mono">
-                            {app.day} • {app.month} • {app.modality} • {app.agreement}
-                          </p>
+                          <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                            <span className="inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-500 border border-slate-100">
+                              <Clock className="h-2.5 w-2.5 shrink-0" />{app.day}, {app.month}
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-500 border border-slate-100">
+                              <Video className="h-2.5 w-2.5 shrink-0" />{app.modality}
+                            </span>
+                            <span className="inline-flex items-center gap-1 rounded-md bg-white px-1.5 py-0.5 text-[10px] font-medium text-slate-500 border border-slate-100">
+                              <Building2 className="h-2.5 w-2.5 shrink-0" />{app.agreement}
+                            </span>
+                          </div>
                           {app.reason && (
-                            <p className={`text-[11px] leading-relaxed bg-white/70 p-2 rounded-lg mt-1 border italic font-sans text-left ${
-                              app.status === 'Reprogramada' ? 'text-charcoal-800 border-toast-200' : 'text-slate-600 border-slate-150'
+                            <p className={`text-[11px] leading-relaxed bg-white/70 p-2 rounded-lg mt-1 border italic text-left ${
+                              app.status === 'Reprogramada' ? 'text-charcoal-800 border-toast-200' : 'text-slate-600 border-slate-200'
                             }`}>
                               &ldquo;{app.reason}&rdquo;
                             </p>
@@ -3236,6 +3348,232 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                     </ul>
                   )}
                 </div>
+
+                {editingStaffRole === 'ESPECIALISTA_B2B' && (() => {
+                  const listoParaPublicar = !!editStaffForm.specialtyId && !!editStaffForm.academicLevel;
+                  return (
+                    <label
+                      className={`flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3 ${listoParaPublicar ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={editStaffForm.publishedInApp}
+                        disabled={!listoParaPublicar}
+                        onChange={e => setEditStaffForm({ ...editStaffForm, publishedInApp: e.target.checked })}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        <span className="block text-xs font-bold text-slate-700">Publicar en app</span>
+                        <span className="block text-[10.5px] text-slate-400 mt-0.5">
+                          {listoParaPublicar
+                            ? 'Aparece en la lista pública de especialistas de la app móvil de MindPsic, para que cualquier paciente que compre sesiones por su cuenta lo pueda elegir. No afecta a pacientes que ya le asignaste tú desde aquí.'
+                            : 'Completa primero el nivel académico y la especialidad para poder publicarlo.'}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })()}
+
+                {editingStaffRole === 'ESPECIALISTA_B2B' && (
+                  <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-4">
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-800">Perfil público</h4>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Lo que ve el paciente en la app al elegir con quién trabajar — sobre mí, especialidades, idiomas, a quién atiende y sus títulos.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Sobre mí</label>
+                      <textarea
+                        value={editStaffForm.bio}
+                        onChange={e => setEditStaffForm({ ...editStaffForm, bio: e.target.value.slice(0, 1000) })}
+                        placeholder="Un resumen breve de su enfoque y experiencia, en primera persona."
+                        rows={3}
+                        className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white resize-none"
+                      />
+                      <p className="text-[10.5px] text-slate-400 mt-1 text-right">{editStaffForm.bio.length}/1000</p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Enfoque terapéutico</label>
+                      <textarea
+                        value={editStaffForm.therapeuticApproach}
+                        onChange={e => setEditStaffForm({ ...editStaffForm, therapeuticApproach: e.target.value.slice(0, 1000) })}
+                        placeholder="Cómo trabaja, no solo en qué es experto. Ej. enfoque cognitivo-conductual, ritmo de las sesiones, qué espera del paciente."
+                        rows={3}
+                        className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white resize-none"
+                      />
+                      <p className="text-[10.5px] text-slate-400 mt-1 text-right">{editStaffForm.therapeuticApproach.length}/1000</p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Qué esperar en la primera sesión</label>
+                      <textarea
+                        value={editStaffForm.firstSessionInfo}
+                        onChange={e => setEditStaffForm({ ...editStaffForm, firstSessionInfo: e.target.value.slice(0, 1000) })}
+                        placeholder="Ayuda a reducir la incertidumbre de agendar con alguien nuevo: cómo arranca la sesión, qué se conversa, cuánto dura."
+                        rows={3}
+                        className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white resize-none"
+                      />
+                      <p className="text-[10.5px] text-slate-400 mt-1 text-right">{editStaffForm.firstSessionInfo.length}/1000</p>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Modalidad</label>
+                      <div className="flex flex-wrap gap-2">
+                        {MODALITY_OPTIONS.map(m => {
+                          const activo = editStaffForm.modality.includes(m);
+                          return (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => toggleEnLista('modality', m)}
+                              className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                                activo
+                                  ? 'bg-indigo-600 border-indigo-600 text-white'
+                                  : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-300'
+                              }`}
+                            >
+                              {m}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Idiomas</label>
+                      <div className="flex flex-wrap gap-2">
+                        {LANGUAGE_OPTIONS.map(lang => {
+                          const activo = editStaffForm.languages.includes(lang);
+                          return (
+                            <button
+                              key={lang}
+                              type="button"
+                              onClick={() => toggleEnLista('languages', lang)}
+                              className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                                activo
+                                  ? 'bg-indigo-600 border-indigo-600 text-white'
+                                  : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-300'
+                              }`}
+                            >
+                              {lang}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Trabaja con</label>
+                      <div className="flex flex-wrap gap-2">
+                        {AGE_GROUP_OPTIONS.map(grupo => {
+                          const activo = editStaffForm.ageGroups.includes(grupo);
+                          return (
+                            <button
+                              key={grupo}
+                              type="button"
+                              onClick={() => toggleEnLista('ageGroups', grupo)}
+                              className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                                activo
+                                  ? 'bg-indigo-600 border-indigo-600 text-white'
+                                  : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-300'
+                              }`}
+                            >
+                              {grupo}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Palabras clave</label>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {editStaffForm.keywords.map(k => (
+                          <span
+                            key={k}
+                            className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-100"
+                          >
+                            #{k}
+                            <button
+                              type="button"
+                              onClick={() => quitarKeyword(k)}
+                              className="w-4 h-4 rounded-full flex items-center justify-center hover:bg-indigo-200 text-indigo-500"
+                              aria-label={`Quitar ${k}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={keywordInput}
+                          onChange={e => setKeywordInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' || e.key === ',') {
+                              e.preventDefault();
+                              agregarKeyword();
+                            }
+                          }}
+                          placeholder="Ej. Ansiedad — Enter para agregar"
+                          className="flex-1 border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={agregarKeyword}
+                          className="px-4 rounded-lg text-sm font-bold bg-slate-100 text-slate-600 hover:bg-slate-200"
+                        >
+                          Agregar
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5">Certificaciones y títulos</label>
+                      <div className="space-y-2">
+                        {editStaffForm.certifications.map((c, i) => (
+                          <div key={i} className="flex gap-2 items-start">
+                            <div className="flex-1 grid grid-cols-2 gap-2">
+                              <input
+                                type="text"
+                                value={c.title}
+                                onChange={e => actualizarCertificacion(i, 'title', e.target.value)}
+                                placeholder="Título (ej. Maestría en Psicología Clínica)"
+                                className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                              />
+                              <input
+                                type="text"
+                                value={c.institution}
+                                onChange={e => actualizarCertificacion(i, 'institution', e.target.value)}
+                                placeholder="Institución (opcional)"
+                                className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => quitarCertificacion(i)}
+                              aria-label="Quitar"
+                              className="shrink-0 w-9 h-9 rounded-lg border border-slate-200 text-slate-400 hover:bg-rose-50 hover:border-rose-200 hover:text-rose-500 flex items-center justify-center"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={agregarCertificacion}
+                        className="mt-2 text-xs font-bold text-indigo-600 hover:text-indigo-700"
+                      >
+                        + Agregar título o curso
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {canGrantSessionChangePermission && (
                   <label className="flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 p-3 cursor-pointer">
