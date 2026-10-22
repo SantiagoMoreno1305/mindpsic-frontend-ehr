@@ -12,6 +12,18 @@ interface HouseholdMember {
   age?: number | null;
 }
 
+// Un anexo de la lista de consentimiento/asentimiento (ver
+// InitialAssessment.consentAttachments en schema.prisma) — hasta
+// MAX_CONSENT_ATTACHMENTS, cada uno con nota corta opcional, nunca se
+// reemplaza ni se borra uno ya subido.
+interface ConsentAttachment {
+  id: string;
+  note?: string | null;
+  createdAt: string;
+  clinicalDocument: { id: string; fileName: string; fileType: string };
+}
+const MAX_CONSENT_ATTACHMENTS = 3;
+
 interface AssessmentForm {
   nombresPaciente: string;
   apellidosPaciente: string;
@@ -133,11 +145,8 @@ const REQUIRED_FIELD_MAP: Record<string, { formFields: (keyof AssessmentForm)[];
   tipoDocumento: { formFields: ['tipoDocumento'], step: 0 },
   numeroDocumento: { formFields: ['numeroDocumento'], step: 0 },
   fechaNacimiento: { formFields: ['fechaNacimiento'], step: 0 },
-  sexoBiologico: { formFields: ['sexoBiologico'], step: 0 },
   epsCodigo: { formFields: ['epsCodigo'], step: 0 },
   telefono: { formFields: ['telefono'], step: 1 },
-  departamentoResidencia: { formFields: ['departamentoResidencia'], step: 1 },
-  ciudadResidencia: { formFields: ['ciudadResidencia'], step: 1 },
   motivoConsulta: { formFields: ['motivoConsulta'], step: 3 },
   conducta: { formFields: ['conducta'], step: 3 },
   tipoConsentimiento: { formFields: ['tipoConsentimiento'], step: 5 },
@@ -204,6 +213,7 @@ export default function InitialAssessmentWizard({
   // se queden (siguen siendo campos normales del contacto de emergencia).
   const [emergencyContactSameAsLegalRep, setEmergencyContactSameAsLegalRep] = useState(false);
   const [members, setMembers] = useState<HouseholdMember[]>([]);
+  const [consentAttachments, setConsentAttachments] = useState<ConsentAttachment[]>([]);
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberRelationship, setNewMemberRelationship] = useState('');
   const [newMemberAge, setNewMemberAge] = useState('');
@@ -261,6 +271,7 @@ export default function InitialAssessmentWizard({
             instrumentosAplicados: assessment.instrumentosAplicados || [],
           });
           setMembers(assessment.householdMembers || []);
+          setConsentAttachments(assessment.consentAttachments || []);
         } else {
           setForm({
             ...EMPTY_FORM,
@@ -396,6 +407,31 @@ export default function InitialAssessmentWizard({
       setMembers((prev) => prev.filter((m) => m.id !== id));
     } catch {
       toast.error('Error al eliminar la persona');
+    }
+  };
+
+  // Registra un archivo YA SUBIDO (ver AnexoUpload/handleFile, mismo
+  // POST /upload + /confirm-upload de siempre) como un anexo más de la lista
+  // de consentimiento/asentimiento — nunca reemplaza uno existente, solo
+  // agrega (ver InitialAssessmentConsentAttachment, schema.prisma).
+  const addConsentAttachment = async (clinicalDocumentId: string, note: string) => {
+    try {
+      const res = await fetch(`${apiBase()}/api/initial-assessment/${patientId}/consent-attachments`, {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ clinicalDocumentId, note: note.trim() || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Error al agregar el anexo');
+        return;
+      }
+      setConsentAttachments((prev) => [...prev, data]);
+      if (!form.anexoConsentimientoDocId) {
+        update({ anexoConsentimientoDocId: clinicalDocumentId });
+      }
+      toast.success('Anexo agregado correctamente');
+    } catch {
+      toast.error('Error de red al agregar el anexo');
     }
   };
 
@@ -580,7 +616,7 @@ export default function InitialAssessmentWizard({
             <Field label="Estado civil">
               <Select value={form.estadoCivil} options={ESTADO_CIVIL_OPTIONS} onChange={(v) => update({ estadoCivil: v })} />
             </Field>
-            <Field label="Sexo biológico *" error={missingFields.has('sexoBiologico')}>
+            <Field label="Sexo biológico">
               <Select value={form.sexoBiologico} options={SEXO_OPTIONS} onChange={(v) => update({ sexoBiologico: v })} />
             </Field>
             <Field label="Género">
@@ -666,14 +702,14 @@ export default function InitialAssessmentWizard({
             <Field label="Dirección de residencia">
               <Input value={form.direccionResidencia} onChange={(v) => update({ direccionResidencia: v })} />
             </Field>
-            <Field label="Residencia — Departamento *" error={missingFields.has('departamentoResidencia')}>
+            <Field label="Residencia — Departamento">
               <Select
                 value={form.departamentoResidencia}
                 options={DEPARTAMENTOS_ORDENADOS}
                 onChange={(v) => update({ departamentoResidencia: v, ciudadResidencia: '' })}
               />
             </Field>
-            <Field label="Residencia — Ciudad / Municipio *" error={missingFields.has('ciudadResidencia')}>
+            <Field label="Residencia — Ciudad / Municipio">
               <Select
                 value={form.ciudadResidencia}
                 options={form.departamentoResidencia ? (COLOMBIA_DEPARTAMENTOS[form.departamentoResidencia] ?? []) : []}
@@ -914,12 +950,25 @@ export default function InitialAssessmentWizard({
                 {!form.anexoConsentimientoDocId && (
                   <span className="text-[11px] text-slate-400">o, si ya tienes el documento firmado por otro medio:</span>
                 )}
-                <AnexoUpload
-                  patientId={patientId}
-                  docId={form.anexoConsentimientoDocId}
-                  onUploaded={(id) => update({ anexoConsentimientoDocId: id })}
-                  label="anexo de consentimiento"
-                />
+                {consentAttachments.length > 0 && (
+                  <ul className="flex flex-col gap-1.5">
+                    {consentAttachments.map((att) => (
+                      <li key={att.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs">
+                        <span className="font-semibold text-emerald-700">✓ {att.clinicalDocument.fileName}</span>
+                        {att.note && <span className="text-slate-500">— {att.note}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {consentAttachments.length < MAX_CONSENT_ATTACHMENTS ? (
+                  <ConsentAttachmentUploader
+                    patientId={patientId}
+                    onAdd={addConsentAttachment}
+                    buttonLabel={consentAttachments.length === 0 ? 'subir documento firmado' : 'agregar otro documento'}
+                  />
+                ) : (
+                  <span className="text-[11px] text-slate-400">Ya cargaste el máximo de {MAX_CONSENT_ATTACHMENTS} documentos — no se puede reemplazar ninguno.</span>
+                )}
               </div>
             </Field>
           </div>
@@ -1128,6 +1177,81 @@ function AnexoUpload({ patientId, docId, onUploaded, label }: { patientId: strin
           <Upload className="h-4 w-4" /> {uploading ? 'Subiendo...' : `Subir ${label}`}
         </button>
       )}
+    </div>
+  );
+}
+
+// Sube un archivo más a la lista de consentimiento/asentimiento (hasta
+// MAX_CONSENT_ATTACHMENTS) — mismo flujo de subida que AnexoUpload (POST
+// /upload + /confirm-upload), pero esto SIEMPRE agrega, nunca reemplaza: por
+// eso no recibe `docId` ni muestra "Reemplazar". La nota es opcional y se
+// escribe ANTES de elegir el archivo — se manda junto con la subida en una
+// sola acción, y el campo se limpia para la siguiente.
+function ConsentAttachmentUploader({ patientId, onAdd, buttonLabel }: {
+  patientId: string;
+  onAdd: (clinicalDocumentId: string, note: string) => Promise<void>;
+  buttonLabel: string;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const [note, setNote] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleFile = async (file: File) => {
+    const validationError = validateAnexoFile(file);
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
+    setUploading(true);
+    try {
+      const presignedRes = await fetch(`${apiBase()}/api/clinical-history/upload`, {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ patientId, fileName: file.name, fileType: file.type, fileSize: file.size }),
+      });
+      const presignedData = await presignedRes.json().catch(() => ({}));
+      if (!presignedRes.ok || !presignedData.url || !presignedData.document) {
+        toast.error(presignedData.error || 'Error al generar la URL de subida');
+        return;
+      }
+
+      await fetch(presignedData.url, { method: 'PUT', headers: { 'Content-Type': file.type }, body: file });
+
+      const confirmRes = await fetch(`${apiBase()}/api/clinical-history/confirm-upload`, {
+        method: 'POST', headers: authHeaders(),
+        body: JSON.stringify({ documentId: presignedData.document.id }),
+      });
+      if (!confirmRes.ok) {
+        toast.error('Error al confirmar la subida del anexo');
+        return;
+      }
+
+      await onAdd(presignedData.document.id, note);
+      setNote('');
+    } catch {
+      toast.error('Error de red al subir el anexo');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-dashed border-slate-300 p-3">
+      <input
+        ref={inputRef} type="file" className="hidden"
+        accept=".pdf,.doc,.docx,image/*,application/pdf"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); e.target.value = ''; }}
+      />
+      <input
+        type="text" value={note} onChange={(e) => setNote(e.target.value)}
+        placeholder="Nota (opcional) — ej. Asentimiento del menor"
+        className="mb-2 w-full rounded-lg border border-slate-200 p-2 text-xs outline-none focus:border-toast-400"
+      />
+      <button
+        type="button" onClick={() => inputRef.current?.click()} disabled={uploading}
+        className="flex w-full items-center justify-center gap-2 text-xs font-semibold text-slate-500 hover:text-indigo-600 disabled:opacity-50"
+      >
+        <Upload className="h-4 w-4" /> {uploading ? 'Subiendo...' : `Subir ${buttonLabel}`}
+      </button>
     </div>
   );
 }

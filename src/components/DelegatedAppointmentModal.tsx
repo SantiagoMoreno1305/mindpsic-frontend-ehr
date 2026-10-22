@@ -755,75 +755,67 @@ export default function DelegatedAppointmentModal({
         return;
       }
 
-      // ── Agendamiento nuevo — una cita por cada fecha en slotDates ───────
-      // (1 sola si el paciente agenda una única sesión, varias si se está
-      // programando de una vez el bloque de sesiones disponibles).
-      for (const dateTime of slotDates) {
-        // Mismo motivo que en la reprogramación: dateTime es un datetime-local
-        // ingenuo (hora de Bogotá sin zona horaria) — se convierte a UTC
-        // inequívoco antes de enviarlo para que Lambda no lo reinterprete
-        // como si ya fuera UTC (desfase de 5 horas).
-        const payload = {
-          patientId:       form.patientId,
-          userId:          form.userId,
-          specialtyId:     form.specialtyId || null,
-          date:            new Date(dateTime).toISOString(),
-          timeSlot:        dateTime.split('T')[1]?.slice(0, 5) || '08:00',
-          appointmentType: form.appointmentType,
-          modality:        form.modality,
-          roomUrl:         form.modality === 'Virtual' ? '' : null,
-          notes:           form.notes || null,
-          status:          'Confirmada',
-          corporateClient: form.corporateClient,
-          companyId:       selectedCompany?.id || null,
-          locationId:      form.locationId || null,
-          agreementType:   form.agreementType || null,
-        };
+      // ── Agendamiento nuevo — UNA sola llamada con todas las fechas de
+      // slotDates (1 si el paciente agenda una única sesión, varias si se
+      // está programando de una vez el bloque de sesiones disponibles).
+      // El backend las crea en una transacción (todo o nada) y manda UN
+      // solo correo/WhatsApp con la lista completa — antes esto era un loop
+      // de N llamadas sueltas a /api/appointments, y cada una disparaba su
+      // propia confirmación por separado (ver createAppointmentBatch en
+      // appointment.controller.js).
+      const dates = slotDates.map((dateTime) => ({
+        // Mismo motivo que en la reprogramación: dateTime es un
+        // datetime-local ingenuo (hora de Bogotá sin zona horaria) — se
+        // convierte a UTC inequívoco antes de enviarlo para que Lambda no
+        // lo reinterprete como si ya fuera UTC (desfase de 5 horas).
+        date: new Date(dateTime).toISOString(),
+        timeSlot: dateTime.split('T')[1]?.slice(0, 5) || '08:00',
+      }));
 
-        const res = await fetch(`${apiUrl}/api/appointments`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
+      const payload = {
+        patientId:       form.patientId,
+        userId:          form.userId,
+        specialtyId:     form.specialtyId || null,
+        dates,
+        appointmentType: form.appointmentType,
+        modality:        form.modality,
+        roomUrl:         form.modality === 'Virtual' ? '' : null,
+        notes:           form.notes || null,
+        corporateClient: form.corporateClient,
+        companyId:       selectedCompany?.id || null,
+        locationId:      form.locationId || null,
+        agreementType:   form.agreementType || null,
+      };
 
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(
-            created > 0
-              ? `Se agendaron ${created} de ${slotDates.length} sesiones — falló la siguiente: ${errData.error || `HTTP ${res.status}`}`
-              : (errData.error || `HTTP ${res.status}`)
-          );
-        }
-        created += 1;
+      const res = await fetch(`${apiUrl}/api/appointments/batch`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
       }
+      created = slotDates.length;
 
       toast.success(created === 1 ? 'Cita creada exitosamente.' : `${created} citas creadas exitosamente.`);
+      apiFetch(`/api/patients/${form.patientId}/schedule-summary`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => data && setScheduleSummary(data))
+        .catch(() => {});
       onSuccess?.();
       resetAndClose();
     } catch (err: any) {
       toast.error(`Error al agendar: ${err.message}`);
-      // Antes este `if` comprobaba `form.patientId` (casi siempre true, ya
-      // que para llegar aquí ya tenías paciente elegido) — así que CUALQUIER
-      // rechazo del backend (fecha ya pasada, choque de horario, cupo
-      // agotado...) disparaba onSuccess(), que en PsychologistPortal.tsx
-      // cierra el modal y limpia rescheduleTarget/showNewAppointmentModal,
-      // desmontando el formulario y perdiendo todo lo que ya habías llenado
-      // — aunque NINGUNA cita se hubiera creado de verdad.
-      //
-      // Ahora solo se dispara cuando de verdad hubo un ÉXITO PARCIAL (al
-      // menos una sesión sí se creó antes de que fallara otra, en un
-      // agendamiento de varias sesiones a la vez) — ahí sí tiene sentido
-      // refrescar y cerrar, porque ya cambió algo real. En un fallo total
-      // (created === 0, incluida la reprogramación, que nunca incrementa
-      // `created`), el modal se queda abierto con todo lo que ya llenaste
-      // intacto, y el toast de arriba es el único aviso.
-      if (created > 0) {
-        apiFetch(`/api/patients/${form.patientId}/schedule-summary`)
-          .then((r) => (r.ok ? r.json() : null))
-          .then((data) => data && setScheduleSummary(data))
-          .catch(() => {});
-        onSuccess?.();
-      }
+      // El endpoint de lote (/api/appointments/batch) es todo-o-nada: crea
+      // TODAS las citas en una transacción, o ninguna. Antes esto era un
+      // loop de llamadas sueltas, así que un fallo a mitad de camino podía
+      // dejar algunas citas ya creadas ("éxito parcial") — ese caso ya no
+      // puede ocurrir, así que si se llega acá, de verdad no se creó nada
+      // (`created` sigue en 0; nunca se incrementa antes de lanzar). El
+      // modal se queda abierto con todo lo que ya llenaste intacto, y el
+      // toast de arriba es el único aviso.
     } finally {
       setIsSubmitting(false);
     }
