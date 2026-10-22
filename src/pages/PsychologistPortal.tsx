@@ -214,7 +214,7 @@ export default function PsychologistPortal({
       const detail = (e as CustomEvent).detail || {};
       if (!detail.appointmentId) return;
       const appDate = new Date(detail.date || Date.now());
-      setActiveTab('dashboard');
+      goToTab('dashboard');
       setCurrentView('dashboard');
       setSelectedSessionForModal({
         id: detail.appointmentId,
@@ -357,12 +357,18 @@ export default function PsychologistPortal({
     }
   };
   useEffect(() => {
-    const handlePopState = () => {
+    const handlePopState = (event: PopStateEvent) => {
+      // Caso ficha de paciente — ya establecido, se mantiene igual.
       if (selectedPatientId && clinicalHistoryReturnTab) {
         setSelectedPatientId(null);
         setActiveTab(clinicalHistoryReturnTab);
         setClinicalHistoryReturnTab(null);
+        return;
       }
+      // Caso general (ver goToTab): la entrada a la que se aterriza ya trae
+      // en su `state` qué pestaña estaba activa ahí.
+      const tab = (event.state as { mindpsicTab?: string } | null)?.mindpsicTab;
+      setActiveTab(tab && (PSYCHOLOGIST_TABS as string[]).includes(tab) ? (tab as ActiveTab) : 'dashboard');
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
@@ -483,10 +489,23 @@ export default function PsychologistPortal({
   useEffect(() => {
     localStorage.setItem('mind_psych_active_tab', activeTab);
   }, [activeTab]);
+
+  // Mismo fix que AdminPortal (reportado 2026-10-13): sin empujar una
+  // entrada de historial por cada clic de navegación, el "atrás" del
+  // navegador no tenía nada que deshacer y sacaba de la app entera. `goToTab`
+  // reemplaza `setActiveTab` en cualquier clic de navegación real — los
+  // `setActiveTab` sueltos que quedan son restauraciones programáticas (el
+  // propio handler de popstate, el drill-down de ficha de paciente).
+  const goToTab = (tab: ActiveTab) => {
+    if (tab === activeTab) return;
+    window.history.pushState({ mindpsicTab: tab }, '', window.location.href);
+    setActiveTab(tab);
+  };
+
   // Logo → inicio; nombre/foto del Navbar → Mi perfil (ver navRequest en App.tsx).
   useEffect(() => {
     if (!navRequest || navRequest.n === 0) return;
-    setActiveTab(navRequest.target === 'profile' ? 'mi_perfil' : 'dashboard');
+    goToTab(navRequest.target === 'profile' ? 'mi_perfil' : 'dashboard');
   }, [navRequest?.n]);
 
   const [patients, setPatients] = useState<Patient[]>(initialPatients);
@@ -738,7 +757,7 @@ export default function PsychologistPortal({
   const startVideoSession = (session: VideoSession) => {
     console.log('[TELEHEALTH HOOK] Inicializando videoconsulta con:', session.patientName);
     setActiveVideoCall(session);
-    setActiveTab('video');
+    goToTab('video');
   };
 
   const handleRequestAISuggestion = () => {
@@ -764,7 +783,7 @@ export default function PsychologistPortal({
       <aside className="w-16 md:w-64 bg-charcoal-950 text-slate-300 flex flex-col justify-between shrink-0 border-r border-charcoal-800 overflow-y-auto">
         <div className="py-6 flex flex-col space-y-2">
           <button
-            onClick={() => setActiveTab('dashboard')}
+            onClick={() => goToTab('dashboard')}
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'dashboard' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
             }`}
@@ -775,7 +794,7 @@ export default function PsychologistPortal({
           </button>
 
           <button
-            onClick={() => setActiveTab('video')}
+            onClick={() => goToTab('video')}
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'video' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
             }`}
@@ -794,7 +813,7 @@ export default function PsychologistPortal({
           </button>
 
           <button
-            onClick={() => setActiveTab('evaluations')}
+            onClick={() => goToTab('evaluations')}
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'evaluations' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
             }`}
@@ -805,7 +824,7 @@ export default function PsychologistPortal({
           </button>
 
           <button
-            onClick={() => setActiveTab('patients')}
+            onClick={() => goToTab('patients')}
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'patients' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
             }`}
@@ -823,7 +842,7 @@ export default function PsychologistPortal({
               // cambiaba, y selectedPatientId seguía apuntando a esa ficha.
               setSelectedPatientId(null);
               setClinicalHistoryReturnTab(null);
-              setActiveTab('clinical_history');
+              goToTab('clinical_history');
             }}
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'clinical_history' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
@@ -835,7 +854,7 @@ export default function PsychologistPortal({
           </button>
 
           <button
-            onClick={() => setActiveTab('chat')}
+            onClick={() => goToTab('chat')}
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'chat' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
             }`}
@@ -856,7 +875,7 @@ export default function PsychologistPortal({
           </button>
 
           <button
-            onClick={() => setActiveTab('reports')}
+            onClick={() => goToTab('reports')}
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'reports' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
             }`}
@@ -870,7 +889,7 @@ export default function PsychologistPortal({
             <>
               <div className="my-2 mx-3 border-t border-charcoal-700" />
               <button
-                onClick={() => setActiveTab('research')}
+                onClick={() => goToTab('research')}
                 className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
                   activeTab === 'research' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
                 }`}
@@ -880,7 +899,7 @@ export default function PsychologistPortal({
                 {activeTab === 'research' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
               </button>
               <button
-                onClick={() => setActiveTab('screening')}
+                onClick={() => goToTab('screening')}
                 className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
                   activeTab === 'screening' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
                 }`}
@@ -893,7 +912,7 @@ export default function PsychologistPortal({
           )}
 
           <button
-            onClick={() => setActiveTab('mi_perfil')}
+            onClick={() => goToTab('mi_perfil')}
             id="tab-psych-mi-perfil"
             className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
               activeTab === 'mi_perfil' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
@@ -1017,7 +1036,7 @@ export default function PsychologistPortal({
           <MiPerfilPage
             user={currentUser}
             onUserUpdated={(u) => { setCurrentUser(u); onUserUpdated?.(u); }}
-            onBack={() => setActiveTab('dashboard')}
+            onBack={() => window.history.back()}
           />
         )}
 
@@ -1383,7 +1402,12 @@ export default function PsychologistPortal({
                   <button
                     onClick={() => {
                       setSelectedSessionForModal(null);
+                      // Mismo marcador de historial que los otros dos accesos
+                      // a la ficha de un paciente (PacientesPanel/ReportsPanel)
+                      // — a este le faltaba, así que "atrás" no volvía aquí.
+                      window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
                       setSelectedPatientId(selectedSessionForModal.patientId);
+                      setClinicalHistoryReturnTab(activeTab);
                       setActiveTab('clinical_history');
                     }}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
