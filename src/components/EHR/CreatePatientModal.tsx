@@ -89,7 +89,11 @@ interface CreatePatientModalProps {
   // Modo creación (patient ausente): onCreated es obligatorio.
   // Modo edición (patient presente): onUpdated es obligatorio.
   patient?: BackendPatient | null;
-  onCreated?: (patient: BackendPatient, wasReactivated?: boolean) => void;
+  onCreated?: (
+    patient: BackendPatient,
+    wasReactivated?: boolean,
+    appInvitation?: { sent: boolean; destino?: string | null; error?: string }
+  ) => void;
   onUpdated?: (patient: BackendPatient) => void;
   // Autorizar sesiones es una decisión administrativa/financiera — mismo
   // gate de rol que exige el backend (ver authorizeSessions en
@@ -284,6 +288,10 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   const [phone, setPhone] = useState('');
   const [phoneAlternativo, setPhoneAlternativo] = useState('');
   const [status, setStatus] = useState<string>(INITIAL_CONTACT_STATUS_OPTIONS[0]);
+  // Solo en creación — dispara POST /api/patients/:id/invitation justo
+  // después de crear la ficha, para no tener que ir luego al menú de
+  // acciones de la tabla (ver PacientesPanel) a enviarla aparte.
+  const [includeAppAccess, setIncludeAppAccess] = useState(false);
 
   // ── Salud y residencia ──
   const [epsCodigo, setEpsCodigo] = useState('');
@@ -520,6 +528,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setPhone('');
     setPhoneAlternativo('');
     setStatus(INITIAL_CONTACT_STATUS_OPTIONS[0]);
+    setIncludeAppAccess(false);
     setEpsCodigo('');
     setEpsNombre('');
     setRegimenSalud('');
@@ -736,7 +745,28 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
 
       const created = await res.json();
 
-      onCreated?.(created);
+      // Best-effort: la ficha ya quedó creada aunque esto falle — se informa
+      // aparte (ver onCreated en PacientesPanel) en vez de hacer fallar toda
+      // la creación por un problema de envío de correo/WhatsApp.
+      let appInvitation: { sent: boolean; destino?: string | null; error?: string } | undefined;
+      if (includeAppAccess) {
+        try {
+          const invRes = await apiFetch(`/api/patients/${created.id}/invitation`, { method: 'POST' });
+          const invData = await invRes.json();
+          if (invRes.ok) {
+            const destino = invData.sentTo?.email || invData.sentTo?.phone || null;
+            appInvitation = destino
+              ? { sent: true, destino }
+              : { sent: false, error: 'el paciente no tiene correo ni teléfono registrado para enviarla' };
+          } else {
+            appInvitation = { sent: false, error: invData?.error || 'no se pudo enviar la invitación a la app' };
+          }
+        } catch {
+          appInvitation = { sent: false, error: 'no se pudo contactar el servidor para enviar la invitación' };
+        }
+      }
+
+      onCreated?.(created, false, appInvitation);
       reset();
       onClose();
     } catch (err: any) {
@@ -978,6 +1008,24 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                     className={INPUT_CLASS}
                   />
                 </div>
+                {!isEditMode && (
+                  <div className="sm:col-span-2">
+                    <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                      <input
+                        type="checkbox"
+                        checked={includeAppAccess}
+                        onChange={(e) => setIncludeAppAccess(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-toast-500 focus:ring-toast-500/30"
+                      />
+                      <span className="text-sm text-charcoal-900">
+                        <span className="font-medium">Incluir Acceso a la App</span>
+                        <span className="block text-xs text-slate-500">
+                          Al guardar, se le envía al paciente (correo o WhatsApp) el enlace de invitación con su código, para que registre su contraseña en el primer inicio de sesión.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                )}
                 <div className="sm:col-span-2">
                   <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                     {isEditMode ? 'Estado' : <>Estado de contacto<RequiredBadge /></>}
