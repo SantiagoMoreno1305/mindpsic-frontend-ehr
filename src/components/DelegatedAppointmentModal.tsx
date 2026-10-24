@@ -288,6 +288,13 @@ export default function DelegatedAppointmentModal({
   const [companies, setCompanies] = useState<CompanyRecord[]>([]);
   const [specialties, setSpecialties] = useState<SpecialtyOption[]>([]);
   const [agreementTypes, setAgreementTypes] = useState<{ id: string; name: string }[]>([]);
+  // Crear un tipo de convenio sin salir de este modal (decisión 2026-10-23) —
+  // antes había que cancelar el agendamiento, ir a Convenios, crearlo ahí y
+  // volver a empezar. Queda asociado al convenio YA elegido arriba
+  // (form.corporateClient) y se autoselecciona apenas se guarda.
+  const [isCreatingAgreementType, setIsCreatingAgreementType] = useState(false);
+  const [newAgreementTypeName, setNewAgreementTypeName] = useState('');
+  const [savingAgreementType, setSavingAgreementType] = useState(false);
   const [isLoadingData, setIsLoadingData] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isEditingAppointment = !!initialData?.id;
@@ -610,6 +617,37 @@ export default function DelegatedAppointmentModal({
       .catch(() => { if (!cancelled) setAgreementTypes([]); });
     return () => { cancelled = true; };
   }, [form.corporateClient, companies]);
+
+  const handleCreateAgreementType = async () => {
+    const name = newAgreementTypeName.trim();
+    if (!name) return;
+    const selectedCompany = companies.find((c) => c.name === form.corporateClient);
+    if (!selectedCompany) {
+      toast.error('Elige primero un convenio.');
+      return;
+    }
+    setSavingAgreementType(true);
+    try {
+      const res = await apiFetch('/api/agreement-types', {
+        method: 'POST',
+        body: JSON.stringify({ name, companyId: selectedCompany.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Error al crear el tipo de convenio');
+        return;
+      }
+      setAgreementTypes((prev) => [...prev, data]);
+      setForm((prev) => ({ ...prev, agreementType: data.name }));
+      setNewAgreementTypeName('');
+      setIsCreatingAgreementType(false);
+      toast.success('Tipo de convenio creado y seleccionado.');
+    } catch {
+      toast.error('Error de red al crear el tipo de convenio');
+    } finally {
+      setSavingAgreementType(false);
+    }
+  };
 
   // ── Ficha del paciente: se recarga cada vez que cambia el paciente seleccionado ──
   useEffect(() => {
@@ -1658,21 +1696,67 @@ export default function DelegatedAppointmentModal({
                   aunque el catálogo cambie después. Opcional: no todos los
                   convenios distinguen tipos, así que el bloque entero se oculta
                   si el convenio elegido no tiene ninguno registrado. ── */}
-              {agreementTypes.length > 0 && (
+              {form.corporateClient && (
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                    Tipo de convenio
-                  </label>
-                  <select
-                    value={form.agreementType}
-                    onChange={(e) => setForm({ ...form, agreementType: e.target.value })}
-                    className="min-h-[42px] w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                  >
-                    <option value="">Sin especificar</option>
-                    {agreementTypes.map((t) => (
-                      <option key={t.id} value={t.name}>{t.name}</option>
-                    ))}
-                  </select>
+                  <div className="flex justify-between items-end mb-1">
+                    <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                      Tipo de convenio
+                    </label>
+                    {!isCreatingAgreementType && (
+                      <button
+                        type="button"
+                        onClick={() => setIsCreatingAgreementType(true)}
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+                      >
+                        <Plus className="w-3 h-3" /> Agregar tipo de convenio
+                      </button>
+                    )}
+                  </div>
+
+                  {isCreatingAgreementType ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={newAgreementTypeName}
+                        onChange={(e) => setNewAgreementTypeName(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCreateAgreementType(); } }}
+                        placeholder={`Nuevo tipo para ${form.corporateClient}...`}
+                        className="min-h-[42px] flex-1 border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleCreateAgreementType}
+                        disabled={savingAgreementType || !newAgreementTypeName.trim()}
+                        className="shrink-0 rounded-lg bg-indigo-600 px-3 py-2.5 text-xs font-bold text-white transition-colors hover:bg-indigo-700 disabled:opacity-50 cursor-pointer"
+                      >
+                        {savingAgreementType ? '...' : 'Guardar'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setIsCreatingAgreementType(false); setNewAgreementTypeName(''); }}
+                        disabled={savingAgreementType}
+                        className="shrink-0 flex h-[42px] w-[42px] items-center justify-center rounded-lg border border-slate-200 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600 cursor-pointer"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : agreementTypes.length > 0 ? (
+                    <select
+                      value={form.agreementType}
+                      onChange={(e) => setForm({ ...form, agreementType: e.target.value })}
+                      className="min-h-[42px] w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    >
+                      <option value="">Sin especificar</option>
+                      {agreementTypes.map((t) => (
+                        <option key={t.id} value={t.name}>{t.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 italic py-1">
+                      Este convenio todavía no tiene tipos configurados.
+                    </p>
+                  )}
                 </div>
               )}
 
