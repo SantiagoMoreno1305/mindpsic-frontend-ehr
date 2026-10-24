@@ -15,7 +15,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, CheckCircle2, MoreVertical, History } from 'lucide-react';
+import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, CheckCircle2, MoreVertical, History, Smartphone } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal, { PATIENT_STATUS_LABELS } from './CreatePatientModal';
 import BulkImportPatientsModal from './BulkImportPatientsModal';
@@ -102,6 +102,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   const [statusHistoryPatient, setStatusHistoryPatient] = useState<BackendPatient | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [sendingLinea247Id, setSendingLinea247Id] = useState<string | null>(null);
+  const [sendingInvitationId, setSendingInvitationId] = useState<string | null>(null);
   const [resendingConfirmationId, setResendingConfirmationId] = useState<string | null>(null);
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
   // Menú "más acciones" (Editar/Historial de estados/Línea 24-7/Reenviar
@@ -114,7 +115,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   // final. Se ancla con `top` (debajo del botón) o `bottom` (encima del
   // botón, para las últimas filas donde no cabe hacia abajo) según el
   // espacio disponible en el viewport al momento de abrirlo.
-  const ACTION_MENU_HEIGHT = 176; // 4 ítems ≈ 44px c/u — usado para decidir si abre hacia arriba
+  const ACTION_MENU_HEIGHT = 220; // 5 ítems ≈ 44px c/u — usado para decidir si abre hacia arriba
   const [actionMenu, setActionMenu] = useState<{ patientId: string; top?: number; bottom?: number; right: number } | null>(null);
 
   useEffect(() => {
@@ -166,6 +167,24 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
       showToast('No se pudo contactar el servidor.');
     } finally {
       setSendingLinea247Id(null);
+    }
+  }
+
+  async function handleSendAppInvitation(patient: BackendPatient) {
+    setSendingInvitationId(patient.id);
+    try {
+      const res = await apiFetch(`/api/patients/${patient.id}/invitation`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data?.error || 'No se pudo enviar la invitación a la app.');
+        return;
+      }
+      const destino = data.sentTo?.email || data.sentTo?.phone;
+      showToast(destino ? `Invitación a la app enviada a ${destino}.` : 'Invitación creada (el paciente no tiene correo ni teléfono registrado para enviarla).');
+    } catch {
+      showToast('No se pudo contactar el servidor.');
+    } finally {
+      setSendingInvitationId(null);
     }
   }
 
@@ -577,6 +596,14 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
                             Enviar acceso a línea 24/7
                           </button>
                           <button
+                            onClick={(e) => { e.stopPropagation(); setActionMenu(null); handleSendAppInvitation(p); }}
+                            disabled={sendingInvitationId === p.id}
+                            className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-charcoal-900 transition-colors hover:bg-slate-50 disabled:cursor-wait disabled:opacity-40 cursor-pointer"
+                          >
+                            <Smartphone className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            Enviar invitación a la app
+                          </button>
+                          <button
                             onClick={(e) => { e.stopPropagation(); setActionMenu(null); handleResendConfirmation(p); }}
                             disabled={resendingConfirmationId === p.id}
                             className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-charcoal-900 transition-colors hover:bg-slate-50 disabled:cursor-wait disabled:opacity-40 cursor-pointer"
@@ -643,14 +670,19 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
         isOpen={createOpen}
         onClose={() => setCreateOpen(false)}
         userRole={userRole}
-        onCreated={(patient, wasReactivated) => {
+        onCreated={(patient, wasReactivated, appInvitation) => {
           fetchPatients();
           fetchFinalizadoCount();
-          showToast(
-            wasReactivated
-              ? `Paciente "${patient.firstName} ${patient.lastName}" reactivado correctamente.`
-              : `Paciente "${patient.firstName} ${patient.lastName}" creado correctamente.`
-          );
+          const baseMsg = wasReactivated
+            ? `Paciente "${patient.firstName} ${patient.lastName}" reactivado correctamente.`
+            : `Paciente "${patient.firstName} ${patient.lastName}" creado correctamente.`;
+          if (!appInvitation) {
+            showToast(baseMsg);
+          } else if (appInvitation.sent) {
+            showToast(`${baseMsg} Invitación a la app enviada a ${appInvitation.destino}.`);
+          } else {
+            showToast(`${baseMsg} No se pudo enviar la invitación a la app: ${appInvitation.error}.`);
+          }
         }}
       />
       <DelegatedAppointmentModal
