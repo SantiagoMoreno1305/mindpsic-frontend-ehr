@@ -64,6 +64,7 @@ import {
   PlusCircle,
   CalendarPlus,
   ShieldAlert,
+  AlertTriangle,
   Trash2,
   Building2,
   Pencil,
@@ -2230,7 +2231,30 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
       {/* PORTAL MAIN AREA */}
       <main className="flex-1 overflow-y-auto p-6 md:p-8">
-        
+
+        {/* Aviso de período de prueba (decisión 2026-10-22) — visible en
+            cualquier pestaña mientras el tenant sigue activo. Una vez vence,
+            /auth/sync ya bloquea el login (403 TENANT_SUSPENDED) antes de
+            que esto se vuelva a renderizar — el correo de aviso cubre ese
+            momento, ver demo-lifecycle.service.js. */}
+        {currentUser.isDemo && currentUser.demoExpiresAt && (
+          (() => {
+            const daysLeft = Math.ceil((new Date(currentUser.demoExpiresAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+            if (daysLeft < 0) return null;
+            return (
+              <div className="mb-5 flex items-center gap-3 rounded-xl border border-dashed border-amber-300 bg-amber-50 px-4 py-3">
+                <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600" />
+                <p className="text-xs font-semibold text-amber-800">
+                  {daysLeft <= 0
+                    ? 'Tu período de prueba vence hoy.'
+                    : `Te quedan ${daysLeft} día${daysLeft === 1 ? '' : 's'} de tu período de prueba.`}
+                  {' '}Contacta a MindPsic para pasarte a una cuenta real y no perder tus datos.
+                </p>
+              </div>
+            );
+          })()
+        )}
+
         {/* VIEW: INTERNAL CHAT */}
         {activeTab === 'chat' && (
           <div className="max-w-7xl mx-auto">

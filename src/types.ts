@@ -85,6 +85,10 @@ export interface User {
   // Acceso a Programas de medición (lo otorga un CEO) y si el socio los tiene habilitados.
   programsAccess?: 'NONE' | 'BOTH' | 'ONLY';
   programsEnabled?: boolean;
+  // Modo demo del TENANT (decisión 2026-10-22, ver GET /auth/sync) — no del
+  // usuario. isDemo=false/demoExpiresAt=null para cualquier tenant real.
+  isDemo?: boolean;
+  demoExpiresAt?: string | null;
 }
 
 export interface Patient {

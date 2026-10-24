@@ -148,6 +148,8 @@ export default function App() {
             avatarUrl: syncData.avatarUrl ?? undefined,
             programsAccess: syncData.programsAccess ?? prev.programsAccess,
             programsEnabled: syncData.programsEnabled ?? prev.programsEnabled,
+            isDemo: syncData.isDemo ?? false,
+            demoExpiresAt: syncData.demoExpiresAt ?? null,
           };
           // Persistir el usuario actualizado en localStorage
           localStorage.setItem('mind_user', JSON.stringify(updatedUser));
