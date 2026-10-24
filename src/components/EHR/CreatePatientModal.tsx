@@ -575,6 +575,11 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
       setError('Nombre, apellido y documento son obligatorios.');
       return;
     }
+    if (!companyId) {
+      setActiveTab('convenio');
+      setError('Convenio / Cliente corporativo es obligatorio.');
+      return;
+    }
     if (documentId.trim().length < 1 || documentId.trim().length > 10) {
       setActiveTab('personal');
       setError('El documento debe tener máximo 10 dígitos.');
@@ -1119,14 +1124,14 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
             {activeTab === 'convenio' && (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <FieldLabel>Convenio / Cliente corporativo</FieldLabel>
+                  <FieldLabel required>Convenio / Cliente corporativo</FieldLabel>
                   <select
                     value={companyId}
                     onChange={(e) => { setCompanyId(e.target.value); setAgreementType(''); }}
                     disabled={loadingCompanies}
                     className={SELECT_CLASS}
                   >
-                    <option value="">Particular (sin convenio)</option>
+                    <option value="">Selecciona un convenio / cliente corporativo</option>
                     {companies.map((c) => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
