@@ -15,11 +15,12 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, CheckCircle2, MoreVertical, History, Smartphone } from 'lucide-react';
+import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, CheckCircle2, MoreVertical, History, Smartphone, Trash2 } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal, { PATIENT_STATUS_LABELS } from './CreatePatientModal';
 import BulkImportPatientsModal from './BulkImportPatientsModal';
 import PatientStatusHistoryModal from './PatientStatusHistoryModal';
+import DeletePatientConfirmModal from './DeletePatientConfirmModal';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../DelegatedAppointmentModal';
 import { useCompanies } from '../../hooks/useCompanies';
 import type { BackendPatient } from '../../types';
@@ -76,6 +77,9 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   // clínico ve su estado ACTUAL como referencia, de solo lectura, pero no
   // puede modificarlo desde acá.
   const canManageStatus = userRole === 'CEO' || userRole === 'DIRECTIVO' || userRole === 'OPERATIVO';
+  // Borrado físico real (decisión 2026-10-24) — CEO únicamente, el backend
+  // también lo exige (ver DELETE /api/patients/:id en patient.controller.js).
+  const canHardDelete = userRole === 'CEO';
   const initialSearchState = readSearchState();
   const [patients, setPatients] = useState<BackendPatient[]>([]);
   const [total, setTotal] = useState(0);
@@ -100,6 +104,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   const [editOpen, setEditOpen] = useState(false);
   const [editPatientTarget, setEditPatientTarget] = useState<BackendPatient | null>(null);
   const [statusHistoryPatient, setStatusHistoryPatient] = useState<BackendPatient | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<BackendPatient | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [sendingLinea247Id, setSendingLinea247Id] = useState<string | null>(null);
   const [sendingInvitationId, setSendingInvitationId] = useState<string | null>(null);
@@ -115,7 +120,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   // final. Se ancla con `top` (debajo del botón) o `bottom` (encima del
   // botón, para las últimas filas donde no cabe hacia abajo) según el
   // espacio disponible en el viewport al momento de abrirlo.
-  const ACTION_MENU_HEIGHT = 220; // 5 ítems ≈ 44px c/u — usado para decidir si abre hacia arriba
+  const ACTION_MENU_HEIGHT = canHardDelete ? 264 : 220; // ≈44px c/u (6 ítems si es CEO) — usado para decidir si abre hacia arriba
   const [actionMenu, setActionMenu] = useState<{ patientId: string; top?: number; bottom?: number; right: number } | null>(null);
 
   useEffect(() => {
@@ -611,6 +616,18 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
                             <SendHorizontal className="h-3.5 w-3.5 shrink-0 text-slate-400" />
                             Reenviar confirmación
                           </button>
+                          {canHardDelete && (
+                            <>
+                              <div className="my-1 border-t border-slate-100" />
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setActionMenu(null); setDeleteTarget(p); }}
+                                className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-red-600 transition-colors hover:bg-red-50 cursor-pointer"
+                              >
+                                <Trash2 className="h-3.5 w-3.5 shrink-0 text-red-500" />
+                                Eliminar paciente
+                              </button>
+                            </>
+                          )}
                         </div>
                       </>,
                       document.body
@@ -704,6 +721,19 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
           fetchPatients();
           fetchFinalizadoCount();
           showToast(`Paciente "${patient.firstName} ${patient.lastName}" actualizado correctamente.`);
+        }}
+      />
+      <DeletePatientConfirmModal
+        isOpen={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        patient={deleteTarget}
+        onDeleted={({ rowCounts, s3ObjectsDeleted, accountDeleted }) => {
+          const totalRows = Object.values(rowCounts).reduce((sum, n) => sum + n, 0);
+          fetchPatients();
+          fetchFinalizadoCount();
+          showToast(
+            `Paciente eliminado permanentemente (${totalRows} registro(s) relacionados${s3ObjectsDeleted ? `, ${s3ObjectsDeleted} archivo(s)` : ''}${accountDeleted ? ', cuenta de acceso incluida' : ''}).`
+          );
         }}
       />
       <PatientStatusHistoryModal
