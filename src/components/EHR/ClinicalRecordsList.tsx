@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Search, FileText, Users, ChevronLeft, ChevronRight, ClipboardX, X } from 'lucide-react';
 import { getApiBase } from '../../lib/apiClient';
+import { normalizarBusqueda } from '../../lib/normalizarBusqueda';
 
 const PAGE_SIZE = 10;
 
@@ -89,11 +90,20 @@ export default function ClinicalRecordsList({
   }, [query]);
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return patients;
+    // Insensible a tildes/mayúsculas/espacios extra, mismo criterio que
+    // GET /api/patients (ver utils/normalizar-busqueda.js en el backend):
+    // "Maria" encuentra a "María", "MARIA" y "María Fernanda" y viceversa.
+    // Palabra por palabra, en cualquier orden — "maria perez" encuentra a
+    // "María Fernanda Pérez".
+    const palabras = normalizarBusqueda(query).split(' ').filter(Boolean);
+    const qDocumento = query.replace(/[\s.-]/g, '');
+    if (!palabras.length && !qDocumento) return patients;
     return patients.filter((p) => {
-      const name = `${p.firstName} ${p.lastName}`.toLowerCase();
-      return name.includes(q) || p.documentId?.toLowerCase().includes(q) || p.recordNumber?.toLowerCase().includes(q);
+      const name = normalizarBusqueda(`${p.firstName} ${p.lastName}`);
+      const matchesName = palabras.length > 0 && palabras.every((palabra) => name.includes(palabra));
+      const matchesDocument = !!qDocumento && !!p.documentId?.includes(qDocumento);
+      const matchesRecordNumber = !!palabras.length && !!p.recordNumber && normalizarBusqueda(p.recordNumber).includes(normalizarBusqueda(query));
+      return matchesName || matchesDocument || matchesRecordNumber;
     });
   }, [patients, query]);
 
