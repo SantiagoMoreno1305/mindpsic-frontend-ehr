@@ -15,7 +15,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, UserPlus, CalendarPlus, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, MoreVertical, History, Smartphone, Trash2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { Search, UserPlus, CalendarPlus, ChevronLeft, ChevronRight, ChevronDown, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, MoreVertical, History, Smartphone, Trash2, ArrowUp, ArrowDown, ArrowUpDown, Check } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal, { PATIENT_STATUS_LABELS } from './CreatePatientModal';
 import BulkImportPatientsModal from './BulkImportPatientsModal';
@@ -195,6 +195,24 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   // espacio disponible en el viewport al momento de abrirlo.
   const ACTION_MENU_HEIGHT = canHardDelete ? 264 : 220; // ≈44px c/u (6 ítems si es CEO) — usado para decidir si abre hacia arriba
   const [actionMenu, setActionMenu] = useState<{ patientId: string; top?: number; bottom?: number; right: number } | null>(null);
+  // Menú de Estado — reemplaza el <select> nativo (decisión 2026-10-27: el
+  // estilo del select nativo "parece de principios de los 2000" y no se puede
+  // re-diseñar más allá del borde/fondo del control cerrado, la lista
+  // desplegada la pinta el sistema operativo). Mismo patrón de portal +
+  // posición calculada que el menú ⋮ de abajo.
+  const STATUS_MENU_HEIGHT = STATUS_OPTIONS.length * 34 + 8;
+  const [statusMenu, setStatusMenu] = useState<{ patientId: string; top?: number; bottom?: number; left: number } | null>(null);
+
+  useEffect(() => {
+    if (!statusMenu) return;
+    const close = () => setStatusMenu(null);
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [statusMenu]);
 
   useEffect(() => {
     if (!actionMenu) return;
@@ -465,9 +483,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
         </div>
       </div>
 
-      {/* Fondo "hueso" (toast-50) — mismo tono institucional que ya se usa
-          en el resto de la app, en vez del blanco plano de antes. */}
-      <div className="rounded-2xl border border-slate-200 bg-toast-50 p-4 shadow-sm sm:p-6">
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
         {/* Pestañas: Mis Pacientes (solo ESPECIALISTA_B2B) | Todos | Finalizados.
             Reemplazan el stat suelto y la tarjeta clicable de "Finalizados"
             de antes — el contador vive en la pestaña misma. */}
@@ -476,7 +492,12 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
             {hasOwnPatients && (
               <TabButton active={viewTab === 'mine'} label="Mis Pacientes" count={tabCounts.mine} onClick={() => setViewTab('mine')} />
             )}
-            <TabButton active={viewTab === 'all'} label="Todos" count={tabCounts.all} onClick={() => setViewTab('all')} />
+            <TabButton
+              active={viewTab === 'all'}
+              label="Todos"
+              count={tabCounts.all}
+              onClick={() => { setViewTab('all'); clearFilters(); }}
+            />
             <TabButton active={viewTab === 'finalizado'} label="Finalizados" count={tabCounts.finalizado} onClick={() => setViewTab('finalizado')} />
           </div>
           <select
@@ -565,7 +586,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
 
         <div className="overflow-x-auto">
           <table className="w-full min-w-[820px] border-collapse text-sm">
-            <thead className="sticky top-0 z-[5] bg-toast-50">
+            <thead className="sticky top-0 z-[5] bg-white">
               <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-400">
                 <SortableHeader label="Paciente" field="nombre" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
                 <SortableHeader label="Convenio" field="convenio" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
@@ -625,18 +646,26 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
                     <div className="flex items-center gap-2">
                       <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_COLORS[p.status || 'activo'] || 'bg-slate-300'}`} />
                       {canManageStatus ? (
-                        <select
-                          value={p.status || 'activo'}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => { e.stopPropagation(); handleInlineStatusChange(p, e.target.value); }}
+                        <button
+                          type="button"
                           disabled={updatingStatusId === p.id}
                           title="Cambiar estado del paciente"
-                          className="cursor-pointer appearance-none bg-transparent text-xs font-medium text-charcoal-900 outline-none disabled:cursor-wait disabled:opacity-50"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (statusMenu?.patientId === p.id) { setStatusMenu(null); return; }
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const fitsBelow = window.innerHeight - rect.bottom >= STATUS_MENU_HEIGHT;
+                            setStatusMenu(
+                              fitsBelow
+                                ? { patientId: p.id, top: rect.bottom + 4, left: rect.left }
+                                : { patientId: p.id, bottom: window.innerHeight - rect.top + 4, left: rect.left }
+                            );
+                          }}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-charcoal-900 outline-none transition-colors hover:text-toast-600 disabled:cursor-wait disabled:opacity-50 cursor-pointer"
                         >
-                          {STATUS_OPTIONS.map((s) => (
-                            <option key={s.value} value={s.value}>{s.label}</option>
-                          ))}
-                        </select>
+                          {PATIENT_STATUS_LABELS[p.status || 'activo'] || p.status}
+                          <ChevronDown className="h-3 w-3 text-slate-400" />
+                        </button>
                       ) : (
                         <span
                           title="Cambiar el estado del paciente es una acción exclusiva del área administrativa."
@@ -644,6 +673,37 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
                         >
                           {PATIENT_STATUS_LABELS[p.status || 'activo'] || p.status}
                         </span>
+                      )}
+                      {statusMenu?.patientId === p.id && createPortal(
+                        <>
+                          <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setStatusMenu(null); }} />
+                          <div
+                            className="fixed z-50 w-48 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 text-left shadow-lg"
+                            style={{
+                              left: statusMenu.left,
+                              ...(statusMenu.top !== undefined ? { top: statusMenu.top } : { bottom: statusMenu.bottom }),
+                            }}
+                          >
+                            {STATUS_OPTIONS.map((s) => {
+                              const isCurrent = (p.status || 'activo') === s.value;
+                              return (
+                                <button
+                                  key={s.value}
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setStatusMenu(null); if (!isCurrent) handleInlineStatusChange(p, s.value); }}
+                                  className={`flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm transition-colors hover:bg-slate-50 cursor-pointer ${
+                                    isCurrent ? 'font-semibold text-toast-600' : 'text-charcoal-900'
+                                  }`}
+                                >
+                                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT_COLORS[s.value] || 'bg-slate-300'}`} />
+                                  <span className="flex-1">{s.label}</span>
+                                  {isCurrent && <Check className="h-3.5 w-3.5 shrink-0" />}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </>,
+                        document.body
                       )}
                     </div>
                   </td>
