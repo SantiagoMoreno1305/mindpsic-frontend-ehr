@@ -15,7 +15,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, UserPlus, CalendarPlus, Users, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, CheckCircle2, MoreVertical, History, Smartphone, Trash2 } from 'lucide-react';
+import { Search, UserPlus, CalendarPlus, ChevronLeft, ChevronRight, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, MoreVertical, History, Smartphone, Trash2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal, { PATIENT_STATUS_LABELS } from './CreatePatientModal';
 import BulkImportPatientsModal from './BulkImportPatientsModal';
@@ -31,6 +31,8 @@ interface PacientesPanelProps {
   onSelectPatient?: (patientId: string) => void;
   /** Rol del usuario logueado — determina si "Cargar masivo" está disponible (solo CEO/DIRECTIVO). */
   userRole?: string;
+  /** Id del usuario logueado — para la pestaña "Mis Pacientes" (psychologistId = este id). */
+  userId?: string;
 }
 
 interface SpecialistOption {
@@ -39,6 +41,22 @@ interface SpecialistOption {
 }
 
 const PAGE_SIZE = 10;
+
+// Color SOLO del punto — el nombre del estado va siempre en texto normal
+// (decisión 2026-10-26, rediseño de la tabla). bg-slate-300 es el fallback
+// para cualquier valor que no esté en este mapa.
+const STATUS_DOT_COLORS: Record<string, string> = {
+  agendado: 'bg-blue-500',
+  activo: 'bg-emerald-500',
+  notificado_1: 'bg-amber-500',
+  notificado_2: 'bg-amber-500',
+  notificado_3: 'bg-amber-500',
+  notificado_4: 'bg-amber-500',
+  alta: 'bg-slate-400',
+  pausa: 'bg-violet-400',
+  finalizado: 'bg-teal-500',
+  anulado: 'bg-rose-500',
+};
 
 const STATUS_OPTIONS: { value: string; label: string }[] = Object.entries(PATIENT_STATUS_LABELS).map(
   ([value, label]) => ({ value, label })
@@ -50,17 +68,31 @@ const STATUS_OPTIONS: { value: string; label: string }[] = Object.entries(PATIEN
 // cambia a 'clinical_history') y se remonta desde cero al volver — sin esto,
 // el buscador y los filtros quedaban en blanco cada vez que regresabas,
 // aunque hubieras estado buscando algo específico.
+type ViewTab = 'mine' | 'all' | 'finalizado';
+type SortField = 'nombre' | 'convenio' | 'profesional' | 'estado';
+type SortDir = 'asc' | 'desc';
+
 interface PacientesSearchState {
   query: string;
   companyId: string;
   psychologistId: string;
   status: string;
   page: number;
+  viewTab: ViewTab | '';
+  sortField: SortField;
+  sortDir: SortDir;
 }
 const SEARCH_STATE_KEY = 'mind_pacientes_search_state';
+// Densidad de fila — a propósito en localStorage, no en sessionStorage: es
+// una preferencia de la persona, no estado de una búsqueda puntual (debe
+// sobrevivir a cerrar la pestaña, igual en todas las sesiones).
+const DENSITY_KEY = 'mind_pacientes_density';
 
 function readSearchState(): PacientesSearchState {
-  const empty: PacientesSearchState = { query: '', companyId: '', psychologistId: '', status: '', page: 1 };
+  const empty: PacientesSearchState = {
+    query: '', companyId: '', psychologistId: '', status: '', page: 1,
+    viewTab: '', sortField: 'nombre', sortDir: 'asc',
+  };
   try {
     const raw = sessionStorage.getItem(SEARCH_STATE_KEY);
     if (!raw) return empty;
@@ -70,7 +102,16 @@ function readSearchState(): PacientesSearchState {
   }
 }
 
-export default function PacientesPanel({ token, onSelectPatient, userRole }: PacientesPanelProps) {
+function readDensity(): 'compact' | 'comfortable' {
+  try {
+    const raw = localStorage.getItem(DENSITY_KEY);
+    return raw === 'comfortable' ? 'comfortable' : 'compact';
+  } catch {
+    return 'compact';
+  }
+}
+
+export default function PacientesPanel({ token, onSelectPatient, userRole, userId }: PacientesPanelProps) {
   const canBulkImport = userRole === 'CEO' || userRole === 'DIRECTIVO';
   // Cambiar (o incluso ver la lista completa de) el estado del paciente es
   // una decisión administrativa/de seguimiento comercial — un especialista
@@ -80,22 +121,54 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   // Borrado físico real (decisión 2026-10-24) — CEO únicamente, el backend
   // también lo exige (ver DELETE /api/patients/:id en patient.controller.js).
   const canHardDelete = userRole === 'CEO';
+  // "Mis Pacientes" (decisión 2026-10-26) solo existe para quien de verdad
+  // tiene pacientes "propios" — CEO/DIRECTIVO/OPERATIVO no son psicólogos
+  // tratantes, psychologistId=su-id siempre les daría una tabla vacía.
+  const hasOwnPatients = userRole === 'ESPECIALISTA_B2B';
   const initialSearchState = readSearchState();
+  const [viewTab, setViewTab] = useState<ViewTab>(
+    initialSearchState.viewTab || (hasOwnPatients ? 'mine' : 'all')
+  );
   const [patients, setPatients] = useState<BackendPatient[]>([]);
   const [total, setTotal] = useState(0);
-  // Conteo de pacientes "Finalizado" — independiente de los filtros activos
-  // (siempre el total del tenant), para la tarjeta clicable que filtra por
-  // ese estado. Se refresca en los mismos puntos donde el estado de un
-  // paciente puede cambiar (crear/editar/reactivar/cambio inline).
-  const [finalizadoCount, setFinalizadoCount] = useState(0);
+  // Conteos de cada pestaña — independientes de los filtros manuales
+  // (convenio/psicólogo/búsqueda), para que el número junto a cada pestaña
+  // diga "cuántos habría" y no se recalcule contra el filtro ya aplicado.
+  // Se refrescan en los mismos puntos donde el estado de un paciente puede
+  // cambiar (crear/editar/reactivar/cambio inline).
+  const [tabCounts, setTabCounts] = useState({ mine: 0, all: 0, finalizado: 0 });
   const [page, setPage] = useState(initialSearchState.page);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState(initialSearchState.query);
   const [companyId, setCompanyId] = useState(initialSearchState.companyId);
+  // Filtro MANUAL de psicólogo/estado — solo aplica en la pestaña donde no
+  // está ya fijado por la pestaña misma (ver effectivePsychologistId/
+  // effectiveStatus más abajo): "Mis Pacientes" fija el psicólogo a uno
+  // mismo, "Finalizados" fija el estado.
   const [psychologistId, setPsychologistId] = useState(initialSearchState.psychologistId);
   const [status, setStatus] = useState(initialSearchState.status);
+  const [sortField, setSortField] = useState<SortField>(initialSearchState.sortField);
+  const [sortDir, setSortDir] = useState<SortDir>(initialSearchState.sortDir);
+  const [density, setDensity] = useState<'compact' | 'comfortable'>(readDensity());
   const { companies } = useCompanies();
   const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
+
+  const effectivePsychologistId = viewTab === 'mine' ? (userId || '') : psychologistId;
+  const effectiveStatus = viewTab === 'finalizado' ? 'finalizado' : status;
+
+  function changeDensity(next: 'compact' | 'comfortable') {
+    setDensity(next);
+    try { localStorage.setItem(DENSITY_KEY, next); } catch { /* localStorage puede no estar disponible (modo privado) */ }
+  }
+
+  function toggleSort(field: SortField) {
+    if (sortField === field) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDir('asc');
+    }
+  }
 
   const [createOpen, setCreateOpen] = useState(false);
   const [bulkImportOpen, setBulkImportOpen] = useState(false);
@@ -215,20 +288,39 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
     }
   }
 
-  const fetchFinalizadoCount = async () => {
+  const fetchTabCounts = async () => {
     if (!token) return;
     try {
-      const res = await apiFetch('/api/patients?status=finalizado&page=1&limit=1');
-      if (!res.ok) return;
-      const data = await res.json();
-      setFinalizadoCount(typeof data.total === 'number' ? data.total : 0);
+      const requests: Promise<void>[] = [];
+      let mine = tabCounts.mine;
+      let all = tabCounts.all;
+      let finalizado = tabCounts.finalizado;
+      requests.push(
+        apiFetch('/api/patients?page=1&limit=1')
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => { if (data) all = typeof data.total === 'number' ? data.total : 0; })
+      );
+      requests.push(
+        apiFetch('/api/patients?status=finalizado&page=1&limit=1')
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => { if (data) finalizado = typeof data.total === 'number' ? data.total : 0; })
+      );
+      if (hasOwnPatients && userId) {
+        requests.push(
+          apiFetch(`/api/patients?psychologistId=${userId}&page=1&limit=1`)
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => { if (data) mine = typeof data.total === 'number' ? data.total : 0; })
+        );
+      }
+      await Promise.all(requests);
+      setTabCounts({ mine, all, finalizado });
     } catch {
-      // Silencioso — la tarjeta simplemente no se actualiza en este ciclo
+      // Silencioso — los contadores simplemente no se actualizan en este ciclo
     }
   };
 
   useEffect(() => {
-    fetchFinalizadoCount();
+    fetchTabCounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -236,11 +328,11 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
     if (!token) { setLoading(false); return; }
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), sort: `${sortField}_${sortDir}` });
       if (query.trim()) params.set('q', query.trim());
       if (companyId) params.set('companyId', companyId);
-      if (psychologistId) params.set('psychologistId', psychologistId);
-      if (status) params.set('status', status);
+      if (effectivePsychologistId) params.set('psychologistId', effectivePsychologistId);
+      if (effectiveStatus) params.set('status', effectiveStatus);
       const res = await apiFetch(`/api/patients?${params.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -261,7 +353,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
     const handle = setTimeout(fetchPatients, query ? 300 : 0);
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, page, query, companyId, psychologistId, status]);
+  }, [token, page, query, companyId, effectivePsychologistId, effectiveStatus, sortField, sortDir]);
 
   // Se salta el primer disparo (montaje) para no pisar la página restaurada
   // de sessionStorage — solo debe volver a la página 1 cuando el USUARIO
@@ -274,16 +366,19 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
     }
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, companyId, psychologistId, status]);
+  }, [query, companyId, psychologistId, status, viewTab, sortField, sortDir]);
 
-  // Persiste búsqueda/filtros/página para que sobrevivan al desmontar este
-  // panel (ver comentario en readSearchState más arriba).
+  // Persiste búsqueda/filtros/página/pestaña/orden para que sobrevivan al
+  // desmontar este panel (ver comentario en readSearchState más arriba).
   useEffect(() => {
-    const state: PacientesSearchState = { query, companyId, psychologistId, status, page };
+    const state: PacientesSearchState = { query, companyId, psychologistId, status, page, viewTab, sortField, sortDir };
     sessionStorage.setItem(SEARCH_STATE_KEY, JSON.stringify(state));
-  }, [query, companyId, psychologistId, status, page]);
+  }, [query, companyId, psychologistId, status, page, viewTab, sortField, sortDir]);
 
-  const hasActiveFilters = !!(companyId || psychologistId || status);
+  // Ignora el filtro que la pestaña misma ya fija (oculto en el select) — si
+  // no, "Limpiar filtros" aparecía aunque no hubiera ningún select visible
+  // con un valor puesto.
+  const hasActiveFilters = !!(companyId || (viewTab !== 'mine' && psychologistId) || (viewTab !== 'finalizado' && status));
   function clearFilters() {
     setCompanyId('');
     setPsychologistId('');
@@ -320,7 +415,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
         throw new Error(errBody.error || `HTTP ${res.status}`);
       }
       showToast(`Estado de ${patient.firstName} ${patient.lastName} actualizado a "${PATIENT_STATUS_LABELS[newStatus] || newStatus}".`);
-      if (newStatus === 'finalizado' || previousStatus === 'finalizado') fetchFinalizadoCount();
+      if (newStatus === 'finalizado' || previousStatus === 'finalizado') fetchTabCounts();
     } catch (err: any) {
       setPatients((prev) => prev.map((p) => (p.id === patient.id ? { ...p, status: previousStatus } : p)));
       showToast(err.message || 'No se pudo actualizar el estado.');
@@ -329,79 +424,80 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
     }
   }
 
+  // Filas de ~52-56px en compacta (decisión 2026-10-26) vs. el alto cómodo
+  // de siempre — mismo valor aplicado a todas las celdas de una fila.
+  const rowPad = density === 'compact' ? 'py-2' : 'py-3.5';
+
   return (
     <div className="mx-auto max-w-7xl">
-      {/* Header — solo título, sin botones ni stat sueltos flotando arriba. */}
-      <div className="mb-5 text-left">
-        <h1 className="text-2xl font-bold tracking-tight text-charcoal-900">Pacientes</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Gestione el registro de pacientes, cree nuevas fichas y agende sus citas con el profesional a cargo.
-        </p>
-      </div>
-
-      {/* Filters + table — el stat de conteo y los botones de acción viven
-          adentro, en su propia fila, en vez de flotar sueltos arriba de la
-          caja. */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-              <Users className="h-4 w-4 text-toast-500" />
-              <span className="text-xs font-medium text-slate-500">
-                {query.trim() ? 'Resultados de la búsqueda:' : 'Pacientes registrados:'}
-              </span>
-              <span className="text-sm font-bold text-charcoal-900">{total.toLocaleString('es-CO')}</span>
-            </div>
+      {/* Header corto — título y acciones en la misma fila (decisión
+          2026-10-26, rediseño: antes los botones vivían sueltos adentro de
+          la caja, en su propia fila). */}
+      <div className="mb-5 flex flex-col gap-3 text-left sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-charcoal-900">Pacientes</h1>
+          <p className="mt-1 text-sm text-slate-500">Registro y seguimiento de pacientes.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={openScheduleGeneral}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 shadow-sm transition-colors hover:bg-toast-50 cursor-pointer"
+          >
+            <CalendarPlus className="h-4 w-4 text-toast-500" />
+            Agendar cita
+          </button>
+          {canBulkImport && (
             <button
-              type="button"
-              onClick={() => setStatus((s) => (s === 'finalizado' ? '' : 'finalizado'))}
-              title="Filtrar por pacientes finalizados"
-              className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 transition-colors cursor-pointer ${
-                status === 'finalizado'
-                  ? 'border-toast-400 bg-toast-50'
-                  : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
-              }`}
-            >
-              <CheckCircle2 className={`h-4 w-4 ${status === 'finalizado' ? 'text-toast-500' : 'text-slate-400'}`} />
-              <span className="text-xs font-medium text-slate-500">Finalizados:</span>
-              <span className="text-sm font-bold text-charcoal-900">{finalizadoCount.toLocaleString('es-CO')}</span>
-            </button>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={openScheduleGeneral}
+              onClick={() => setBulkImportOpen(true)}
               className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 shadow-sm transition-colors hover:bg-toast-50 cursor-pointer"
             >
-              <CalendarPlus className="h-4 w-4 text-toast-500" />
-              Agendar paciente
+              <Upload className="h-4 w-4 text-toast-500" />
+              Cargar masivo
             </button>
-            {canBulkImport && (
-              <button
-                onClick={() => setBulkImportOpen(true)}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-charcoal-900 shadow-sm transition-colors hover:bg-toast-50 cursor-pointer"
-              >
-                <Upload className="h-4 w-4 text-toast-500" />
-                Cargar masivo
-              </button>
+          )}
+          <button
+            onClick={() => setCreateOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-charcoal-800 cursor-pointer"
+          >
+            <UserPlus className="h-4 w-4" />
+            Nuevo paciente
+          </button>
+        </div>
+      </div>
+
+      {/* Fondo "hueso" (toast-50) — mismo tono institucional que ya se usa
+          en el resto de la app, en vez del blanco plano de antes. */}
+      <div className="rounded-2xl border border-slate-200 bg-toast-50 p-4 shadow-sm sm:p-6">
+        {/* Pestañas: Mis Pacientes (solo ESPECIALISTA_B2B) | Todos | Finalizados.
+            Reemplazan el stat suelto y la tarjeta clicable de "Finalizados"
+            de antes — el contador vive en la pestaña misma. */}
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200">
+          <div className="flex items-center gap-4">
+            {hasOwnPatients && (
+              <TabButton active={viewTab === 'mine'} label="Mis Pacientes" count={tabCounts.mine} onClick={() => setViewTab('mine')} />
             )}
-            <button
-              onClick={() => setCreateOpen(true)}
-              className="inline-flex items-center gap-2 rounded-lg bg-charcoal-900 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-charcoal-800 cursor-pointer"
-            >
-              <UserPlus className="h-4 w-4" />
-              Crear nuevo paciente
-            </button>
+            <TabButton active={viewTab === 'all'} label="Todos" count={tabCounts.all} onClick={() => setViewTab('all')} />
+            <TabButton active={viewTab === 'finalizado'} label="Finalizados" count={tabCounts.finalizado} onClick={() => setViewTab('finalizado')} />
           </div>
+          <select
+            value={density}
+            onChange={(e) => changeDensity(e.target.value as 'compact' | 'comfortable')}
+            title="Densidad de la tabla"
+            className="mb-2 rounded-lg border border-slate-200 bg-white py-1.5 pl-2.5 pr-7 text-xs font-medium text-slate-500 outline-none transition-colors focus:border-toast-400 focus:ring-2 focus:ring-toast-500/20"
+          >
+            <option value="compact">Vista compacta</option>
+            <option value="comfortable">Vista cómoda</option>
+          </select>
         </div>
 
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <div className="relative w-full sm:w-64">
+        <div className="mb-4 mt-4 flex flex-wrap items-center gap-2">
+          <div className="relative w-full flex-1 sm:min-w-[260px]">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Buscar por nombre, documento o número de historia clínica..."
-              className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-9 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+              placeholder="Buscar por nombre, documento o código..."
+              className="w-full rounded-lg border border-slate-200 bg-white py-2.5 pl-10 pr-9 text-sm text-charcoal-900 outline-none transition-colors placeholder:text-slate-400 focus:border-toast-400 focus:ring-2 focus:ring-toast-500/20"
             />
             {query && (
               <button
@@ -421,33 +517,40 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
           <select
             value={companyId}
             onChange={(e) => setCompanyId(e.target.value)}
-            className="rounded-lg border border-slate-200 bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
+            className="w-44 rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-8 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:ring-2 focus:ring-toast-500/20"
           >
             <option value="">Todos los convenios</option>
             {companies.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
-          <select
-            value={psychologistId}
-            onChange={(e) => setPsychologistId(e.target.value)}
-            className="rounded-lg border border-slate-200 bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
-          >
-            <option value="">Todos los psicólogos</option>
-            {specialists.map((s) => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
-          <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-            className="rounded-lg border border-slate-200 bg-slate-50 py-2 pl-3 pr-8 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20"
-          >
-            <option value="">Todos los estados</option>
-            {STATUS_OPTIONS.map((s) => (
-              <option key={s.value} value={s.value}>{s.label}</option>
-            ))}
-          </select>
+          {/* "Mis Pacientes" ya fija el psicólogo a uno mismo — mostrar este
+              filtro ahí sería redundante y confuso. */}
+          {viewTab !== 'mine' && (
+            <select
+              value={psychologistId}
+              onChange={(e) => setPsychologistId(e.target.value)}
+              className="w-44 rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-8 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:ring-2 focus:ring-toast-500/20"
+            >
+              <option value="">Todos los psicólogos</option>
+              {specialists.map((s) => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          )}
+          {/* "Finalizados" ya fija el estado — mismo motivo que arriba. */}
+          {viewTab !== 'finalizado' && (
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+              className="w-44 rounded-lg border border-slate-200 bg-white py-2 pl-3 pr-8 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:ring-2 focus:ring-toast-500/20"
+            >
+              <option value="">Todos los estados</option>
+              {STATUS_OPTIONS.map((s) => (
+                <option key={s.value} value={s.value}>{s.label}</option>
+              ))}
+            </select>
+          )}
           {hasActiveFilters && (
             <button
               type="button"
@@ -462,14 +565,14 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
 
         <div className="overflow-x-auto">
           <table className="w-full min-w-[820px] border-collapse text-sm">
-            <thead>
+            <thead className="sticky top-0 z-[5] bg-toast-50">
               <tr className="border-b border-slate-200 text-left text-[11px] uppercase tracking-wide text-slate-400">
-                <th className="px-3 py-2.5 font-semibold">Paciente</th>
-                <th className="px-3 py-2.5 font-semibold">Convenio</th>
-                <th className="px-3 py-2.5 font-semibold">Psicólogo asignado</th>
+                <SortableHeader label="Paciente" field="nombre" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
+                <SortableHeader label="Convenio" field="convenio" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
+                <SortableHeader label="Profesional asignado" field="profesional" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
                 <th className="px-3 py-2.5 font-semibold">Contacto</th>
-                <th className="px-3 py-2.5 font-semibold">Estado</th>
-                <th className="px-3 py-2.5 text-right font-semibold">Acción</th>
+                <SortableHeader label="Estado" field="estado" sortField={sortField} sortDir={sortDir} onSort={toggleSort} />
+                <th className="px-3 py-2.5 text-right font-semibold">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -482,69 +585,69 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
                 <tr
                   key={p.id}
                   onClick={onSelectPatient ? () => onSelectPatient(p.id) : undefined}
-                  className={`transition-colors hover:bg-toast-50/40 ${onSelectPatient ? 'cursor-pointer' : ''}`}
+                  className={`transition-colors hover:bg-toast-100/50 ${onSelectPatient ? 'cursor-pointer' : ''}`}
                 >
-                  <td className="whitespace-nowrap px-3 py-3">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-toast-100 text-xs font-bold text-toast-500">
-                        {`${p.firstName?.[0] || ''}${p.lastName?.[0] || ''}`.toUpperCase()}
-                      </div>
-                      <div>
-                        <span className="block font-semibold text-charcoal-900">
-                          {onSelectPatient ? (
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); onSelectPatient(p.id); }}
-                              className="hover:underline cursor-pointer"
-                            >
-                              {p.firstName} {p.lastName}
-                            </button>
-                          ) : (
-                            <>{p.firstName} {p.lastName}</>
-                          )}
-                        </span>
-                        {(p.recordNumber || p.documentId) && (
-                          <span className="block font-mono text-[10.5px] text-slate-400">
-                            {p.recordNumber}
-                            {p.recordNumber && p.documentId && ' · '}
-                            {p.documentType ? `${p.documentType} ` : ''}{p.documentId}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-3 py-3">
-                    <ConvenioTag name={p.corporateClient} />
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-3 text-slate-600">{p.psychologist?.name || '—'}</td>
-                  <td className="px-3 py-3 text-slate-500">
-                    <span className="block truncate">{p.email || '—'}</span>
-                    <span className="block text-xs">{p.phone || ''}</span>
-                  </td>
-                  <td className="px-3 py-3">
-                    {canManageStatus ? (
-                      <select
-                        value={p.status || 'activo'}
-                        onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => { e.stopPropagation(); handleInlineStatusChange(p, e.target.value); }}
-                        disabled={updatingStatusId === p.id}
-                        title="Cambiar estado del paciente"
-                        className="w-full max-w-[150px] rounded-lg border border-slate-200 bg-slate-50 py-1.5 pl-2.5 pr-6 text-xs font-medium text-charcoal-900 outline-none transition-colors focus:border-toast-400 focus:bg-white focus:ring-2 focus:ring-toast-500/20 disabled:cursor-wait disabled:opacity-50 cursor-pointer"
-                      >
-                        {STATUS_OPTIONS.map((s) => (
-                          <option key={s.value} value={s.value}>{s.label}</option>
-                        ))}
-                      </select>
-                    ) : (
-                      <span
-                        title="Cambiar el estado del paciente es una acción exclusiva del área administrativa."
-                        className="inline-flex w-full max-w-[150px] items-center rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-charcoal-900"
-                      >
-                        {PATIENT_STATUS_LABELS[p.status || 'activo'] || p.status}
+                  <td className={`whitespace-nowrap px-3 ${rowPad}`}>
+                    <span className="block font-semibold text-charcoal-900">
+                      {onSelectPatient ? (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); onSelectPatient(p.id); }}
+                          className="hover:underline cursor-pointer"
+                        >
+                          {p.firstName} {p.lastName}
+                        </button>
+                      ) : (
+                        <>{p.firstName} {p.lastName}</>
+                      )}
+                    </span>
+                    {(p.recordNumber || p.documentId) && (
+                      <span className="block font-mono text-[10.5px] text-slate-400">
+                        {p.recordNumber}
+                        {p.recordNumber && p.documentId && ' · '}
+                        {p.documentType ? `${p.documentType} ` : ''}{p.documentId}
                       </span>
                     )}
                   </td>
-                  <td className="px-3 py-3 text-right">
+                  <td className={`px-3 ${rowPad}`}>
+                    <ConvenioTag name={p.corporateClient} />
+                  </td>
+                  <td className={`whitespace-nowrap px-3 ${rowPad}`}>
+                    {p.psychologist?.name
+                      ? <span className="text-charcoal-900">{p.psychologist.name}</span>
+                      : <span className="italic text-slate-400">Por asignar</span>}
+                  </td>
+                  <td className={`px-3 ${rowPad} text-slate-500`}>
+                    <span className={`block truncate ${p.email ? '' : 'italic text-slate-400'}`}>{p.email || 'Sin correo'}</span>
+                    <span className="block text-xs">{p.phone || ''}</span>
+                  </td>
+                  <td className={`px-3 ${rowPad}`}>
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_COLORS[p.status || 'activo'] || 'bg-slate-300'}`} />
+                      {canManageStatus ? (
+                        <select
+                          value={p.status || 'activo'}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => { e.stopPropagation(); handleInlineStatusChange(p, e.target.value); }}
+                          disabled={updatingStatusId === p.id}
+                          title="Cambiar estado del paciente"
+                          className="cursor-pointer appearance-none bg-transparent text-xs font-medium text-charcoal-900 outline-none disabled:cursor-wait disabled:opacity-50"
+                        >
+                          {STATUS_OPTIONS.map((s) => (
+                            <option key={s.value} value={s.value}>{s.label}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <span
+                          title="Cambiar el estado del paciente es una acción exclusiva del área administrativa."
+                          className="text-xs font-medium text-charcoal-900"
+                        >
+                          {PATIENT_STATUS_LABELS[p.status || 'activo'] || p.status}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className={`px-3 ${rowPad} text-right`}>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -689,7 +792,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
         userRole={userRole}
         onCreated={(patient, wasReactivated, appInvitation) => {
           fetchPatients();
-          fetchFinalizadoCount();
+          fetchTabCounts();
           const baseMsg = wasReactivated
             ? `Paciente "${patient.firstName} ${patient.lastName}" reactivado correctamente.`
             : `Paciente "${patient.firstName} ${patient.lastName}" creado correctamente.`;
@@ -709,6 +812,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
         onSuccess={() => {
           setScheduleOpen(false);
           fetchPatients();
+          fetchTabCounts();
           showToast('Cita agendada correctamente.');
         }}
       />
@@ -719,7 +823,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
         onClose={() => setEditOpen(false)}
         onUpdated={(patient) => {
           fetchPatients();
-          fetchFinalizadoCount();
+          fetchTabCounts();
           showToast(`Paciente "${patient.firstName} ${patient.lastName}" actualizado correctamente.`);
         }}
       />
@@ -730,7 +834,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
         onDeleted={({ rowCounts, s3ObjectsDeleted, accountDeleted }) => {
           const totalRows = Object.values(rowCounts).reduce((sum, n) => sum + n, 0);
           fetchPatients();
-          fetchFinalizadoCount();
+          fetchTabCounts();
           showToast(
             `Paciente eliminado permanentemente (${totalRows} registro(s) relacionados${s3ObjectsDeleted ? `, ${s3ObjectsDeleted} archivo(s)` : ''}${accountDeleted ? ', cuenta de acceso incluida' : ''}).`
           );
@@ -756,13 +860,57 @@ export default function PacientesPanel({ token, onSelectPatient, userRole }: Pac
   );
 }
 
+// Texto sencillo, sin píldora — decisión 2026-10-26, rediseño: una columna
+// entera de píldoras de color competía visualmente con el punto de Estado,
+// que es el único color que debe llamar la atención en la fila.
 function ConvenioTag({ name }: { name?: string }) {
   const isParticular = !name || name === 'Particular';
   return (
-    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-      isParticular ? 'bg-slate-100 text-slate-500' : 'bg-toast-100 text-toast-500'
-    }`}>
+    <span className={isParticular ? 'text-slate-400' : 'text-charcoal-900'}>
       {isParticular ? 'Particular' : name}
     </span>
+  );
+}
+
+function TabButton({ active, label, count, onClick }: { active: boolean; label: string; count: number; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 px-1 pb-2.5 text-sm font-semibold transition-colors cursor-pointer ${
+        active
+          ? 'border-charcoal-900 text-charcoal-900'
+          : 'border-transparent text-slate-400 hover:text-charcoal-900'
+      }`}
+    >
+      {label}
+      <span className={`rounded-full px-1.5 py-0.5 text-xs font-bold ${active ? 'bg-toast-100 text-toast-600' : 'bg-slate-100 text-slate-400'}`}>
+        {count.toLocaleString('es-CO')}
+      </span>
+    </button>
+  );
+}
+
+function SortableHeader({
+  label, field, sortField, sortDir, onSort, align,
+}: {
+  label: string; field: SortField; sortField: SortField; sortDir: SortDir; onSort: (f: SortField) => void; align?: 'right';
+}) {
+  const active = sortField === field;
+  return (
+    <th className={`px-3 py-2.5 font-semibold ${align === 'right' ? 'text-right' : ''}`}>
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        className={`inline-flex items-center gap-1 cursor-pointer transition-colors hover:text-charcoal-900 ${align === 'right' ? 'flex-row-reverse' : ''}`}
+      >
+        {label}
+        {active ? (
+          sortDir === 'asc' ? <ArrowUp className="h-3 w-3 text-toast-500" /> : <ArrowDown className="h-3 w-3 text-toast-500" />
+        ) : (
+          <ArrowUpDown className="h-3 w-3 opacity-30" />
+        )}
+      </button>
+    </th>
   );
 }
