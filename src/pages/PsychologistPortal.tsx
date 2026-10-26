@@ -1156,6 +1156,7 @@ export default function PsychologistPortal({
           <PacientesPanel
             token={token}
             userRole={currentUser?.role}
+            userId={currentUser?.id}
             onSelectPatient={(id) => {
               window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
               setSelectedPatientId(id);
