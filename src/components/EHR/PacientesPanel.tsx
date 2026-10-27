@@ -15,7 +15,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, UserPlus, CalendarPlus, ChevronLeft, ChevronRight, ChevronDown, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, MoreVertical, History, Smartphone, Trash2, ArrowUp, ArrowDown, ArrowUpDown, Check } from 'lucide-react';
+import { Search, UserPlus, CalendarPlus, ChevronLeft, ChevronRight, ChevronDown, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, MoreVertical, History, Smartphone, Trash2, ArrowUp, ArrowDown, ArrowUpDown, Check, RefreshCw } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal, { PATIENT_STATUS_LABELS } from './CreatePatientModal';
 import BulkImportPatientsModal from './BulkImportPatientsModal';
@@ -165,6 +165,12 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   const [tabCounts, setTabCounts] = useState({ mine: 0, all: 0, finalizado: 0 });
   const [page, setPage] = useState(initialSearchState.page);
   const [loading, setLoading] = useState(true);
+  // Refresco forzado (botón manual o tras crear/editar/eliminar/agendar) —
+  // separado de `loading` a propósito: `loading` oculta las filas y muestra
+  // el esqueleto, lo cual está bien para la carga inicial pero se ve mal
+  // para un refresco — ahí se prefiere mantener la tabla visible y solo
+  // girar el ícono del botón mientras llega la respuesta.
+  const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState(initialSearchState.query);
   const [companyId, setCompanyId] = useState(initialSearchState.companyId);
   // Filtro MANUAL de psicólogo/estado — solo aplica en la pestaña donde no
@@ -388,6 +394,11 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
       setLoading(false);
       if (Date.now() - cached.ts < PATIENTS_LIST_CACHE_TTL_MS) return; // sigue fresco, nada que revalidar
       // vencido — se deja lo cacheado en pantalla y se revalida abajo en silencio.
+    } else if (opts?.force && patients.length > 0) {
+      // Refresco forzado con filas ya en pantalla (botón manual, o tras
+      // crear/editar/eliminar/agendar) — se mantienen visibles, solo gira
+      // el ícono del botón en vez de reemplazarlas por el esqueleto.
+      setRefreshing(true);
     } else {
       setLoading(true);
     }
@@ -411,6 +422,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
       // de vaciarlo por un error de red pasajero durante la revalidación.
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -585,6 +597,15 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
               </button>
             )}
           </div>
+          <button
+            type="button"
+            onClick={() => fetchPatients({ force: true })}
+            disabled={loading || refreshing}
+            title="Recargar — por si alguien más actualizó datos mientras tenías esta tabla abierta"
+            className="flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white p-2.5 text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+          </button>
           <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-400">
             <Filter className="h-3.5 w-3.5" />
             Filtros:
