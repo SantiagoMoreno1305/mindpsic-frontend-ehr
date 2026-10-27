@@ -12,7 +12,6 @@ import {
   initialClinicalFiles
 } from '../data/mockData';
 import { useAppointments } from '../hooks/useAppointments';
-import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
 import { useCompanies, type CompanyRecord, type CompanyLocation } from '../hooks/useCompanies';
 import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
@@ -36,8 +35,7 @@ import CalendarPanel, {
   CalendarFilterSelect,
 } from '../components/EHR/CalendarPanel';
 import { apiFetch, getApiBase } from '../lib/apiClient';
-import { 
-  Patient, 
+import {
   PsychologistPerformance,
   ClinicalFile,
   User
@@ -141,7 +139,6 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   // IMPORTANT: Hooks MUST be called unconditionally at the top level — Rules of Hooks
   const token = localStorage.getItem('mind_token');
   const { appointments: realAppointments, loading: apptsLoading, refetch: refetchAppointments } = useAppointments(token);
-  const { patients: realPatients, loading: patientsLoading } = usePatients(token);
   const { unreadCount: globalUnreadCount } = useGlobalChat();
 
   // ── Calendario general del tenant (Consola de Alertas) ─────────────────
@@ -1389,29 +1386,6 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   const [performances, setPerformances] = useState<PsychologistPerformance[]>([]);
   const [clinicalFiles, setClinicalFiles] = useState<ClinicalFile[]>(initialClinicalFiles);
 
-  // Mapeo dinámico de pacientes reales consumidos desde el custom hook
-  const patients: Patient[] = (realPatients || []).map((p) => {
-    const docIdNum = parseInt(p?.documentId?.replace(/\D/g, '') || '') || p?.id?.charCodeAt(0) || 0;
-    const agreements = ['Sura Medicina Prepagada', 'Colmédica Prepagada', 'MindHealth Global', 'Particular'];
-    const agreement = agreements[docIdNum % agreements.length];
-    const genders = ['Femenino', 'Masculino', 'No especificado'];
-    const gender = genders[docIdNum % genders.length];
-    const age = 20 + (docIdNum % 50);
-
-    return {
-      id: p?.documentId || p?.id || '',
-      name: `${p?.firstName || ''} ${p?.lastName || ''}`.trim() || 'Desconocido',
-      gender: gender,
-      age: age,
-      email: p?.email || 'contacto@mindpsic.com',
-      phone: p?.phone || '300-000-0000',
-      status: 'Activo',
-      agreement: agreement,
-      progressNotesCount: (docIdNum % 5) + 1,
-      lastSessionDate: new Date(Date.now() - (docIdNum % 10) * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-    };
-  });
-
   // Filter agreements (Convenios) state
   const [selectedAgreement, setSelectedAgreement] = useState<string>('todos');
 
@@ -1640,7 +1614,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
 
   // Estado de carga / guardia defensiva
-  if (authLoading || patientsLoading || apptsLoading) {
+  if (authLoading || apptsLoading) {
     return (
       <div className="flex items-center justify-center h-screen bg-slate-50">
         <p className="text-lg text-stone-600 font-semibold animate-pulse">
@@ -2820,7 +2794,6 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
               <ClinicalRecordsPanel
                 token={token}
                 userRole={currentUser?.role}
-                patients={realPatients}
                 onSelectPatient={(id) => { setSelectedPatientId(id); setClinicalHistoryReturnTab(null); }}
               />
             ) : (

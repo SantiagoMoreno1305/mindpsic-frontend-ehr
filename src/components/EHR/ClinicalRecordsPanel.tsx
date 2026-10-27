@@ -13,7 +13,10 @@
  *                 expediente (sigue siendo ClinicalRecordsList por ahora —
  *                 su rediseño según la especificación completa, con
  *                 columnas de profesional/estado del proceso/documentación
- *                 pendiente, queda para una siguiente tanda).
+ *                 pendiente, queda para una siguiente tanda). Pagina y
+ *                 busca del lado del servidor (decisión 2026-10-27) — antes
+ *                 recibía el listado completo del tenant vía usePatients,
+ *                 sin paginar.
  *
  * Ambas pestañas llevan al mismo ClinicalPatientChart de siempre — este
  * componente no toca la ficha individual.
@@ -21,16 +24,6 @@
 import { useState } from 'react';
 import ClinicalRecordsList from './ClinicalRecordsList';
 import PendingDocumentationTab from './PendingDocumentationTab';
-
-interface RealPatient {
-  id: string;
-  firstName: string;
-  lastName: string;
-  documentId: string;
-  email?: string | null;
-  phone?: string | null;
-  recordNumber?: string | null;
-}
 
 type HistoriaTab = 'pendientes' | 'expedientes';
 
@@ -48,10 +41,9 @@ function TabButton({ active, label, onClick }: { active: boolean; label: string;
   );
 }
 
-export default function ClinicalRecordsPanel({ token, userRole, patients, onSelectPatient }: {
+export default function ClinicalRecordsPanel({ token, userRole, onSelectPatient }: {
   token: string | null;
   userRole?: string;
-  patients: RealPatient[];
   onSelectPatient: (patientId: string) => void;
 }) {
   const [tab, setTab] = useState<HistoriaTab>('pendientes');
@@ -82,7 +74,7 @@ export default function ClinicalRecordsPanel({ token, userRole, patients, onSele
         <PendingDocumentationTab token={token} userRole={userRole} onSelectPatient={onSelectPatient} />
       )}
       {tab === 'expedientes' && (
-        <ClinicalRecordsList patients={patients} onSelect={onSelectPatient} />
+        <ClinicalRecordsList onSelect={onSelectPatient} />
       )}
     </div>
   );
