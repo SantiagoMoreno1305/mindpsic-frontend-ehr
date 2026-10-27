@@ -28,6 +28,7 @@ import ForgotPasswordModal from '../components/ForgotPasswordModal';
 import { getApiBase } from '../lib/apiClient';
 import { invalidateCompaniesCache } from '../hooks/useCompanies';
 import { invalidateSelectoresCache } from '../components/DelegatedAppointmentModal';
+import { invalidatePatientsListCache } from '../components/EHR/PacientesPanel';
 
 // ---------------------------------------------------------------------------
 // Configuración del backend
@@ -118,6 +119,7 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
     // caché a nivel de módulo, no se limpian solos con un login nuevo.
     invalidateCompaniesCache();
     invalidateSelectoresCache();
+    invalidatePatientsListCache();
 
     // ── Detección de Primer Ingreso (Contraseña Temporal) ────────────────
     // El backend genera contraseñas temporales con el patrón:
