@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
-  ArrowLeft, Phone, Mail, CalendarClock, ClipboardList,
+  ArrowLeft, CalendarClock, ClipboardList,
   Plus, Trash2, Loader2, Pencil, X, AlertTriangle,
   TrendingUp, TrendingDown, Minus, ChevronDown, Lock, KeyRound,
   Check, History, Clock, ChevronRight, ShieldCheck,
@@ -164,11 +164,21 @@ interface RiskEvent {
   createdAt: string;
 }
 
+interface TreatmentGoal {
+  id: string;
+  text: string;
+  progress: number;
+  createdAt: string;
+}
+
 interface ChartResponse {
   patient: PatientChart;
   ripsDiagnosis: RipsDiagnosis | null;
   assessments: Assessment[];
   riskEvents: RiskEvent[];
+  // El backend ya lo manda (ver getPatientChart) — el frontend no lo
+  // capturaba y se perdía en silencio (decisión 2026-10-27, Resumen).
+  treatmentGoals: TreatmentGoal[];
   firstSession: string | null;
   lastSession: string | null;
   nextAppointment: string | null;
@@ -369,7 +379,7 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
     );
   }
 
-  const { patient, ripsDiagnosis, assessments, riskEvents, firstSession, lastSession, nextAppointment, initialAssessment, initialAssessmentGate } = data;
+  const { patient, ripsDiagnosis, assessments, riskEvents, treatmentGoals, firstSession, lastSession, nextAppointment, initialAssessment, initialAssessmentGate } = data;
   const age = calcAge(patient.birthDate);
   const initials = `${patient.firstName?.[0] ?? ''}${patient.lastName?.[0] ?? ''}`.toUpperCase();
 
@@ -505,9 +515,14 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
             ripsDiagnosis={ripsDiagnosis}
             firstSession={firstSession}
             lastSession={lastSession}
+            nextAppointment={nextAppointment}
             initialAssessment={initialAssessment}
+            treatmentGoals={treatmentGoals || []}
+            assessments={assessments}
+            riskEvents={riskEvents || []}
             onRipsDiagnosisChange={(next) => setData((prev) => (prev ? { ...prev, ripsDiagnosis: next } : prev))}
             patientId={patientId}
+            onNavigateTab={setTab}
           />
         )}
         {tab === 'datos_generales' && <DatosGeneralesTab initialAssessment={initialAssessment} patient={patient} onSaveContact={handleSaveContact} />}
@@ -738,9 +753,9 @@ function StatusBadge({ value, onChange }: { value: string; onChange: (v: string)
 }
 
 const RISK_OPTIONS = [
-  { value: 'bajo', label: 'Riesgo bajo', dot: 'bg-emerald-500', text: 'text-emerald-600' },
-  { value: 'medio', label: 'Riesgo medio', dot: 'bg-amber-500', text: 'text-amber-600' },
-  { value: 'alto', label: 'Riesgo alto', dot: 'bg-rose-500', text: 'text-rose-600' },
+  { value: 'bajo', label: 'Riesgo bajo', dot: 'bg-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50' },
+  { value: 'medio', label: 'Riesgo medio', dot: 'bg-amber-500', text: 'text-amber-600', bg: 'bg-amber-50' },
+  { value: 'alto', label: 'Riesgo alto', dot: 'bg-rose-500', text: 'text-rose-600', bg: 'bg-rose-50' },
 ];
 
 // Contextualiza el riesgo (decisión 2026-10-26): antes "Riesgo bajo" no daba
@@ -806,18 +821,44 @@ function RiskBadge({ value, onChange, riskEvents }: { value: string; onChange: (
   );
 }
 
+interface ClinicalHistoryListItem {
+  id: string;
+  date: string;
+  sessionDate: string | null;
+  status: string; // DRAFT | SIGNED
+  sessionType: string | null;
+}
+
 function ResumenTab({
-  patient, ripsDiagnosis, firstSession, lastSession, initialAssessment, onRipsDiagnosisChange, patientId,
+  patient, ripsDiagnosis, firstSession: _firstSession, lastSession, nextAppointment, initialAssessment,
+  treatmentGoals, assessments, riskEvents, onRipsDiagnosisChange, patientId, onNavigateTab,
 }: {
   patient: PatientChart; ripsDiagnosis: RipsDiagnosis | null; firstSession: string | null; lastSession: string | null;
+  nextAppointment: string | null;
   initialAssessment: InitialAssessmentData | null;
+  treatmentGoals: TreatmentGoal[];
+  assessments: Assessment[];
+  riskEvents: RiskEvent[];
   onRipsDiagnosisChange: (next: RipsDiagnosis | null) => void;
   patientId: string;
+  onNavigateTab: (tab: Tab) => void;
 }) {
   const [query, setQuery] = useState('');
   const [options, setOptions] = useState<Cie10Option[]>([]);
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Reusa el mismo endpoint que ya consume ClinicalHistoryEditor (pestaña
+  // "Evoluciones") en vez de duplicar la consulta en el backend.
+  const [recentHistories, setRecentHistories] = useState<ClinicalHistoryListItem[]>([]);
+  const [loadingHistories, setLoadingHistories] = useState(true);
+
+  useEffect(() => {
+    fetch(`${apiBase()}/api/clinical-history/${patientId}`, { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => setRecentHistories(Array.isArray(d.histories) ? d.histories.slice(0, 4) : []))
+      .catch(() => { /* silencioso — la sección simplemente queda vacía */ })
+      .finally(() => setLoadingHistories(false));
+  }, [patientId]);
 
   useEffect(() => {
     if (query.trim().length < 2) { setOptions([]); return; }
@@ -858,38 +899,181 @@ function ResumenTab({
 
   const now = new Date();
   const currentPeriodLabel = `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+  const latestRiskEvent = riskEvents.length > 0
+    ? [...riskEvents].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
+    : null;
+  const draftCount = recentHistories.filter((h) => h.status === 'DRAFT').length;
+  const riskOption = RISK_OPTIONS.find((o) => o.value === patient.riskLevel) || RISK_OPTIONS[0];
 
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      <Card>
-        <SectionTitle>Motivo de consulta</SectionTitle>
-        <p className="text-sm leading-relaxed text-slate-900">
-          {initialAssessment?.motivoConsulta || 'No se registró un motivo de consulta en la Valoración Individual.'}
-        </p>
-        <div className="mt-4 grid grid-cols-2 gap-4 border-t border-slate-200 pt-4">
-          <div>
-            <p className="text-xs text-slate-400">Primera sesión</p>
-            <p className="text-sm font-medium text-slate-900">{formatDate(firstSession)}</p>
+    <div className="grid gap-4 lg:grid-cols-3">
+      {/* ── Columna principal ── */}
+      <div className="flex flex-col gap-4 lg:col-span-2">
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <SectionTitle>Resumen clínico</SectionTitle>
+            <button type="button" onClick={() => onNavigateTab('evaluacion_inicial')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+              Ver evaluación inicial →
+            </button>
           </div>
-          <div>
-            <p className="text-xs text-slate-400">Última sesión</p>
-            <p className="text-sm font-medium text-slate-900">{formatDate(lastSession)}</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <p className="text-xs text-slate-400">Motivo de consulta</p>
+              <p className="mt-0.5 text-sm leading-relaxed text-slate-900">
+                {initialAssessment?.motivoConsulta || 'No se registró un motivo de consulta en la Valoración Individual.'}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-400">Objetivos terapéuticos</p>
+              {treatmentGoals.length > 0 ? (
+                <ul className="mt-0.5 flex flex-col gap-1">
+                  {treatmentGoals.slice(0, 3).map((g) => (
+                    <li key={g.id} className="text-sm leading-relaxed text-slate-900">· {g.text}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-0.5 text-sm text-slate-400">Sin objetivos registrados todavía.</p>
+              )}
+            </div>
           </div>
-        </div>
-      </Card>
-      <Card>
-        <SectionTitle>Contacto</SectionTitle>
-        <div className="flex flex-col gap-2 text-sm text-slate-900">
-          <span className="flex items-center gap-2">
-            <Phone className="h-4 w-4 text-slate-400" />
-            {patient.phone || '—'}
+        </Card>
+
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <SectionTitle>Últimas atenciones</SectionTitle>
+            <button type="button" onClick={() => onNavigateTab('evoluciones')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+              Ver todas →
+            </button>
+          </div>
+          {loadingHistories ? (
+            <p className="py-4 text-center text-sm text-slate-400">Cargando…</p>
+          ) : recentHistories.length === 0 ? (
+            <p className="py-4 text-center text-sm text-slate-400">Sin evoluciones registradas todavía.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-400">
+                  <th className="py-2 pr-3 font-semibold">Atención</th>
+                  <th className="py-2 pr-3 font-semibold">Registro</th>
+                  <th className="py-2 pr-3 font-semibold">Estado</th>
+                  <th className="py-2 text-right font-semibold">Acción</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {recentHistories.map((h) => (
+                  <tr key={h.id}>
+                    <td className="py-2 pr-3 text-slate-900">{formatDate(h.sessionDate || h.date)}</td>
+                    <td className="py-2 pr-3 text-slate-500">{h.sessionType || 'Evolución'}</td>
+                    <td className="py-2 pr-3">
+                      <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${h.status === 'SIGNED' ? 'text-emerald-600' : 'text-amber-600'}`}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${h.status === 'SIGNED' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                        {h.status === 'SIGNED' ? 'Firmada' : 'Borrador'}
+                      </span>
+                    </td>
+                    <td className="py-2 text-right">
+                      <button type="button" onClick={() => onNavigateTab('evoluciones')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+                        {h.status === 'DRAFT' ? 'Continuar' : 'Ver'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <SectionTitle>Evaluaciones recientes</SectionTitle>
+            <button type="button" onClick={() => onNavigateTab('evaluaciones')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+              Ver todas →
+            </button>
+          </div>
+          {assessments.length === 0 ? (
+            <p className="py-4 text-center text-sm text-slate-400">Sin evaluaciones registradas todavía.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-400">
+                  <th className="py-2 pr-3 font-semibold">Prueba</th>
+                  <th className="py-2 pr-3 font-semibold">Fecha</th>
+                  <th className="py-2 pr-3 font-semibold">Estado</th>
+                  <th className="py-2 text-right font-semibold">Acción</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {assessments.slice(0, 4).map((a) => (
+                  <tr key={a.id}>
+                    <td className="py-2 pr-3 text-slate-900">{a.name}</td>
+                    <td className="py-2 pr-3 text-slate-500">{formatDate(a.date)}</td>
+                    <td className="py-2 pr-3">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        Completada
+                      </span>
+                    </td>
+                    <td className="py-2 text-right">
+                      <button type="button" onClick={() => onNavigateTab('evaluaciones')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+                        Ver resultado
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      </div>
+
+      {/* ── Columna de contexto ── */}
+      <div className="flex flex-col gap-4">
+        {nextAppointment && (
+          <Card>
+            <SectionTitle>Próxima cita</SectionTitle>
+            <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+              <CalendarClock className="h-4 w-4 text-toast-500" />
+              {formatDateTime(nextAppointment)}
+            </p>
+          </Card>
+        )}
+
+        <Card>
+          <SectionTitle>Riesgo clínico</SectionTitle>
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${riskOption.text} ${riskOption.bg}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${riskOption.dot}`} />
+            {riskOption.label}
           </span>
-          <span className="flex items-center gap-2">
-            <Mail className="h-4 w-4 text-slate-400" />
-            {patient.email || '—'}
-          </span>
-        </div>
-        <div className="mt-4 border-t border-slate-200 pt-4">
+          {latestRiskEvent ? (
+            <>
+              <p className="mt-2 text-xs text-slate-500">Valorado el {formatDate(latestRiskEvent.createdAt)}</p>
+              <button type="button" onClick={() => onNavigateTab('evaluaciones')} className="mt-1 text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+                Ver valoración →
+              </button>
+            </>
+          ) : (
+            <p className="mt-2 text-xs text-slate-400">Sin valoración registrada.</p>
+          )}
+        </Card>
+
+        <Card>
+          <SectionTitle>Documentación</SectionTitle>
+          <div className="flex flex-col gap-2">
+            {draftCount > 0 && (
+              <button type="button" onClick={() => onNavigateTab('evoluciones')} className="flex items-center gap-2 text-left text-sm text-amber-600 hover:underline cursor-pointer">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+                {draftCount} evolución(es) en borrador
+              </button>
+            )}
+            <button type="button" onClick={() => onNavigateTab('documentos')} className="flex items-center gap-2 text-left text-sm text-slate-500 transition-colors hover:text-toast-500 hover:underline cursor-pointer">
+              <ClipboardList className="h-3.5 w-3.5 shrink-0" />
+              Ver documentos →
+            </button>
+          </div>
+        </Card>
+
+        {/* RIPS — mismo lugar de siempre (obligatorio al cierre), reubicado
+            en el panel de contexto en vez de competir con el resumen clínico. */}
+        <Card>
           <SectionTitle>Diagnóstico RIPS (CIE-10) · {currentPeriodLabel}</SectionTitle>
           <p className="mb-2 text-[11px] text-slate-400">
             Código oficial que se reporta al RIPS de este mes — obligatorio al cierre.
@@ -924,8 +1108,8 @@ function ResumenTab({
               </ul>
             )}
           </div>
-        </div>
-      </Card>
+        </Card>
+      </div>
     </div>
   );
 }
