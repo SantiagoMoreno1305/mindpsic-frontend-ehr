@@ -171,6 +171,12 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   // para un refresco — ahí se prefiere mantener la tabla visible y solo
   // girar el ícono del botón mientras llega la respuesta.
   const [refreshing, setRefreshing] = useState(false);
+  // Separado de `refreshing` — el botón manual necesita su propia señal para
+  // garantizar un giro mínimo visible (si la red responde en 80ms el ícono
+  // ni se nota que giró) y para disparar el toast de confirmación solo en
+  // este caso, no en los refrescos automáticos tras crear/editar/etc, que ya
+  // muestran su propio toast de éxito.
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [query, setQuery] = useState(initialSearchState.query);
   const [companyId, setCompanyId] = useState(initialSearchState.companyId);
   // Filtro MANUAL de psicólogo/estado — solo aplica en la pestaña donde no
@@ -278,6 +284,19 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   function showToast(msg: string) {
     setToast(msg);
     setTimeout(() => setToast(null), 3500);
+  }
+
+  async function handleManualRefresh() {
+    setManualRefreshing(true);
+    const start = Date.now();
+    await fetchPatients({ force: true });
+    // Duración mínima del giro — sin esto, en una red rápida el ícono apenas
+    // parpadea y el clic se siente como si no hubiera hecho nada.
+    const MIN_SPIN_MS = 500;
+    const elapsed = Date.now() - start;
+    if (elapsed < MIN_SPIN_MS) await new Promise((r) => setTimeout(r, MIN_SPIN_MS - elapsed));
+    setManualRefreshing(false);
+    showToast('Lista de pacientes actualizada.');
   }
 
   async function handleSendLinea247Access(patient: BackendPatient) {
@@ -599,12 +618,12 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
           </div>
           <button
             type="button"
-            onClick={() => fetchPatients({ force: true })}
-            disabled={loading || refreshing}
+            onClick={handleManualRefresh}
+            disabled={loading || refreshing || manualRefreshing}
             title="Recargar — por si alguien más actualizó datos mientras tenías esta tabla abierta"
-            className="flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white p-2.5 text-slate-500 transition-colors hover:bg-slate-50 hover:text-charcoal-900 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white p-2.5 text-slate-500 transition-all duration-150 hover:bg-slate-50 hover:text-charcoal-900 active:scale-90 disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100"
           >
-            <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`h-4 w-4 ${(refreshing || manualRefreshing) ? 'animate-spin' : ''}`} />
           </button>
           <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-400">
             <Filter className="h-3.5 w-3.5" />
