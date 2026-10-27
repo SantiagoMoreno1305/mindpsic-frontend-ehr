@@ -11,7 +11,7 @@
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
 import MiPerfilPage from '../components/MiPerfilPage';
-import ClinicalRecordsList from '../components/EHR/ClinicalRecordsList';
+import ClinicalRecordsPanel from '../components/EHR/ClinicalRecordsPanel';
 import { useState, FormEvent, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppointments } from '../hooks/useAppointments';
@@ -1186,9 +1186,11 @@ export default function PsychologistPortal({
         {activeTab === 'clinical_history' && (
           <div className="max-w-7xl mx-auto space-y-6">
             {!selectedPatientId ? (
-              <ClinicalRecordsList
+              <ClinicalRecordsPanel
+                token={token}
+                userRole={currentUser?.role}
                 patients={realPatients}
-                onSelect={(id) => { setSelectedPatientId(id); setClinicalHistoryReturnTab(null); }}
+                onSelectPatient={(id) => { setSelectedPatientId(id); setClinicalHistoryReturnTab(null); }}
               />
             ) : (
               <ClinicalPatientChart
