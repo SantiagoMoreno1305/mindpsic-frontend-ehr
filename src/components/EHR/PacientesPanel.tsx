@@ -111,6 +111,32 @@ function readDensity(): 'compact' | 'comfortable' {
   }
 }
 
+// Caché en memoria de la última página de resultados, por combinación
+// exacta de filtros+orden+página (decisión 2026-10-27) — este panel se
+// desmonta por completo al entrar a la ficha de un paciente o al cambiar de
+// pestaña del portal, y se remonta desde cero al volver; sin esto, cada
+// regreso repetía el mismo fetch que ya se había hecho segundos antes.
+// Vive a nivel de módulo (mismo patrón que selectoresCache en
+// DelegatedAppointmentModal.tsx), sobrevive al remount de React. TTL corto
+// (30s, no los 5 min de selectoresCache) porque esta lista cambia seguido
+// (altas, cambios de estado) — se prioriza que el regreso sea instantáneo,
+// pero revalidando en segundo plano apenas se muestra lo cacheado.
+const PATIENTS_LIST_CACHE_TTL_MS = 30 * 1000;
+interface PatientsListCacheEntry {
+  patients: BackendPatient[];
+  total: number;
+  ts: number;
+}
+const patientsListCache = new Map<string, PatientsListCacheEntry>();
+
+// Mismo criterio que invalidateSelectoresCache/invalidateCompaniesCache (ver
+// App.tsx/Login.tsx) — se llama en logout/cambio de sesión para que una
+// cuenta de OTRO tenant en la misma pestaña no siga viendo pacientes del
+// tenant anterior.
+export function invalidatePatientsListCache(): void {
+  patientsListCache.clear();
+}
+
 export default function PacientesPanel({ token, onSelectPatient, userRole, userId }: PacientesPanelProps) {
   const canBulkImport = userRole === 'CEO' || userRole === 'DIRECTIVO';
   // Cambiar (o incluso ver la lista completa de) el estado del paciente es
@@ -342,24 +368,47 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const fetchPatients = async () => {
+  // `force` se usa tras crear/editar/eliminar/agendar — en esos casos el
+  // caché de este mismo filtro+página puede seguir "fresco" pero ya no
+  // refleja el cambio que el usuario acaba de hacer, así que debe ignorarse.
+  const fetchPatients = async (opts?: { force?: boolean }) => {
     if (!token) { setLoading(false); return; }
-    setLoading(true);
+    const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), sort: `${sortField}_${sortDir}` });
+    if (query.trim()) params.set('q', query.trim());
+    if (companyId) params.set('companyId', companyId);
+    if (effectivePsychologistId) params.set('psychologistId', effectivePsychologistId);
+    if (effectiveStatus) params.set('status', effectiveStatus);
+    const cacheKey = params.toString();
+
+    const cached = !opts?.force ? patientsListCache.get(cacheKey) : undefined;
+    if (cached) {
+      // Instantáneo: se pinta lo que ya había, sin spinner.
+      setPatients(cached.patients);
+      setTotal(cached.total);
+      setLoading(false);
+      if (Date.now() - cached.ts < PATIENTS_LIST_CACHE_TTL_MS) return; // sigue fresco, nada que revalidar
+      // vencido — se deja lo cacheado en pantalla y se revalida abajo en silencio.
+    } else {
+      setLoading(true);
+    }
+
     try {
-      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), sort: `${sortField}_${sortDir}` });
-      if (query.trim()) params.set('q', query.trim());
-      if (companyId) params.set('companyId', companyId);
-      if (effectivePsychologistId) params.set('psychologistId', effectivePsychologistId);
-      if (effectiveStatus) params.set('status', effectiveStatus);
-      const res = await apiFetch(`/api/patients?${params.toString()}`);
+      const res = await apiFetch(`/api/patients?${cacheKey}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setPatients(Array.isArray(data.patients) ? data.patients : []);
-      setTotal(typeof data.total === 'number' ? data.total : 0);
+      const nextPatients: BackendPatient[] = Array.isArray(data.patients) ? data.patients : [];
+      const nextTotal = typeof data.total === 'number' ? data.total : 0;
+      patientsListCache.set(cacheKey, { patients: nextPatients, total: nextTotal, ts: Date.now() });
+      setPatients(nextPatients);
+      setTotal(nextTotal);
     } catch (err) {
       console.error('[PacientesPanel] Error cargando pacientes:', err);
-      setPatients([]);
-      setTotal(0);
+      if (!cached) {
+        setPatients([]);
+        setTotal(0);
+      }
+      // Si había algo cacheado (aunque vencido), se deja en pantalla en vez
+      // de vaciarlo por un error de red pasajero durante la revalidación.
     } finally {
       setLoading(false);
     }
@@ -433,6 +482,11 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
         throw new Error(errBody.error || `HTTP ${res.status}`);
       }
       showToast(`Estado de ${patient.firstName} ${patient.lastName} actualizado a "${PATIENT_STATUS_LABELS[newStatus] || newStatus}".`);
+      // Update optimista vía setPatients, no pasa por fetchPatients — sin
+      // esto, el caché de esta combinación de filtros se quedaba con el
+      // estado viejo y lo volvía a mostrar si regresabas a esta pantalla
+      // dentro de los 30s del TTL.
+      patientsListCache.clear();
       if (newStatus === 'finalizado' || previousStatus === 'finalizado') fetchTabCounts();
     } catch (err: any) {
       setPatients((prev) => prev.map((p) => (p.id === patient.id ? { ...p, status: previousStatus } : p)));
@@ -851,7 +905,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
         onClose={() => setCreateOpen(false)}
         userRole={userRole}
         onCreated={(patient, wasReactivated, appInvitation) => {
-          fetchPatients();
+          fetchPatients({ force: true });
           fetchTabCounts();
           const baseMsg = wasReactivated
             ? `Paciente "${patient.firstName} ${patient.lastName}" reactivado correctamente.`
@@ -871,7 +925,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
         initialData={scheduleForPatient ? { patient: scheduleForPatient, patientId: scheduleForPatient.id } : undefined}
         onSuccess={() => {
           setScheduleOpen(false);
-          fetchPatients();
+          fetchPatients({ force: true });
           fetchTabCounts();
           showToast('Cita agendada correctamente.');
         }}
@@ -882,7 +936,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
         userRole={userRole}
         onClose={() => setEditOpen(false)}
         onUpdated={(patient) => {
-          fetchPatients();
+          fetchPatients({ force: true });
           fetchTabCounts();
           showToast(`Paciente "${patient.firstName} ${patient.lastName}" actualizado correctamente.`);
         }}
@@ -893,7 +947,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
         patient={deleteTarget}
         onDeleted={({ rowCounts, s3ObjectsDeleted, accountDeleted }) => {
           const totalRows = Object.values(rowCounts).reduce((sum, n) => sum + n, 0);
-          fetchPatients();
+          fetchPatients({ force: true });
           fetchTabCounts();
           showToast(
             `Paciente eliminado permanentemente (${totalRows} registro(s) relacionados${s3ObjectsDeleted ? `, ${s3ObjectsDeleted} archivo(s)` : ''}${accountDeleted ? ', cuenta de acceso incluida' : ''}).`
@@ -911,7 +965,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
           isOpen={bulkImportOpen}
           onClose={() => setBulkImportOpen(false)}
           onImported={(count) => {
-            fetchPatients();
+            fetchPatients({ force: true });
             showToast(`${count} paciente(s) importado(s) correctamente.`);
           }}
         />
