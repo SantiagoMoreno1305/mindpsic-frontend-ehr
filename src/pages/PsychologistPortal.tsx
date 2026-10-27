@@ -11,7 +11,7 @@
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
 import MiPerfilPage from '../components/MiPerfilPage';
-import ClinicalRecordsList from '../components/EHR/ClinicalRecordsList';
+import ClinicalRecordsPanel from '../components/EHR/ClinicalRecordsPanel';
 import { useState, FormEvent, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppointments } from '../hooks/useAppointments';
@@ -65,7 +65,6 @@ import {
   Sparkles,
   Key,
   Activity,
-  Award,
   MessageSquare,
   Beaker,
   TrendingUp,
@@ -74,15 +73,14 @@ import {
   CheckCircle2,
   XCircle,
   RotateCcw,
-  Shield,
-  ChevronDown,
-  Scale,
   X,
   Users,
   Stethoscope,
   BarChart3,
   LayoutGrid,
   UserRound,
+  ShieldCheck,
+  Server,
 } from 'lucide-react';
 import CalendarPanel, {
   normalizeStatus,
@@ -92,7 +90,6 @@ import CalendarPanel, {
   CalendarFilterGroup,
   CalendarFilterSelect,
 } from '../components/EHR/CalendarPanel';
-import { legalDisclosureSpanish } from '../data/mockData';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
 import PacientesPanel from '../components/EHR/PacientesPanel';
 import AssessmentsPanel from '../components/EHR/AssessmentsPanel';
@@ -581,8 +578,6 @@ export default function PsychologistPortal({
   })();
 
   const [showNewAppointmentModal, setShowNewAppointmentModal] = useState(false);
-  const [showSecurityInfo, setShowSecurityInfo] = useState(false);
-  const [showDataPolicyModal, setShowDataPolicyModal] = useState(false);
 
   const [reprogramaciones, setReprogramaciones] = useState([
     { id: 'rep_1', patientName: 'Valeria Sotomayor', originalTime: 'Mar 15:00', requestedTime: 'Mar 17:30', reason: 'Cruce imprevisto con horario laboral unificado' },
@@ -911,122 +906,41 @@ export default function PsychologistPortal({
             </>
           )}
 
+        </div>
+
+        {/* Pie del menú — mismo diseño compacto que AdminPortal (decisión
+            2026-10-27): consolida "Mi perfil" acá (ya no vive duplicado en
+            la lista de arriba) y quita el panel "Infraestructura Segura"
+            (Ley 1581/ISO 27001/HIPAA/Tratamiento de Datos), que AdminPortal
+            tampoco tiene — paridad real, no solo visual. */}
+        <div className="p-4 border-t border-charcoal-800 hidden md:block bg-charcoal-950/40 text-left">
+          <div className="flex items-center space-x-1.5 text-toast-450 mb-2">
+            <ShieldCheck className="w-3.5 h-3.5 text-toast-400" />
+            <span className="text-[10px] font-bold uppercase tracking-wider text-toast-300">
+              Sesión activa
+            </span>
+          </div>
           <button
             onClick={() => goToTab('mi_perfil')}
             id="tab-psych-mi-perfil"
-            className={`w-full flex items-center p-3 px-4 transition-all duration-150 relative cursor-pointer ${
-              activeTab === 'mi_perfil' ? 'bg-charcoal-900 text-white font-semibold' : 'hover:bg-charcoal-900 hover:text-white'
+            className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs transition-colors cursor-pointer ${
+              activeTab === 'mi_perfil' ? 'bg-white/10 text-white font-semibold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
             }`}
           >
-            <UserRound className="w-5 h-5 shrink-0" />
-            <span className="ml-3 text-xs hidden md:block">Mi perfil</span>
-            {activeTab === 'mi_perfil' && <div className="absolute right-0 top-0 bottom-0 w-1 bg-toast-400" />}
+            <UserRound className="w-4 h-4 shrink-0" />
+            Mi perfil
           </button>
-        </div>
-
-        {/* License + Compliance Signature Block – reemplaza al footer general de la app */}
-        <div className="hidden md:flex flex-col border-t border-charcoal-800 bg-charcoal-950/40 text-left">
-          <div className="p-4 pb-3">
-            <div className="flex items-center space-x-2 text-toast-400 mb-1">
-              <Award className="w-4 h-4" />
-              <span className="text-[10px] font-bold font-mono uppercase tracking-wider">Licencia Verificada</span>
-            </div>
-            <p className="text-[11px] font-semibold text-white truncate">{currentUser.name}</p>
-            <p className="text-[10px] text-slate-400 font-mono mt-0.5">
-              {currentUser.role} · {currentUser.tenantId}
+          {currentUser.licenseNumber && (
+            <p className="text-[9px] text-slate-500 font-mono mt-1">
+              Lic. {currentUser.licenseNumber}
             </p>
-            {currentUser.licenseNumber && (
-              <p className="text-[9px] text-slate-500 font-mono mt-1">
-                Lic. {currentUser.licenseNumber}
-              </p>
-            )}
+          )}
+          <div className="flex items-center space-x-1.5 text-toast-450 mt-2 pt-1 border-t border-charcoal-800/50">
+            <Server className="w-3 h-3 text-slate-500" />
+            <span className="text-[9px] text-slate-500">Cloud Run Cluster</span>
           </div>
-
-          {/* Infraestructura Segura (plegable) */}
-          <div className="mx-3 mb-3 rounded-lg bg-charcoal-900/60">
-            <button
-              onClick={() => setShowSecurityInfo(v => !v)}
-              aria-expanded={showSecurityInfo}
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-charcoal-900 cursor-pointer"
-            >
-              <Shield className="w-4 h-4 shrink-0 text-emerald-400" />
-              <span className="flex-1 text-[11px] font-semibold leading-tight text-white">Infraestructura Segura</span>
-              <ChevronDown className={`w-3.5 h-3.5 shrink-0 text-slate-500 transition-transform ${showSecurityInfo ? 'rotate-180' : ''}`} />
-            </button>
-
-            {showSecurityInfo && (
-              <div className="flex flex-col gap-3 px-2.5 pb-3 pt-1">
-                <p className="text-[11px] leading-relaxed text-slate-400">
-                  Expedientes y notas clínicas encriptados con estándar médico (TLS 1.3 / AES-256). Cumple la Ley 1581 de 2012 (Habeas Data) y directrices de teleorientación en salud.
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  <span className="rounded border border-charcoal-700 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-slate-400">ISO 27001</span>
-                  <span className="rounded border border-charcoal-700 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-slate-400">HIPAA</span>
-                  <span className="flex items-center gap-1 rounded border border-emerald-500/40 px-1.5 py-0.5 font-mono text-[9px] tracking-wider text-emerald-400">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                    TLS ACTIVE
-                  </span>
-                </div>
-                <button
-                  onClick={() => setShowDataPolicyModal(true)}
-                  className="flex items-center gap-1.5 text-[11px] font-medium text-slate-300 transition-colors hover:text-white cursor-pointer"
-                >
-                  <Scale className="w-3.5 h-3.5" />
-                  Tratamiento de Datos
-                </button>
-              </div>
-            )}
-          </div>
-
-          <p className="px-4 pb-3 text-[9px] leading-tight text-slate-600">
-            © 2026 MindPsic &amp; MindHealth
-          </p>
         </div>
       </aside>
-
-      {/* Modal: Política de Tratamiento de Datos Personales */}
-      {showDataPolicyModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl border border-slate-100">
-            <div className="bg-gradient-to-r from-charcoal-900 to-charcoal-950 px-6 py-4 text-white flex items-center justify-between border-b border-toast-200">
-              <div className="flex items-center space-x-2">
-                <FileText className="w-5 h-5 text-toast-400" />
-                <h3 className="font-bold text-base tracking-tight">Política de Tratamiento de Datos Personales</h3>
-              </div>
-              <button
-                onClick={() => setShowDataPolicyModal(false)}
-                className="text-slate-300 hover:text-white rounded-lg p-1 hover:bg-white/10 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 max-h-[60vh] overflow-y-auto text-slate-600 space-y-4">
-              <p className="font-semibold text-slate-900 text-sm">
-                Compromiso de Confidencialidad y Cumplimiento Normativo (Ecosistema MindPsic - MindHealth)
-              </p>
-              <div className="bg-slate-50 p-4 rounded-xl text-xs font-mono border border-slate-200 text-slate-700 whitespace-pre-line leading-relaxed">
-                {legalDisclosureSpanish}
-              </div>
-              <div className="space-y-2 text-xs leading-relaxed">
-                <p className="font-semibold text-slate-800">Derechos de los Usuarios:</p>
-                <ul className="list-disc list-inside space-y-1 text-slate-500">
-                  <li>Consultar y actualizar en cualquier momento su información en las historias clínicas.</li>
-                  <li>Solicitar la revocatoria de autorización de uso no clínico cuando lo considere pertinente.</li>
-                  <li>Inamovilidad del registro evolutivo clínico firmado digitalmente por su correspondiente psicólogo de cabecera.</li>
-                </ul>
-              </div>
-            </div>
-            <div className="border-t border-slate-100 px-6 py-4 bg-slate-50 flex justify-end">
-              <button
-                onClick={() => setShowDataPolicyModal(false)}
-                className="bg-slate-900 text-white rounded-xl px-4 py-2 text-xs font-semibold hover:bg-slate-800 transition-colors shadow-sm cursor-pointer"
-              >
-                Entendido y Aceptar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 overflow-y-auto p-6 md:p-8">
@@ -1151,27 +1065,46 @@ export default function PsychologistPortal({
         {/* VIEW: EVALUATIONS */}
         {activeTab === 'evaluations' && <AssessmentsPanel />}
 
-        {/* VIEW: PATIENTS */}
+        {/* VIEW: PATIENTS — abre la ficha SIN cambiar de pestaña (decisión
+            2026-10-26): antes, entrar a un paciente desde "Pacientes" saltaba
+            a activeTab='clinical_history' y el lateral resaltaba "Historias
+            Clínicas" aunque nunca saliste de "Pacientes". Ahora la ficha se
+            renderiza adentro del mismo bloque, sin tocar activeTab — el
+            tab "Historias Clínicas" (bandeja aparte) sigue intacto y usa su
+            propio flujo de selectedPatientId. */}
         {activeTab === 'patients' && (
-          <PacientesPanel
-            token={token}
-            userRole={currentUser?.role}
-            onSelectPatient={(id) => {
-              window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
-              setSelectedPatientId(id);
-              setClinicalHistoryReturnTab('patients');
-              setActiveTab('clinical_history');
-            }}
-          />
+          selectedPatientId ? (
+            <ClinicalPatientChart
+              patientId={selectedPatientId}
+              onBack={handleBackFromPatientChart}
+            />
+          ) : (
+            <PacientesPanel
+              token={token}
+              userRole={currentUser?.role}
+              userId={currentUser?.id}
+              onSelectPatient={(id) => {
+                window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
+                setSelectedPatientId(id);
+                // clinicalHistoryReturnTab sigue en 'patients' (no cambia de
+                // valor real) — solo para que el popstate del back del
+                // navegador (ver más abajo) sepa cerrar la ficha sin saltar
+                // a "dashboard".
+                setClinicalHistoryReturnTab('patients');
+              }}
+            />
+          )
         )}
 
         {/* VIEW: CLINICAL HISTORY */}
         {activeTab === 'clinical_history' && (
           <div className="max-w-7xl mx-auto space-y-6">
             {!selectedPatientId ? (
-              <ClinicalRecordsList
+              <ClinicalRecordsPanel
+                token={token}
+                userRole={currentUser?.role}
                 patients={realPatients}
-                onSelect={(id) => { setSelectedPatientId(id); setClinicalHistoryReturnTab(null); }}
+                onSelectPatient={(id) => { setSelectedPatientId(id); setClinicalHistoryReturnTab(null); }}
               />
             ) : (
               <ClinicalPatientChart

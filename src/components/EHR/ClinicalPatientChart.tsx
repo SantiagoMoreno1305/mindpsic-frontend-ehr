@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import {
-  ArrowLeft, Phone, Mail, CalendarClock, ClipboardList,
+  ArrowLeft, CalendarClock, ClipboardList,
   Plus, Trash2, Loader2, Pencil, X, AlertTriangle,
   TrendingUp, TrendingDown, Minus, ChevronDown, Lock, KeyRound,
+  Check, History, Clock, ChevronRight, ShieldCheck,
 } from 'lucide-react';
 import ClinicalHistoryEditor from './ClinicalHistoryEditor';
 import ClinicalAttachments from './ClinicalAttachments';
@@ -12,6 +13,7 @@ import InitialAssessmentWizard from './InitialAssessmentWizard';
 import PatientInvitationCard from './PatientInvitationCard';
 import AssessmentRunner from './AssessmentRunner';
 import CrisisEncountersPanel from './CrisisEncountersPanel';
+import { PATIENT_STATUS_LABELS } from './CreatePatientModal';
 
 interface RipsDiagnosis {
   id: string;
@@ -162,11 +164,21 @@ interface RiskEvent {
   createdAt: string;
 }
 
+interface TreatmentGoal {
+  id: string;
+  text: string;
+  progress: number;
+  createdAt: string;
+}
+
 interface ChartResponse {
   patient: PatientChart;
   ripsDiagnosis: RipsDiagnosis | null;
   assessments: Assessment[];
   riskEvents: RiskEvent[];
+  // El backend ya lo manda (ver getPatientChart) — el frontend no lo
+  // capturaba y se perdía en silencio (decisión 2026-10-27, Resumen).
+  treatmentGoals: TreatmentGoal[];
   firstSession: string | null;
   lastSession: string | null;
   nextAppointment: string | null;
@@ -174,14 +186,20 @@ interface ChartResponse {
   initialAssessmentGate: InitialAssessmentGate;
 }
 
-type Tab = 'resumen' | 'historia' | 'evoluciones' | 'evaluaciones' | 'anexos';
+// Rediseño 2026-10-26: "Anamnesis / Historia" se partía en dos cosas de
+// naturaleza distinta (ver HistoriaTab de antes) — ahora quedan separadas:
+// "Datos generales" (identificación/contacto/sociodemográficos, editable en
+// cualquier momento) y "Evaluación inicial" (el contenido clínico de la
+// Valoración Individual, congelado al firmar). "Anexos" pasa a "Documentos".
+type Tab = 'resumen' | 'datos_generales' | 'evaluacion_inicial' | 'evoluciones' | 'evaluaciones' | 'documentos';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'resumen', label: 'Resumen' },
-  { key: 'historia', label: 'Anamnesis / Historia' },
+  { key: 'datos_generales', label: 'Datos generales' },
+  { key: 'evaluacion_inicial', label: 'Evaluación inicial' },
   { key: 'evoluciones', label: 'Evoluciones' },
   { key: 'evaluaciones', label: 'Evaluaciones' },
-  { key: 'anexos', label: 'Anexos' },
+  { key: 'documentos', label: 'Documentos' },
 ];
 
 function apiBase() {
@@ -361,7 +379,7 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
     );
   }
 
-  const { patient, ripsDiagnosis, assessments, riskEvents, firstSession, lastSession, nextAppointment, initialAssessment, initialAssessmentGate } = data;
+  const { patient, ripsDiagnosis, assessments, riskEvents, treatmentGoals, firstSession, lastSession, nextAppointment, initialAssessment, initialAssessmentGate } = data;
   const age = calcAge(patient.birthDate);
   const initials = `${patient.firstName?.[0] ?? ''}${patient.lastName?.[0] ?? ''}`.toUpperCase();
 
@@ -390,15 +408,22 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
     );
   }
 
+  const currentTabLabel = TABS.find((t) => t.key === tab)?.label || '';
+
   return (
-    <div className="mx-auto max-w-5xl space-y-5">
-      <button
-        onClick={onBack}
-        className="flex items-center text-sm font-semibold text-slate-400 transition-colors hover:text-slate-900"
-      >
-        <ArrowLeft className="mr-2 h-4 w-4" />
-        Volver a la bandeja de pacientes
-      </button>
+    <div className="mx-auto max-w-5xl space-y-4">
+      {/* Breadcrumb (decisión 2026-10-26) — reemplaza el botón suelto "Volver
+          a la bandeja de pacientes": deja claro que se llega desde
+          "Pacientes" y en qué pestaña estás, sin perder la vuelta rápida. */}
+      <div className="flex items-center gap-1.5 text-sm">
+        <button onClick={onBack} className="font-semibold text-slate-400 transition-colors hover:text-slate-900 cursor-pointer">
+          Pacientes
+        </button>
+        <ChevronRight className="h-3.5 w-3.5 text-slate-300" />
+        <span className="font-semibold text-slate-400">{patient.firstName} {patient.lastName}</span>
+        <ChevronRight className="h-3.5 w-3.5 text-slate-300" />
+        <span className="font-semibold text-slate-900">{currentTabLabel}</span>
+      </div>
 
       {readOnlyAccess && (
         <div className="flex items-center gap-2 rounded-xl border border-amber-600/30 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-700">
@@ -407,57 +432,58 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
         </div>
       )}
 
-      {/* ═══ Encabezado persistente del paciente ═══ */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex items-start gap-4">
-            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-toast-100 text-lg font-bold text-toast-500">
+      {/* ═══ Encabezado persistente del paciente — compactado (decisión
+          2026-10-26): sin avatar grande ni tarjeta de invitación a la app
+          (se movió a "Datos generales", acción secundaria allá). ═══ */}
+      <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-toast-100 text-sm font-bold text-toast-500">
               {initials}
             </div>
             <div>
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-xl font-bold tracking-tight text-slate-900">
-                  {patient.firstName} {patient.lastName}
-                </h1>
-                <StatusSelect value={patient.status} onChange={handleStatusChange} />
-                <RiskSelect value={patient.riskLevel} onChange={handleRiskChange} />
-              </div>
-              <p className="mt-1 text-sm text-slate-400">
+              <h1 className="text-lg font-bold tracking-tight text-slate-900">
+                {patient.firstName} {patient.lastName}
+              </h1>
+              <p className="text-xs text-slate-400">
                 {patient.recordNumber ? `${patient.recordNumber} · ` : ''}
                 {patient.documentId}
                 {age !== null ? ` · ${age} años` : ''}
-                {patient.gender ? ` · ${patient.gender}` : ''}
               </p>
-              {ripsDiagnosis && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-900">
-                    <span className="font-mono font-semibold text-toast-500">{ripsDiagnosis.cie10Code}</span>
-                    {ripsDiagnosis.cie10Label}
-                    <span className="text-slate-400">· RIPS {String(ripsDiagnosis.month).padStart(2, '0')}/{ripsDiagnosis.year}</span>
-                  </span>
-                </div>
-              )}
             </div>
           </div>
-          {/* Próxima cita + App móvil apiladas y alineadas a la derecha —
-              ambas viven acá, dentro del encabezado, y no como su propia
-              sección aparte: saber si el paciente tiene la app condiciona lo
-              que el especialista puede pedirle desde cualquier pestaña, igual
-              que la próxima cita, así que comparten el mismo lugar fijo. */}
-          <div className="flex w-full flex-col items-stretch gap-2 sm:w-80 sm:shrink-0">
-            {nextAppointment && (
-              <div className="flex w-full items-center gap-2 rounded-lg bg-toast-100 px-3 py-2.5 text-xs font-semibold text-toast-500">
-                <CalendarClock className="h-4 w-4 shrink-0" />
-                <span>Próxima cita: {formatDateTime(nextAppointment)}</span>
-              </div>
+          {/* Última cita (un hecho puntual, con fecha) separada del estado
+              del proceso terapéutico (un badge propio) — antes "Atendida"
+              mezclaba las dos cosas: sonaba a "se atendió la última cita"
+              pero en realidad describía el proceso completo. */}
+          <div className="flex flex-wrap items-center gap-2">
+            {lastSession && (
+              <span className="inline-flex items-center gap-1.5 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-500">
+                <Clock className="h-3.5 w-3.5 text-slate-400" />
+                Última cita: {formatDate(lastSession)}
+              </span>
             )}
-            <PatientInvitationCard
-              patientId={patient.id}
-              patientName={`${patient.firstName} ${patient.lastName}`}
-              tieneDocumento={Boolean(patient.documentId)}
-            />
+            <StatusBadge value={patient.status} onChange={handleStatusChange} />
+            <RiskBadge value={patient.riskLevel} onChange={handleRiskChange} riskEvents={riskEvents || []} />
           </div>
         </div>
+        {(ripsDiagnosis || nextAppointment) && (
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+            {nextAppointment && (
+              <span className="inline-flex items-center gap-1.5 rounded-lg bg-toast-100 px-2.5 py-1.5 text-xs font-semibold text-toast-600">
+                <CalendarClock className="h-3.5 w-3.5 shrink-0" />
+                Próxima cita: {formatDateTime(nextAppointment)}
+              </span>
+            )}
+            {ripsDiagnosis && (
+              <span className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-900">
+                <span className="font-mono font-semibold text-toast-500">{ripsDiagnosis.cie10Code}</span>
+                {ripsDiagnosis.cie10Label}
+                <span className="text-slate-400">· RIPS {String(ripsDiagnosis.month).padStart(2, '0')}/{ripsDiagnosis.year}</span>
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Atenciones de crisis por línea 24/7: aviso persistente para el tratante,
@@ -489,12 +515,18 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
             ripsDiagnosis={ripsDiagnosis}
             firstSession={firstSession}
             lastSession={lastSession}
+            nextAppointment={nextAppointment}
             initialAssessment={initialAssessment}
+            treatmentGoals={treatmentGoals || []}
+            assessments={assessments}
+            riskEvents={riskEvents || []}
             onRipsDiagnosisChange={(next) => setData((prev) => (prev ? { ...prev, ripsDiagnosis: next } : prev))}
             patientId={patientId}
+            onNavigateTab={setTab}
           />
         )}
-        {tab === 'historia' && <HistoriaTab initialAssessment={initialAssessment} patient={patient} onSaveContact={handleSaveContact} onAddAddendum={handleAddAssessmentAddendum} />}
+        {tab === 'datos_generales' && <DatosGeneralesTab initialAssessment={initialAssessment} patient={patient} onSaveContact={handleSaveContact} />}
+        {tab === 'evaluacion_inicial' && <EvaluacionInicialTab initialAssessment={initialAssessment} onAddAddendum={handleAddAssessmentAddendum} />}
         {tab === 'evoluciones' && <ClinicalHistoryEditor patientId={patientId} />}
         {tab === 'evaluaciones' && (
           <EvaluacionesTab
@@ -504,7 +536,7 @@ export default function ClinicalPatientChart({ patientId, onBack }: { patientId:
             onChange={(next) => setData((prev) => (prev ? { ...prev, assessments: next } : prev))}
           />
         )}
-        {tab === 'anexos' && <ClinicalAttachments patientId={patientId} />}
+        {tab === 'documentos' && <ClinicalAttachments patientId={patientId} />}
       </div>
     </div>
   );
@@ -658,56 +690,175 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-slate-400">{children}</h2>;
 }
 
-const STATUS_OPTIONS = [
-  { value: 'activo', label: 'Atendida', className: 'border-emerald-600/30 bg-emerald-50 text-emerald-600' },
-  { value: 'pausa', label: 'En pausa', className: 'border-amber-600/30 bg-amber-50 text-amber-600' },
-  { value: 'alta', label: 'Alta', className: 'border-slate-200 bg-slate-100 text-slate-400' },
-];
+// Lista completa de estados (decisión 2026-10-26: el select nativo de antes
+// solo tenía activo/pausa/alta — 6 de los 9 valores reales ni aparecían).
+// Mismo mapa de colores que la tabla de "Pacientes" (PacientesPanel), solo
+// en el punto — el nombre del estado va en texto normal.
+const STATUS_DOT_COLORS: Record<string, string> = {
+  agendado: 'bg-blue-500',
+  activo: 'bg-emerald-500',
+  notificado_1: 'bg-amber-500',
+  notificado_2: 'bg-amber-500',
+  notificado_3: 'bg-amber-500',
+  notificado_4: 'bg-amber-500',
+  alta: 'bg-slate-400',
+  pausa: 'bg-violet-400',
+  finalizado: 'bg-teal-500',
+  anulado: 'bg-rose-500',
+};
+const STATUS_BADGE_OPTIONS = Object.entries(PATIENT_STATUS_LABELS).map(([value, label]) => ({ value, label }));
 
-function StatusSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  const current = STATUS_OPTIONS.find((o) => o.value === value) || STATUS_OPTIONS[0];
+// Reemplaza el <select> nativo de antes — su lista desplegada la pinta el
+// sistema operativo y no se puede re-diseñar (mismo motivo que ya se
+// corrigió en PacientesPanel). Dropdown propio, sin portal: este encabezado
+// no vive dentro de una tabla con overflow recortado, así que una posición
+// `absolute` normal alcanza.
+function StatusBadge({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const label = PATIENT_STATUS_LABELS[value] || value;
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className={`rounded-full border px-2 py-0.5 text-xs font-bold uppercase outline-none ${current.className}`}
-    >
-      {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-900 transition-colors hover:border-toast-400 cursor-pointer"
+      >
+        <span className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_COLORS[value] || 'bg-slate-300'}`} />
+        {label}
+        <ChevronDown className="h-3 w-3 text-slate-400" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+            {STATUS_BADGE_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => { setOpen(false); if (o.value !== value) onChange(o.value); }}
+                className={`flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm transition-colors hover:bg-slate-50 cursor-pointer ${
+                  o.value === value ? 'font-semibold text-toast-600' : 'text-slate-900'
+                }`}
+              >
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${STATUS_DOT_COLORS[o.value] || 'bg-slate-300'}`} />
+                <span className="flex-1">{o.label}</span>
+                {o.value === value && <Check className="h-3.5 w-3.5 shrink-0" />}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
 const RISK_OPTIONS = [
-  { value: 'bajo', label: 'Riesgo bajo', className: 'border-emerald-600/30 bg-emerald-50 text-emerald-600' },
-  { value: 'medio', label: 'Riesgo medio', className: 'border-amber-600/30 bg-amber-50 text-amber-600' },
-  { value: 'alto', label: 'Riesgo alto', className: 'border-red-600/30 bg-red-50 text-red-600' },
+  { value: 'bajo', label: 'Riesgo bajo', dot: 'bg-emerald-500', text: 'text-emerald-600', bg: 'bg-emerald-50' },
+  { value: 'medio', label: 'Riesgo medio', dot: 'bg-amber-500', text: 'text-amber-600', bg: 'bg-amber-50' },
+  { value: 'alto', label: 'Riesgo alto', dot: 'bg-rose-500', text: 'text-rose-600', bg: 'bg-rose-50' },
 ];
 
-function RiskSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+// Contextualiza el riesgo (decisión 2026-10-26): antes "Riesgo bajo" no daba
+// forma de saber de dónde salía ni cuándo se evaluó. Muestra la valoración
+// de riesgo más reciente (fecha + motivo) si existe, o lo dice explícito si
+// no hay ninguna — NO inventa un "autor": los eventos de riesgo hoy se
+// calculan automáticamente a partir de una evaluación respondida, no los
+// registra una persona a mano (ver PatientRiskEvent en el backend).
+function RiskBadge({ value, onChange, riskEvents }: { value: string; onChange: (v: string) => void; riskEvents: RiskEvent[] }) {
+  const [open, setOpen] = useState(false);
   const current = RISK_OPTIONS.find((o) => o.value === value) || RISK_OPTIONS[0];
+  const latestEvent = riskEvents.length > 0
+    ? [...riskEvents].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
+    : null;
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className={`rounded-full border px-2 py-0.5 text-xs font-bold uppercase outline-none ${current.className}`}
-    >
-      {RISK_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-semibold text-slate-900 transition-colors hover:border-toast-400 cursor-pointer"
+      >
+        <span className={`h-2 w-2 shrink-0 rounded-full ${current.dot}`} />
+        {current.label}
+        <ChevronDown className="h-3 w-3 text-slate-400" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full z-50 mt-1 w-72 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+            <div className="py-1">
+              {RISK_OPTIONS.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => { setOpen(false); if (o.value !== value) onChange(o.value); }}
+                  className={`flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm transition-colors hover:bg-slate-50 cursor-pointer ${
+                    o.value === value ? `font-semibold ${o.text}` : 'text-slate-900'
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${o.dot}`} />
+                  <span className="flex-1">{o.label}</span>
+                  {o.value === value && <Check className="h-3.5 w-3.5 shrink-0" />}
+                </button>
+              ))}
+            </div>
+            <div className="border-t border-slate-100 bg-slate-50 px-3 py-2.5">
+              {latestEvent ? (
+                <>
+                  <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                    <ShieldCheck className="h-3.5 w-3.5 text-slate-400" />
+                    Última valoración: {formatDateTime(latestEvent.createdAt)}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">{latestEvent.reason}</p>
+                </>
+              ) : (
+                <p className="text-xs text-slate-400">Sin valoración registrada.</p>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
+interface ClinicalHistoryListItem {
+  id: string;
+  date: string;
+  sessionDate: string | null;
+  status: string; // DRAFT | SIGNED
+  sessionType: string | null;
+}
+
 function ResumenTab({
-  patient, ripsDiagnosis, firstSession, lastSession, initialAssessment, onRipsDiagnosisChange, patientId,
+  patient, ripsDiagnosis, firstSession: _firstSession, lastSession, nextAppointment, initialAssessment,
+  treatmentGoals, assessments, riskEvents, onRipsDiagnosisChange, patientId, onNavigateTab,
 }: {
   patient: PatientChart; ripsDiagnosis: RipsDiagnosis | null; firstSession: string | null; lastSession: string | null;
+  nextAppointment: string | null;
   initialAssessment: InitialAssessmentData | null;
+  treatmentGoals: TreatmentGoal[];
+  assessments: Assessment[];
+  riskEvents: RiskEvent[];
   onRipsDiagnosisChange: (next: RipsDiagnosis | null) => void;
   patientId: string;
+  onNavigateTab: (tab: Tab) => void;
 }) {
   const [query, setQuery] = useState('');
   const [options, setOptions] = useState<Cie10Option[]>([]);
   const [searching, setSearching] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Reusa el mismo endpoint que ya consume ClinicalHistoryEditor (pestaña
+  // "Evoluciones") en vez de duplicar la consulta en el backend.
+  const [recentHistories, setRecentHistories] = useState<ClinicalHistoryListItem[]>([]);
+  const [loadingHistories, setLoadingHistories] = useState(true);
+
+  useEffect(() => {
+    fetch(`${apiBase()}/api/clinical-history/${patientId}`, { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => setRecentHistories(Array.isArray(d.histories) ? d.histories.slice(0, 4) : []))
+      .catch(() => { /* silencioso — la sección simplemente queda vacía */ })
+      .finally(() => setLoadingHistories(false));
+  }, [patientId]);
 
   useEffect(() => {
     if (query.trim().length < 2) { setOptions([]); return; }
@@ -748,38 +899,181 @@ function ResumenTab({
 
   const now = new Date();
   const currentPeriodLabel = `${String(now.getMonth() + 1).padStart(2, '0')}/${now.getFullYear()}`;
+  const latestRiskEvent = riskEvents.length > 0
+    ? [...riskEvents].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
+    : null;
+  const draftCount = recentHistories.filter((h) => h.status === 'DRAFT').length;
+  const riskOption = RISK_OPTIONS.find((o) => o.value === patient.riskLevel) || RISK_OPTIONS[0];
 
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      <Card>
-        <SectionTitle>Motivo de consulta</SectionTitle>
-        <p className="text-sm leading-relaxed text-slate-900">
-          {initialAssessment?.motivoConsulta || 'No se registró un motivo de consulta en la Valoración Individual.'}
-        </p>
-        <div className="mt-4 grid grid-cols-2 gap-4 border-t border-slate-200 pt-4">
-          <div>
-            <p className="text-xs text-slate-400">Primera sesión</p>
-            <p className="text-sm font-medium text-slate-900">{formatDate(firstSession)}</p>
+    <div className="grid gap-4 lg:grid-cols-3">
+      {/* ── Columna principal ── */}
+      <div className="flex flex-col gap-4 lg:col-span-2">
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <SectionTitle>Resumen clínico</SectionTitle>
+            <button type="button" onClick={() => onNavigateTab('evaluacion_inicial')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+              Ver evaluación inicial →
+            </button>
           </div>
-          <div>
-            <p className="text-xs text-slate-400">Última sesión</p>
-            <p className="text-sm font-medium text-slate-900">{formatDate(lastSession)}</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <p className="text-xs text-slate-400">Motivo de consulta</p>
+              <p className="mt-0.5 text-sm leading-relaxed text-slate-900">
+                {initialAssessment?.motivoConsulta || 'No se registró un motivo de consulta en la Valoración Individual.'}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-slate-400">Objetivos terapéuticos</p>
+              {treatmentGoals.length > 0 ? (
+                <ul className="mt-0.5 flex flex-col gap-1">
+                  {treatmentGoals.slice(0, 3).map((g) => (
+                    <li key={g.id} className="text-sm leading-relaxed text-slate-900">· {g.text}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-0.5 text-sm text-slate-400">Sin objetivos registrados todavía.</p>
+              )}
+            </div>
           </div>
-        </div>
-      </Card>
-      <Card>
-        <SectionTitle>Contacto</SectionTitle>
-        <div className="flex flex-col gap-2 text-sm text-slate-900">
-          <span className="flex items-center gap-2">
-            <Phone className="h-4 w-4 text-slate-400" />
-            {patient.phone || '—'}
+        </Card>
+
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <SectionTitle>Últimas atenciones</SectionTitle>
+            <button type="button" onClick={() => onNavigateTab('evoluciones')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+              Ver todas →
+            </button>
+          </div>
+          {loadingHistories ? (
+            <p className="py-4 text-center text-sm text-slate-400">Cargando…</p>
+          ) : recentHistories.length === 0 ? (
+            <p className="py-4 text-center text-sm text-slate-400">Sin evoluciones registradas todavía.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-400">
+                  <th className="py-2 pr-3 font-semibold">Atención</th>
+                  <th className="py-2 pr-3 font-semibold">Registro</th>
+                  <th className="py-2 pr-3 font-semibold">Estado</th>
+                  <th className="py-2 text-right font-semibold">Acción</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {recentHistories.map((h) => (
+                  <tr key={h.id}>
+                    <td className="py-2 pr-3 text-slate-900">{formatDate(h.sessionDate || h.date)}</td>
+                    <td className="py-2 pr-3 text-slate-500">{h.sessionType || 'Evolución'}</td>
+                    <td className="py-2 pr-3">
+                      <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${h.status === 'SIGNED' ? 'text-emerald-600' : 'text-amber-600'}`}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${h.status === 'SIGNED' ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                        {h.status === 'SIGNED' ? 'Firmada' : 'Borrador'}
+                      </span>
+                    </td>
+                    <td className="py-2 text-right">
+                      <button type="button" onClick={() => onNavigateTab('evoluciones')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+                        {h.status === 'DRAFT' ? 'Continuar' : 'Ver'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+
+        <Card>
+          <div className="mb-3 flex items-center justify-between">
+            <SectionTitle>Evaluaciones recientes</SectionTitle>
+            <button type="button" onClick={() => onNavigateTab('evaluaciones')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+              Ver todas →
+            </button>
+          </div>
+          {assessments.length === 0 ? (
+            <p className="py-4 text-center text-sm text-slate-400">Sin evaluaciones registradas todavía.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-left text-[11px] uppercase tracking-wide text-slate-400">
+                  <th className="py-2 pr-3 font-semibold">Prueba</th>
+                  <th className="py-2 pr-3 font-semibold">Fecha</th>
+                  <th className="py-2 pr-3 font-semibold">Estado</th>
+                  <th className="py-2 text-right font-semibold">Acción</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {assessments.slice(0, 4).map((a) => (
+                  <tr key={a.id}>
+                    <td className="py-2 pr-3 text-slate-900">{a.name}</td>
+                    <td className="py-2 pr-3 text-slate-500">{formatDate(a.date)}</td>
+                    <td className="py-2 pr-3">
+                      <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        Completada
+                      </span>
+                    </td>
+                    <td className="py-2 text-right">
+                      <button type="button" onClick={() => onNavigateTab('evaluaciones')} className="text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+                        Ver resultado
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      </div>
+
+      {/* ── Columna de contexto ── */}
+      <div className="flex flex-col gap-4">
+        {nextAppointment && (
+          <Card>
+            <SectionTitle>Próxima cita</SectionTitle>
+            <p className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+              <CalendarClock className="h-4 w-4 text-toast-500" />
+              {formatDateTime(nextAppointment)}
+            </p>
+          </Card>
+        )}
+
+        <Card>
+          <SectionTitle>Riesgo clínico</SectionTitle>
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-bold ${riskOption.text} ${riskOption.bg}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${riskOption.dot}`} />
+            {riskOption.label}
           </span>
-          <span className="flex items-center gap-2">
-            <Mail className="h-4 w-4 text-slate-400" />
-            {patient.email || '—'}
-          </span>
-        </div>
-        <div className="mt-4 border-t border-slate-200 pt-4">
+          {latestRiskEvent ? (
+            <>
+              <p className="mt-2 text-xs text-slate-500">Valorado el {formatDate(latestRiskEvent.createdAt)}</p>
+              <button type="button" onClick={() => onNavigateTab('evaluaciones')} className="mt-1 text-xs font-semibold text-toast-500 hover:underline cursor-pointer">
+                Ver valoración →
+              </button>
+            </>
+          ) : (
+            <p className="mt-2 text-xs text-slate-400">Sin valoración registrada.</p>
+          )}
+        </Card>
+
+        <Card>
+          <SectionTitle>Documentación</SectionTitle>
+          <div className="flex flex-col gap-2">
+            {draftCount > 0 && (
+              <button type="button" onClick={() => onNavigateTab('evoluciones')} className="flex items-center gap-2 text-left text-sm text-amber-600 hover:underline cursor-pointer">
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
+                {draftCount} evolución(es) en borrador
+              </button>
+            )}
+            <button type="button" onClick={() => onNavigateTab('documentos')} className="flex items-center gap-2 text-left text-sm text-slate-500 transition-colors hover:text-toast-500 hover:underline cursor-pointer">
+              <ClipboardList className="h-3.5 w-3.5 shrink-0" />
+              Ver documentos →
+            </button>
+          </div>
+        </Card>
+
+        {/* RIPS — mismo lugar de siempre (obligatorio al cierre), reubicado
+            en el panel de contexto en vez de competir con el resumen clínico. */}
+        <Card>
           <SectionTitle>Diagnóstico RIPS (CIE-10) · {currentPeriodLabel}</SectionTitle>
           <p className="mb-2 text-[11px] text-slate-400">
             Código oficial que se reporta al RIPS de este mes — obligatorio al cierre.
@@ -814,8 +1108,8 @@ function ResumenTab({
               </ul>
             )}
           </div>
-        </div>
-      </Card>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -1168,26 +1462,90 @@ function FamilyContextAddendumSection({ familyAddendums, contactAddendums, missi
 // el paciente aún no tiene su propio valor), no de `initialAssessment` (que
 // queda congelado para siempre). El resto de la valoración (motivo, conducta,
 // contexto familiar, cierre profesional) sigue viniendo de `a` y no se toca.
-function HistoriaTab({ initialAssessment, patient, onSaveContact, onAddAddendum }: {
+// Etiquetas legibles de los campos que rastrea el historial de correcciones
+// (ver SOCIODEMOGRAPHIC_TRACKED_FIELDS en patient.controller.js — deben
+// coincidir con esa misma lista).
+const SOCIODEMOGRAPHIC_FIELD_LABELS: Record<string, string> = {
+  epsCodigo: 'EPS (código)', epsNombre: 'EPS', regimenSalud: 'Régimen de salud', estadoCivil: 'Estado civil',
+  orientacionSexual: 'Orientación sexual', orientacionSexualOtro: 'Orientación sexual (otro)', escolaridad: 'Escolaridad',
+  estudiaActualmente: 'Estudia actualmente', semestreGradoTrimestre: 'Semestre/grado', carrera: 'Carrera', ocupacion: 'Ocupación',
+  direccionResidencia: 'Dirección', departamentoResidencia: 'Departamento', ciudadResidencia: 'Ciudad', barrio: 'Barrio', estrato: 'Estrato',
+  email: 'Correo electrónico', phone: 'Teléfono', phoneAlternativo: 'Teléfono alternativo',
+};
+
+interface SociodemographicChange {
+  id: string;
+  field: string;
+  oldValue: string | null;
+  newValue: string | null;
+  changedByName: string | null;
+  changedAt: string;
+}
+
+// Historial de correcciones a datos sociodemográficos/contacto — Ley 2015 de
+// 2020 (decisión 2026-10-26): una corrección no puede suprimir lo que
+// constaba antes. Ver PatientSociodemographicChange en el backend.
+function SociodemographicHistoryModal({ patientId, onClose }: { patientId: string; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [changes, setChanges] = useState<SociodemographicChange[]>([]);
+
+  useEffect(() => {
+    fetch(`${apiBase()}/api/patients/${patientId}/sociodemographic-history`, { headers: authHeaders() })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => setChanges(Array.isArray(d.changes) ? d.changes : []))
+      .catch(() => toast.error('No se pudo cargar el historial de correcciones.'))
+      .finally(() => setLoading(false));
+  }, [patientId]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+      <div className="flex max-h-[80vh] w-full max-w-lg flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+          <h2 className="text-base font-bold text-slate-900">Historial de correcciones</h2>
+          <button onClick={onClose} className="rounded-lg p-1 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-900 cursor-pointer">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="overflow-y-auto px-5 py-4">
+          {loading && <p className="py-6 text-center text-sm text-slate-400">Cargando…</p>}
+          {!loading && changes.length === 0 && (
+            <p className="py-6 text-center text-sm text-slate-400">
+              Sin correcciones registradas — los datos sociodemográficos no han cambiado desde que se capturaron.
+            </p>
+          )}
+          {!loading && changes.length > 0 && (
+            <ul className="flex flex-col gap-3">
+              {changes.map((c) => (
+                <li key={c.id} className="rounded-lg border border-slate-100 p-3">
+                  <p className="text-xs font-bold uppercase tracking-wide text-slate-400">
+                    {SOCIODEMOGRAPHIC_FIELD_LABELS[c.field] || c.field}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-900">
+                    <span className="text-slate-400 line-through">{c.oldValue || '(vacío)'}</span>
+                    {' → '}
+                    <span className="font-semibold">{c.newValue || '(vacío)'}</span>
+                  </p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {c.changedByName || 'Desconocido'} · {formatDateTime(c.changedAt)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DatosGeneralesTab({ initialAssessment, patient, onSaveContact }: {
   initialAssessment: InitialAssessmentData | null;
   patient: PatientChart;
   onSaveContact: (payload: Record<string, unknown>) => Promise<void>;
-  onAddAddendum: (section: string, content: string) => Promise<void>;
 }) {
   const [editingContact, setEditingContact] = useState(false);
-
-  if (!initialAssessment) {
-    return (
-      <Card>
-        <p className="py-6 text-center text-sm text-slate-400">
-          Este paciente no tiene una Valoración Individual registrada.
-        </p>
-      </Card>
-    );
-  }
-
+  const [showHistory, setShowHistory] = useState(false);
   const a = initialAssessment;
-  const addendumsBySection = (section: string) => a.addendums.filter((ad) => ad.section === section);
   // ¿Falta algún campo de los que EditContactModal deja llenar? (ver ese
   // componente más abajo) — estudiaActualmente se compara contra null
   // específicamente: false es una respuesta real ("No"), no un vacío.
@@ -1201,43 +1559,57 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact, onAddAddendum 
         <div className="mb-3 flex items-center justify-between">
           <SectionTitle>Datos personales</SectionTitle>
         </div>
+        {/* Identificación desde Patient directamente (no desde la Valoración
+            Individual) — decisión 2026-10-26: así esta sección siempre tiene
+            algo que mostrar aunque el paciente todavía no tenga una
+            valoración firmada, en vez de depender de ella como antes. */}
         <div className="grid gap-4 sm:grid-cols-3">
-          <InfoRow label="Nombres y apellidos" value={a.nombresApellidos} />
-          <InfoRow label="Tipo y número de documento" value={a.tipoDocumento ? `${a.tipoDocumento} ${a.numeroDocumento}` : a.numeroDocumento} />
+          <InfoRow label="Nombres y apellidos" value={`${patient.firstName} ${patient.lastName}`} />
+          <InfoRow label="Tipo y número de documento" value={patient.documentType ? `${patient.documentType} ${patient.documentId}` : patient.documentId} />
           <InfoRow label="EPS" value={patient.epsNombre} />
           <InfoRow label="Régimen de salud" value={patient.regimenSalud} />
           <InfoRow label="Estado civil" value={patient.estadoCivil} />
-          <InfoRow label="Sexo biológico / Género" value={[a.sexoBiologico, a.genero].filter(Boolean).join(' / ')} />
-          <InfoRow label="Fecha de nacimiento" value={formatDate(a.fechaNacimiento)} />
-          <InfoRow label="Lugar de nacimiento" value={a.lugarNacimiento} />
+          <InfoRow label="Sexo biológico / Género" value={a ? [a.sexoBiologico, a.genero].filter(Boolean).join(' / ') : patient.gender} />
+          <InfoRow label="Fecha de nacimiento" value={formatDate(patient.birthDate)} />
+          {a?.lugarNacimiento && <InfoRow label="Lugar de nacimiento" value={a.lugarNacimiento} />}
         </div>
       </Card>
 
       <Card>
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <SectionTitle>Información sociodemográfica</SectionTitle>
-          {/* Mismo botón, mismo destino (EditContactModal) — pero si falta
-              alguno de los campos que esa misma modal deja llenar, se avisa
-              con el mismo estilo que AddendumBlock en vez del "Editar" neutro:
-              el usuario no quiere "editar" un dato que nunca existió, quiere
-              completarlo (decisión 2026-10-14). */}
-          {sociodemoMissing ? (
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              type="button" onClick={() => setEditingContact(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-dashed border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-colors hover:border-amber-400"
+              type="button" onClick={() => setShowHistory(true)}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-500 transition-colors hover:border-toast-400 hover:text-toast-600"
             >
-              <AlertTriangle className="h-3.5 w-3.5" /> Falta información — clic para completarla
+              <History className="h-3.5 w-3.5" /> Ver historial de cambios
             </button>
-          ) : (
-            <button
-              type="button" onClick={() => setEditingContact(true)}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-toast-500 hover:text-toast-500"
-            >
-              <Pencil className="h-3.5 w-3.5" /> Editar
-            </button>
-          )}
+            {/* Mismo botón, mismo destino (EditContactModal) — pero si falta
+                alguno de los campos que esa misma modal deja llenar, se avisa
+                con el mismo estilo que AddendumBlock en vez del "Editar" neutro:
+                el usuario no quiere "editar" un dato que nunca existió, quiere
+                completarlo (decisión 2026-10-14). */}
+            {sociodemoMissing ? (
+              <button
+                type="button" onClick={() => setEditingContact(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-dashed border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition-colors hover:border-amber-400"
+              >
+                <AlertTriangle className="h-3.5 w-3.5" /> Falta información — clic para completarla
+              </button>
+            ) : (
+              <button
+                type="button" onClick={() => setEditingContact(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition-colors hover:border-toast-500 hover:text-toast-500"
+              >
+                <Pencil className="h-3.5 w-3.5" /> Editar
+              </button>
+            )}
+          </div>
         </div>
-        <p className="mb-3 -mt-1 text-xs text-slate-400">Estos datos reflejan la situación actual del paciente — se pueden actualizar en cualquier momento, a diferencia del resto de la valoración, que queda fija tras la firma.</p>
+        <p className="mb-3 -mt-1 text-xs text-slate-400">
+          Estos datos reflejan la situación actual del paciente — se pueden actualizar en cualquier momento, a diferencia del resto de la valoración, que queda fija tras la firma. Cada corrección queda registrada en el historial, sin borrar el dato anterior (Ley 2015 de 2020).
+        </p>
         <div className="grid gap-4 sm:grid-cols-3">
           <InfoRow label="Orientación sexual" value={patient.orientacionSexual === 'Otro' ? patient.orientacionSexualOtro : patient.orientacionSexual} />
           <InfoRow label="Escolaridad" value={patient.escolaridad} />
@@ -1248,7 +1620,7 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact, onAddAddendum 
           <InfoRow label="Dirección" value={[patient.direccionResidencia, patient.barrio].filter(Boolean).join(', ')} />
           <InfoRow label="Estrato" value={patient.estrato} />
         </div>
-        {a.poblacionDiferencial?.length > 0 && (
+        {a?.poblacionDiferencial && a.poblacionDiferencial.length > 0 && (
           <div className="mt-3 border-t border-slate-100 pt-3">
             <p className="mb-1.5 text-xs text-slate-400">Población diferencial</p>
             <div className="flex flex-wrap gap-1.5">
@@ -1267,8 +1639,9 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact, onAddAddendum 
           onSave={async (payload) => { await onSaveContact(payload); setEditingContact(false); }}
         />
       )}
+      {showHistory && <SociodemographicHistoryModal patientId={patient.id} onClose={() => setShowHistory(false)} />}
 
-      {a.requiereRepresentanteLegal && (
+      {a?.requiereRepresentanteLegal && (
         <Card>
           <SectionTitle>Representante legal</SectionTitle>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -1292,6 +1665,40 @@ function HistoriaTab({ initialAssessment, patient, onSaveContact, onAddAddendum 
         </Card>
       )}
 
+      {/* Acceso a la app móvil — acción secundaria acá (decisión 2026-10-26:
+          antes vivía en el encabezado, visible en cualquier pestaña aunque no
+          tuviera nada que ver con lo que se estuviera consultando). */}
+      <Card>
+        <SectionTitle>Acceso a la app móvil</SectionTitle>
+        <PatientInvitationCard
+          patientId={patient.id}
+          patientName={`${patient.firstName} ${patient.lastName}`}
+          tieneDocumento={Boolean(patient.documentId)}
+        />
+      </Card>
+    </div>
+  );
+}
+
+function EvaluacionInicialTab({ initialAssessment, onAddAddendum }: {
+  initialAssessment: InitialAssessmentData | null;
+  onAddAddendum: (section: string, content: string) => Promise<void>;
+}) {
+  if (!initialAssessment) {
+    return (
+      <Card>
+        <p className="py-6 text-center text-sm text-slate-400">
+          Este paciente no tiene una Valoración Individual registrada.
+        </p>
+      </Card>
+    );
+  }
+
+  const a = initialAssessment;
+  const addendumsBySection = (section: string) => a.addendums.filter((ad) => ad.section === section);
+
+  return (
+    <div className="flex flex-col gap-4">
       <Card>
         <SectionTitle>Motivo y valoración conductual</SectionTitle>
         <div className="flex flex-col gap-3">
