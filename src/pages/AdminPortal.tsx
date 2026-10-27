@@ -16,6 +16,7 @@ import { useGlobalChat } from '../hooks/useGlobalChat';
 import { useCompanies, type CompanyRecord, type CompanyLocation } from '../hooks/useCompanies';
 import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
 import ClinicalRecordsPanel from '../components/EHR/ClinicalRecordsPanel';
+import MiPlanPanel from '../components/EHR/MiPlanPanel';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
@@ -83,10 +84,11 @@ import {
   Tag,
   Inbox,
   FlaskConical,
-  UserRound
+  UserRound,
+  CreditCard
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat' | 'mi_perfil';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat' | 'mi_perfil' | 'mi_plan';
 
 interface AdminPortalProps {
   navRequest?: { target: 'home' | 'profile'; n: number };
@@ -1034,7 +1036,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   // Recuerda la última tab visitada entre recargas — sin esto, cualquier
   // refresh de página remonta el componente y activeTab vuelve a su default
   // ('metrics' / "Tablero Gerencial"), sin importar dónde estaba el usuario.
-  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat', 'mi_perfil'];
+  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat', 'mi_perfil', 'mi_plan'];
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     const saved = localStorage.getItem('mind_admin_active_tab');
     return (saved && (ADMIN_TABS as string[]).includes(saved)) ? (saved as AdminTab) : 'metrics';
@@ -2191,6 +2193,22 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             <UserRound className="w-4 h-4 shrink-0" />
             Mi perfil
           </button>
+          {/* "Mi Plan" — estado de la suscripción del propio tenant (decisión
+              2026-10-27). CEO/DIRECTIVO únicamente, mismo gate que exige el
+              backend en GET /api/tenants/me/subscription — OPERATIVO no ve
+              precios ni método de pago del socio. */}
+          {(currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') && (
+            <button
+              onClick={() => goToTab('mi_plan')}
+              id="tab-adm-mi-plan"
+              className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs transition-colors cursor-pointer ${
+                activeTab === 'mi_plan' ? 'bg-white/10 text-white font-semibold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
+              }`}
+            >
+              <CreditCard className="w-4 h-4 shrink-0" />
+              Mi Plan
+            </button>
+          )}
           {currentUser.licenseNumber && (
             <p className="text-[9px] text-slate-500 font-mono mt-1">
               Lic. {currentUser.licenseNumber}
@@ -4181,6 +4199,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             onUserUpdated={(u) => { setCurrentUser(u); onUserUpdated?.(u); }}
             onBack={() => window.history.back()}
           />
+        )}
+
+        {/* VIEW: MI PLAN — estado de la suscripción (solo CEO/DIRECTIVO, ver botón del pie) */}
+        {activeTab === 'mi_plan' && (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') && (
+          <MiPlanPanel />
         )}
 
         {/* VIEW: PROYECTOS DE INVESTIGACIÓN */}
