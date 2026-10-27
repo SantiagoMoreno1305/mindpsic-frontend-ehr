@@ -2786,19 +2786,30 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
         )}
 
 
-        {/* VIEW: PACIENTES */}
+        {/* VIEW: PACIENTES — abre la ficha SIN cambiar de pestaña (decisión
+            2026-10-26): antes saltaba a activeTab='clinical_history' y el
+            lateral resaltaba "Historias Clínicas" aunque nunca saliste de
+            "Pacientes". clinicalHistoryReturnTab sigue en 'patients' (no
+            cambia de valor real) solo para que el popstate del back del
+            navegador sepa cerrar la ficha sin saltar a otra pestaña. */}
         {activeTab === 'patients' && (
-          <PacientesPanel
-            token={token}
-            userRole={currentUser?.role}
-            userId={currentUser?.id}
-            onSelectPatient={(id) => {
-              window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
-              setSelectedPatientId(id);
-              setClinicalHistoryReturnTab('patients');
-              setActiveTab('clinical_history');
-            }}
-          />
+          selectedPatientId ? (
+            <ClinicalPatientChart
+              patientId={selectedPatientId}
+              onBack={handleBackFromPatientChart}
+            />
+          ) : (
+            <PacientesPanel
+              token={token}
+              userRole={currentUser?.role}
+              userId={currentUser?.id}
+              onSelectPatient={(id) => {
+                window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
+                setSelectedPatientId(id);
+                setClinicalHistoryReturnTab('patients');
+              }}
+            />
+          )
         )}
 
         {/* VIEW: HISTORIAS CLÍNICAS — mismo componente que usa PsychologistPortal,

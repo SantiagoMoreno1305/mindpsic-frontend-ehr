@@ -1151,19 +1151,35 @@ export default function PsychologistPortal({
         {/* VIEW: EVALUATIONS */}
         {activeTab === 'evaluations' && <AssessmentsPanel />}
 
-        {/* VIEW: PATIENTS */}
+        {/* VIEW: PATIENTS — abre la ficha SIN cambiar de pestaña (decisión
+            2026-10-26): antes, entrar a un paciente desde "Pacientes" saltaba
+            a activeTab='clinical_history' y el lateral resaltaba "Historias
+            Clínicas" aunque nunca saliste de "Pacientes". Ahora la ficha se
+            renderiza adentro del mismo bloque, sin tocar activeTab — el
+            tab "Historias Clínicas" (bandeja aparte) sigue intacto y usa su
+            propio flujo de selectedPatientId. */}
         {activeTab === 'patients' && (
-          <PacientesPanel
-            token={token}
-            userRole={currentUser?.role}
-            userId={currentUser?.id}
-            onSelectPatient={(id) => {
-              window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
-              setSelectedPatientId(id);
-              setClinicalHistoryReturnTab('patients');
-              setActiveTab('clinical_history');
-            }}
-          />
+          selectedPatientId ? (
+            <ClinicalPatientChart
+              patientId={selectedPatientId}
+              onBack={handleBackFromPatientChart}
+            />
+          ) : (
+            <PacientesPanel
+              token={token}
+              userRole={currentUser?.role}
+              userId={currentUser?.id}
+              onSelectPatient={(id) => {
+                window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
+                setSelectedPatientId(id);
+                // clinicalHistoryReturnTab sigue en 'patients' (no cambia de
+                // valor real) — solo para que el popstate del back del
+                // navegador (ver más abajo) sepa cerrar la ficha sin saltar
+                // a "dashboard".
+                setClinicalHistoryReturnTab('patients');
+              }}
+            />
+          )
         )}
 
         {/* VIEW: CLINICAL HISTORY */}
