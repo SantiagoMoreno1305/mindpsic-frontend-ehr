@@ -27,6 +27,8 @@ import { Toaster, toast } from 'react-hot-toast';
 import { invalidateCompaniesCache } from './hooks/useCompanies';
 import { invalidateSelectoresCache } from './components/DelegatedAppointmentModal';
 import { invalidatePatientsListCache } from './components/EHR/PacientesPanel';
+import { invalidatePendingDocsCache } from './components/EHR/PendingDocumentationTab';
+import { invalidateExpedientesCache } from './components/EHR/ClinicalRecordsList';
 
 // Restaura la sesión guardada de forma SÍNCRONA, en la inicialización del
 // estado — no dentro de un useEffect. Si currentUser arrancara en null y se
@@ -214,6 +216,8 @@ export default function App() {
     invalidateCompaniesCache();
     invalidateSelectoresCache();
     invalidatePatientsListCache();
+    invalidatePendingDocsCache();
+    invalidateExpedientesCache();
     setCurrentUser(null);
     setIsDrMindOpen(false);
     setDrMindContextPatient(null);
@@ -232,6 +236,8 @@ export default function App() {
       invalidateCompaniesCache();
       invalidateSelectoresCache();
       invalidatePatientsListCache();
+      invalidatePendingDocsCache();
+      invalidateExpedientesCache();
       setCurrentUser(null);
       setIsDrMindOpen(false);
       setDrMindContextPatient(null);

@@ -29,6 +29,8 @@ import { getApiBase } from '../lib/apiClient';
 import { invalidateCompaniesCache } from '../hooks/useCompanies';
 import { invalidateSelectoresCache } from '../components/DelegatedAppointmentModal';
 import { invalidatePatientsListCache } from '../components/EHR/PacientesPanel';
+import { invalidatePendingDocsCache } from '../components/EHR/PendingDocumentationTab';
+import { invalidateExpedientesCache } from '../components/EHR/ClinicalRecordsList';
 
 // ---------------------------------------------------------------------------
 // Configuración del backend
@@ -120,6 +122,8 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
     invalidateCompaniesCache();
     invalidateSelectoresCache();
     invalidatePatientsListCache();
+    invalidatePendingDocsCache();
+    invalidateExpedientesCache();
 
     // ── Detección de Primer Ingreso (Contraseña Temporal) ────────────────
     // El backend genera contraseñas temporales con el patrón:

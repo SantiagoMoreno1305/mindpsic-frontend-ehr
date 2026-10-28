@@ -35,6 +35,28 @@ const PAGE_SIZE = 20;
 const TIPO_LABELS: Record<string, string> = { EVALUACION_INICIAL: 'Evaluación inicial', EVOLUCION: 'Evolución' };
 const ESTADO_LABELS: Record<string, string> = { SIN_REGISTRO: 'Sin registro', BORRADOR: 'Borrador' };
 
+// Caché en memoria por combinación exacta de filtros+página (decisión
+// 2026-10-27, mismo patrón que patientsListCache en PacientesPanel.tsx) —
+// esta pestaña se desmonta por completo al salir de "Historias Clínicas" o
+// al entrar a la ficha de un paciente, y se remonta desde cero al volver.
+// Sin esto, cada regreso mostraba "Cargando…" aunque los mismos filtros ya
+// se hubieran consultado segundos antes. TTL corto (30s): esta lista puede
+// cambiar seguido (nuevas atenciones, borradores firmados).
+const PENDING_DOCS_CACHE_TTL_MS = 30 * 1000;
+interface PendingDocsCacheEntry {
+  items: PendingItem[];
+  total: number;
+  ts: number;
+}
+const pendingDocsCache = new Map<string, PendingDocsCacheEntry>();
+
+// Mismo criterio que invalidatePatientsListCache — se llama en logout/cambio
+// de sesión (ver App.tsx/Login.tsx) para que una cuenta de OTRO tenant en la
+// misma pestaña no siga viendo documentación pendiente del tenant anterior.
+export function invalidatePendingDocsCache(): void {
+  pendingDocsCache.clear();
+}
+
 // Zona horaria del producto (decisión 2026-10-27) — la clínica opera en
 // Colombia, las horas se presentan en America/Bogota sin importar dónde
 // esté físicamente el navegador que las ve.
@@ -79,25 +101,46 @@ export default function PendingDocumentationTab({ token, userRole, onSelectPatie
 
   const fetchPending = async () => {
     if (!token) { setLoading(false); return; }
-    setLoading(true);
-    setError(false);
+    const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+    if (query.trim()) params.set('q', query.trim());
+    if (estado) params.set('estado', estado);
+    if (tipo) params.set('tipo', tipo);
+    if (isClinicaScope && profesionalId) params.set('profesionalId', profesionalId);
+    if (desde) params.set('desde', desde);
+    if (hasta) params.set('hasta', hasta);
+    const cacheKey = params.toString();
+
+    const cached = pendingDocsCache.get(cacheKey);
+    if (cached) {
+      // Instantáneo: se pinta lo que ya había, sin "Cargando…".
+      setItems(cached.items);
+      setTotal(cached.total);
+      setLoading(false);
+      setError(false);
+      if (Date.now() - cached.ts < PENDING_DOCS_CACHE_TTL_MS) return; // sigue fresco, nada que revalidar
+      // vencido — se deja lo cacheado en pantalla y se revalida abajo en silencio.
+    } else {
+      setLoading(true);
+      setError(false);
+    }
+
     try {
-      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
-      if (query.trim()) params.set('q', query.trim());
-      if (estado) params.set('estado', estado);
-      if (tipo) params.set('tipo', tipo);
-      if (isClinicaScope && profesionalId) params.set('profesionalId', profesionalId);
-      if (desde) params.set('desde', desde);
-      if (hasta) params.set('hasta', hasta);
-      const res = await apiFetch(`/api/clinical-history/pending?${params.toString()}`);
+      const res = await apiFetch(`/api/clinical-history/pending?${cacheKey}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setItems(Array.isArray(data.items) ? data.items : []);
-      setTotal(typeof data.total === 'number' ? data.total : 0);
+      const nextItems: PendingItem[] = Array.isArray(data.items) ? data.items : [];
+      const nextTotal = typeof data.total === 'number' ? data.total : 0;
+      pendingDocsCache.set(cacheKey, { items: nextItems, total: nextTotal, ts: Date.now() });
+      setItems(nextItems);
+      setTotal(nextTotal);
     } catch {
-      setError(true);
-      setItems([]);
-      setTotal(0);
+      if (!cached) {
+        setError(true);
+        setItems([]);
+        setTotal(0);
+      }
+      // Si había algo cacheado (aunque vencido), se deja en pantalla en vez
+      // de vaciarlo por un error de red pasajero durante la revalidación.
     } finally {
       setLoading(false);
     }
