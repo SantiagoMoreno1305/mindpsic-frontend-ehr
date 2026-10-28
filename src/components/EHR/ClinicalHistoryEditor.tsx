@@ -1363,7 +1363,10 @@ export default function ClinicalHistoryEditor({ patientId }: ClinicalHistoryEdit
 
       {/* ═══ MODAL: Confirmar firma (dos pasos: aviso -> código por correo) ═══ */}
       {confirmSign && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
+          onClick={(e) => { if (e.target === e.currentTarget && !requestingCode && !signing) closeSignModal(); }}
+        >
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
             <div className="mb-3 flex items-center justify-between">
               <div className="flex items-center gap-2">

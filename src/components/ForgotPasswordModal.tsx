@@ -118,7 +118,10 @@ export default function ForgotPasswordModal({ isOpen, onClose, onSuccess }: Forg
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-stone-950/50 px-4 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-stone-950/50 px-4 backdrop-blur-sm"
+      onClick={(e) => { if (e.target === e.currentTarget && !loading) resetAndClose(); }}
+    >
       <div className="w-full max-w-[420px] rounded-2xl border border-stone-200 bg-white shadow-[0_8px_40px_rgba(0,0,0,0.18)]">
         <div className="flex items-center justify-between border-b border-stone-100 px-6 py-4">
           <h2

@@ -1095,7 +1095,10 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
       ))}
 
       {codeModalFor && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs"
+          onClick={(e) => { if (e.target === e.currentTarget && !codeSubmitting) setCodeModalFor(null); }}
+        >
           <div className="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
             <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
@@ -1165,7 +1168,10 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
       )}
 
       {editDatesFor && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs"
+          onClick={(e) => { if (e.target === e.currentTarget && !savingDates) setEditDatesFor(null); }}
+        >
           <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
@@ -1218,7 +1224,10 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
       )}
 
       {guionModalFor && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs"
+          onClick={(e) => { if (e.target === e.currentTarget && !savingGuion) setGuionModalFor(null); }}
+        >
           <div className="flex max-h-[85vh] w-full max-w-xl flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
             <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4">
               <div>
@@ -1264,7 +1273,10 @@ export default function ResearchProjectsPanel({ canManage }: { canManage: boolea
       )}
 
       {deletingProject && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs"
+          onClick={(e) => { if (e.target === e.currentTarget && !deletingBusy) setDeletingProject(null); }}
+        >
           <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
               <h2 className="text-sm font-bold text-slate-900">Eliminar proyecto</h2>

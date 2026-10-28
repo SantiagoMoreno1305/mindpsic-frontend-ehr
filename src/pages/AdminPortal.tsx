@@ -2853,7 +2853,10 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             {/* MODAL: Crear profesional — lo que se escriba queda en caché
                 (sessionStorage) aunque se cierre sin enviar. */}
             {showCreateStaffModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+              onClick={(e) => { if (e.target === e.currentTarget && !isCreatingStaff) setShowCreateStaffModal(false); }}
+            >
             <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden bg-white rounded-2xl shadow-xl p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-black text-slate-900">Crear profesional</h3>
@@ -3243,7 +3246,10 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
         {/* MODAL: Editar profesional */}
         {showEditStaffModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={(e) => { if (e.target === e.currentTarget && !savingStaff) setShowEditStaffModal(false); }}
+          >
             <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden bg-white rounded-2xl shadow-xl p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-black text-slate-900">Editar profesional</h3>
@@ -3665,7 +3671,10 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
         {/* MODAL: Historial de cambios de ficha profesional */}
         {showStaffHistoryModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={(e) => { if (e.target === e.currentTarget) setShowStaffHistoryModal(false); }}
+          >
             <div className="w-full max-w-lg max-h-[80vh] overflow-y-auto bg-white rounded-2xl shadow-xl p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-black text-slate-900">Historial — {staffHistoryName}</h3>
@@ -3829,7 +3838,10 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             bloque con scroll, así que el título y la "X" desaparecían apenas
             bajabas un poco. */}
         {showCompanyModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={(e) => { if (e.target === e.currentTarget && !savingCompany) setShowCompanyModal(false); }}
+          >
             <div className="w-full max-w-lg max-h-[90vh] bg-white rounded-2xl shadow-xl flex flex-col overflow-hidden">
               <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100 shrink-0">
                 <h3 className="text-base font-black text-slate-900">
