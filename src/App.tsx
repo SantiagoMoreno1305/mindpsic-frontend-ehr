@@ -15,6 +15,7 @@ import TrainingTaskParticipant from './pages/TrainingTaskParticipant';
 import TrainingFacilitatorChecklist from './pages/TrainingFacilitatorChecklist';
 import ProgramsPortal from './pages/ProgramsPortal';
 import AnswerAssessment from './pages/AnswerAssessment';
+import AnswerSatisfactionSurvey from './pages/AnswerSatisfactionSurvey';
 import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
 import ForcePasswordChange from './pages/ForcePasswordChange';
@@ -618,6 +619,18 @@ export default function App() {
 
   if (window.location.pathname.startsWith('/invitacion/')) {
     return <InvitationLanding />;
+  }
+
+  // ============================================================================
+  // PANTALLA PÚBLICA DE ENCUESTA DE SATISFACCIÓN — /encuesta/:token
+  //
+  // Mismo modelo de confianza que /firmar/: sin cuenta del paciente, el token
+  // opaco es la única credencial. A diferencia de las demás, el paciente
+  // nunca escribe su nombre/documento (ver comentario en
+  // AnswerSatisfactionSurvey.tsx) — el token ya lo identifica internamente.
+  // ============================================================================
+  if (window.location.pathname.startsWith('/encuesta/')) {
+    return <AnswerSatisfactionSurvey />;
   }
 
   return (
