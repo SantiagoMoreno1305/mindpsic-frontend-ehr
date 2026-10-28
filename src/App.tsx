@@ -15,6 +15,7 @@ import TrainingTaskParticipant from './pages/TrainingTaskParticipant';
 import TrainingFacilitatorChecklist from './pages/TrainingFacilitatorChecklist';
 import ProgramsPortal from './pages/ProgramsPortal';
 import AnswerAssessment from './pages/AnswerAssessment';
+import AnswerSatisfactionSurvey from './pages/AnswerSatisfactionSurvey';
 import PsychologistPortal from './pages/PsychologistPortal';
 import AdminPortal from './pages/AdminPortal';
 import ForcePasswordChange from './pages/ForcePasswordChange';
@@ -208,7 +209,18 @@ export default function App() {
     localStorage.removeItem('mind_token');
     localStorage.removeItem('mind_user');
     localStorage.removeItem('mind_must_change_pwd');
-    try { sessionStorage.removeItem('mind_portal'); } catch { /* sin almacenamiento */ }
+    try {
+      sessionStorage.removeItem('mind_portal');
+      // Filtros de "Pacientes"/"Expedientes" (pestaña activa, búsqueda,
+      // convenio, psicólogo, orden) — sessionStorage usa una clave fija, sin
+      // distinguir usuario/rol, así que si no se limpia acá la próxima
+      // cuenta que entre en esta misma pestaña del navegador (de OTRO rol,
+      // ej. un CEO después de un especialista) hereda filtros que no le
+      // corresponden — ej. "Mis Pacientes" en alguien que no es
+      // ESPECIALISTA_B2B (reportado en producción).
+      sessionStorage.removeItem('mind_pacientes_search_state');
+      sessionStorage.removeItem('mind_clinical_records_search_state');
+    } catch { /* sin almacenamiento */ }
     setPortal(null);
     // Catálogos de convenios/especialistas/especialidades en caché de módulo
     // — si no se limpian acá, la próxima cuenta que entre en esta misma
@@ -233,6 +245,10 @@ export default function App() {
       // Limpiar sesión pero mantener isSuspended=true para mostrar el banner
       localStorage.removeItem('mind_token');
       localStorage.removeItem('mind_user');
+      try {
+        sessionStorage.removeItem('mind_pacientes_search_state');
+        sessionStorage.removeItem('mind_clinical_records_search_state');
+      } catch { /* sin almacenamiento */ }
       invalidateCompaniesCache();
       invalidateSelectoresCache();
       invalidatePatientsListCache();
@@ -603,6 +619,18 @@ export default function App() {
 
   if (window.location.pathname.startsWith('/invitacion/')) {
     return <InvitationLanding />;
+  }
+
+  // ============================================================================
+  // PANTALLA PÚBLICA DE ENCUESTA DE SATISFACCIÓN — /encuesta/:token
+  //
+  // Mismo modelo de confianza que /firmar/: sin cuenta del paciente, el token
+  // opaco es la única credencial. A diferencia de las demás, el paciente
+  // nunca escribe su nombre/documento (ver comentario en
+  // AnswerSatisfactionSurvey.tsx) — el token ya lo identifica internamente.
+  // ============================================================================
+  if (window.location.pathname.startsWith('/encuesta/')) {
+    return <AnswerSatisfactionSurvey />;
   }
 
   return (

@@ -15,7 +15,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Search, UserPlus, CalendarPlus, ChevronLeft, ChevronRight, ChevronDown, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, MoreVertical, History, Smartphone, Trash2, ArrowUp, ArrowDown, ArrowUpDown, Check, RefreshCw } from 'lucide-react';
+import { Search, UserPlus, CalendarPlus, ChevronLeft, ChevronRight, ChevronDown, Filter, X, Pencil, PhoneCall, Upload, SendHorizontal, MoreVertical, History, Smartphone, Trash2, ArrowUp, ArrowDown, ArrowUpDown, Check, RefreshCw, Star } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import CreatePatientModal, { PATIENT_STATUS_LABELS } from './CreatePatientModal';
 import BulkImportPatientsModal from './BulkImportPatientsModal';
@@ -152,11 +152,44 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   // tratantes, psychologistId=su-id siempre les daría una tabla vacía.
   const hasOwnPatients = userRole === 'ESPECIALISTA_B2B';
   const initialSearchState = readSearchState();
+  // "Mis Pacientes" guardado en sessionStorage no es válido para quien no es
+  // ESPECIALISTA_B2B — sessionStorage usa una clave fija, sin distinguir
+  // usuario/rol, así que si ANTES en esta misma pestaña del navegador entró
+  // un especialista (default 'mine') y ahora entra un CEO/DIRECTIVO/OPERATIVO,
+  // sin este chequeo heredaría "Mis Pacientes" en vez de partir en "Todos"
+  // (reportado en producción). Se ignora el valor restaurado si no le
+  // corresponde al rol actual, igual que si nunca se hubiera guardado nada.
+  const restoredViewTab = initialSearchState.viewTab === 'mine' && !hasOwnPatients
+    ? ''
+    : initialSearchState.viewTab;
   const [viewTab, setViewTab] = useState<ViewTab>(
-    initialSearchState.viewTab || (hasOwnPatients ? 'mine' : 'all')
+    restoredViewTab || (hasOwnPatients ? 'mine' : 'all')
   );
-  const [patients, setPatients] = useState<BackendPatient[]>([]);
-  const [total, setTotal] = useState(0);
+
+  // Sembrar el estado inicial desde el caché (si hay) para la combinación
+  // de filtros+página con la que arranca el componente — replica
+  // effectivePsychologistId/effectiveStatus de más abajo, pero usando
+  // initialSearchState porque psychologistId/status todavía no existen como
+  // state acá arriba. Sin esto, el PRIMER render siempre pinta el esqueleto
+  // de carga (el valor inicial de `loading`) y recién en el siguiente tick
+  // (el efecto de fetchPatients corre en un setTimeout) se corrige con lo
+  // cacheado — ese salto es el parpadeo reportado en producción, aunque el
+  // caché ya tuviera el dato listo.
+  const initialEffectivePsychologistId = viewTab === 'mine' ? (userId || '') : initialSearchState.psychologistId;
+  const initialEffectiveStatus = viewTab === 'finalizado' ? 'finalizado' : initialSearchState.status;
+  const initialCacheParams = new URLSearchParams({
+    page: String(initialSearchState.page),
+    limit: String(PAGE_SIZE),
+    sort: `${initialSearchState.sortField}_${initialSearchState.sortDir}`,
+  });
+  if (initialSearchState.query.trim()) initialCacheParams.set('q', initialSearchState.query.trim());
+  if (initialSearchState.companyId) initialCacheParams.set('companyId', initialSearchState.companyId);
+  if (initialEffectivePsychologistId) initialCacheParams.set('psychologistId', initialEffectivePsychologistId);
+  if (initialEffectiveStatus) initialCacheParams.set('status', initialEffectiveStatus);
+  const initialCached = patientsListCache.get(initialCacheParams.toString());
+
+  const [patients, setPatients] = useState<BackendPatient[]>(initialCached?.patients ?? []);
+  const [total, setTotal] = useState(initialCached?.total ?? 0);
   // Conteos de cada pestaña — independientes de los filtros manuales
   // (convenio/psicólogo/búsqueda), para que el número junto a cada pestaña
   // diga "cuántos habría" y no se recalcule contra el filtro ya aplicado.
@@ -164,7 +197,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   // cambiar (crear/editar/reactivar/cambio inline).
   const [tabCounts, setTabCounts] = useState({ mine: 0, all: 0, finalizado: 0 });
   const [page, setPage] = useState(initialSearchState.page);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialCached);
   // Refresco forzado (botón manual o tras crear/editar/eliminar/agendar) —
   // separado de `loading` a propósito: `loading` oculta las filas y muestra
   // el esqueleto, lo cual está bien para la carga inicial pero se ve mal
@@ -220,6 +253,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   const [sendingLinea247Id, setSendingLinea247Id] = useState<string | null>(null);
   const [sendingInvitationId, setSendingInvitationId] = useState<string | null>(null);
   const [resendingConfirmationId, setResendingConfirmationId] = useState<string | null>(null);
+  const [sendingSurveyId, setSendingSurveyId] = useState<string | null>(null);
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
   // Menú "más acciones" (Editar/Historial de estados/Línea 24-7/Reenviar
   // confirmación) — "Agendar cita" se quitó de acá, se agenda desde el botón
@@ -231,7 +265,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   // final. Se ancla con `top` (debajo del botón) o `bottom` (encima del
   // botón, para las últimas filas donde no cabe hacia abajo) según el
   // espacio disponible en el viewport al momento de abrirlo.
-  const ACTION_MENU_HEIGHT = canHardDelete ? 264 : 220; // ≈44px c/u (6 ítems si es CEO) — usado para decidir si abre hacia arriba
+  const ACTION_MENU_HEIGHT = canHardDelete ? 308 : 264; // ≈44px c/u (7 ítems si es CEO) — usado para decidir si abre hacia arriba
   const [actionMenu, setActionMenu] = useState<{ patientId: string; top?: number; bottom?: number; right: number } | null>(null);
   // Menú de Estado — reemplaza el <select> nativo (decisión 2026-10-27: el
   // estilo del select nativo "parece de principios de los 2000" y no se puede
@@ -354,6 +388,32 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
       showToast('No se pudo contactar el servidor.');
     } finally {
       setResendingConfirmationId(null);
+    }
+  }
+
+  // Encuesta de satisfacción sobre la última cita "Atendida" del paciente —
+  // el backend resuelve cuál cita, aquí solo se pide el envío (ver
+  // satisfaction-survey.service.js). El error del backend ya trae el
+  // mensaje armado (sin cita atendida, o enfriamiento de 30 días desde el
+  // último envío), así que se muestra tal cual.
+  async function handleSendSatisfactionSurvey(patient: BackendPatient) {
+    setSendingSurveyId(patient.id);
+    try {
+      const res = await apiFetch('/api/satisfaction-surveys', {
+        method: 'POST',
+        body: JSON.stringify({ patientId: patient.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data?.error || 'No se pudo enviar la encuesta de satisfacción.');
+        return;
+      }
+      const destino = data.sentTo?.email || data.sentTo?.phone;
+      showToast(destino ? `Encuesta de satisfacción enviada a ${destino}.` : 'Encuesta creada (el paciente no tiene correo ni teléfono registrado para enviarla).');
+    } catch {
+      showToast('No se pudo contactar el servidor.');
+    } finally {
+      setSendingSurveyId(null);
     }
   }
 
@@ -872,6 +932,14 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
                           >
                             <SendHorizontal className="h-3.5 w-3.5 shrink-0 text-slate-400" />
                             Reenviar confirmación
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setActionMenu(null); handleSendSatisfactionSurvey(p); }}
+                            disabled={sendingSurveyId === p.id}
+                            className="flex w-full items-center gap-2 whitespace-nowrap px-3 py-2 text-sm text-charcoal-900 transition-colors hover:bg-slate-50 disabled:cursor-wait disabled:opacity-40 cursor-pointer"
+                          >
+                            <Star className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                            Enviar encuesta de satisfacción
                           </button>
                           {canHardDelete && (
                             <>

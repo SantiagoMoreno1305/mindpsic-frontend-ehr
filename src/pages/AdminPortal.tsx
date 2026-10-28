@@ -98,19 +98,24 @@ interface AdminPortalProps {
 export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalProps = {}) {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   // Permiso del socio para crear códigos de acceso (Tenant.allowAccessCodes,
-  // lo habilita MindPsic desde AdminCenter). null = aún no se sabe: mientras
-  // tanto no se oculta nada (el backend igual rechaza la creación).
+  // lo habilita MindPsic desde AdminCenter). null = aún no se sabe —
+  // fail-closed: NO se muestra hasta confirmar que corresponde (decisión
+  // 2026-10-28, reportado en producción). Antes se mostraba por defecto
+  // mientras cargaba la capability; con red lenta eso dejaba la pestaña
+  // visible un rato aunque el permiso estuviera apagado y sin códigos
+  // previos — el backend igual rechaza CREAR, pero la pestaña no debe
+  // aparecer ni un instante si no corresponde.
   const [accessCodesCap, setAccessCodesCap] = useState<{ tenantEnabled: boolean; canCreate: boolean; hasCodes: boolean } | null>(null);
   useEffect(() => {
     if (!currentUser) return;
     apiFetch('/api/access-codes/capability')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => { if (data) setAccessCodesCap(data); })
-      .catch(() => { /* sin dato: se deja todo visible */ });
+      .catch(() => { /* sin dato: se deja oculto (fail-closed) */ });
   }, [currentUser?.id]);
   // Sin permiso Y sin códigos previos, la sección no tiene nada que ofrecer.
   // Con códigos ya emitidos se deja visible para poder cerrarlos/recordarlos.
-  const showAccessCodesTab = !(accessCodesCap && !accessCodesCap.tenantEnabled && !accessCodesCap.hasCodes);
+  const showAccessCodesTab = !!accessCodesCap && (accessCodesCap.tenantEnabled || accessCodesCap.hasCodes);
 
   // Proyectos de investigación: dos permisos independientes deben estar
   // activos (ver Manual de gates en research-project.service.js §canManage) —
@@ -4200,7 +4205,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
         )}
 
         {/* VIEW: CÓDIGOS DE ACCESO — línea24/7 y campañas de evaluación */}
-        {activeTab === 'access_codes' && <AccessCodesPanel canCreate={accessCodesCap?.canCreate ?? true} />}
+        {activeTab === 'access_codes' && <AccessCodesPanel canCreate={accessCodesCap?.canCreate ?? false} />}
 
         {/* VIEW: TARIFAS — por convenio y por estrato (particular) */}
         {activeTab === 'tariffs' && <TariffsPanel />}

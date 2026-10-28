@@ -78,9 +78,21 @@ export default function PendingDocumentationTab({ token, userRole, onSelectPatie
   // "Mis pacientes", DIRECTIVO/CEO siempre "Clínica" (con filtro de
   // profesional, porque ahí sí hay varias personas en el listado).
   const isClinicaScope = userRole === 'CEO' || userRole === 'DIRECTIVO';
-  const [items, setItems] = useState<PendingItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+
+  // Sembrar el estado inicial desde el caché (si hay) — todos los filtros
+  // empiezan vacíos/en página 1, así que esta es siempre la misma clave con
+  // la que arranca el componente. Sin esto, el PRIMER render siempre pinta
+  // "Cargando…" (el valor inicial de `loading`) y recién en el siguiente
+  // tick (el efecto de fetchPending corre en un setTimeout) se corrige con
+  // lo cacheado — ese salto entre el estado de carga y el de datos es
+  // exactamente el parpadeo reportado en producción, aunque el caché ya
+  // tuviera el dato listo.
+  const initialCacheKey = new URLSearchParams({ page: '1', limit: String(PAGE_SIZE) }).toString();
+  const initialCached = pendingDocsCache.get(initialCacheKey);
+
+  const [items, setItems] = useState<PendingItem[]>(initialCached?.items ?? []);
+  const [total, setTotal] = useState(initialCached?.total ?? 0);
+  const [loading, setLoading] = useState(!initialCached);
   const [error, setError] = useState(false);
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState('');

@@ -38,3 +38,8 @@ Thumbs.db
 # Documentación de contexto interna (no se publica en el repo)
 # Misma convención que el .gitignore de MindPsic-AdminCenter.
 Contexto_md/
+
+# Salida de las pruebas E2E (Playwright) — trazas/capturas por corrida local
+test-results/
+playwright-report/
+blob-report/
