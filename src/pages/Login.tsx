@@ -124,6 +124,17 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
     invalidatePatientsListCache();
     invalidatePendingDocsCache();
     invalidateExpedientesCache();
+    // Mismo criterio para los filtros de "Pacientes"/"Expedientes" en
+    // sessionStorage (clave fija, sin distinguir usuario/rol) — sin esto,
+    // un CEO/DIRECTIVO/OPERATIVO que entra en la misma pestaña donde antes
+    // había un ESPECIALISTA_B2B hereda "Mis Pacientes" en vez de partir en
+    // "Todos" (reportado en producción). Se limpia también acá, no solo en
+    // logout, por si el login ocurre sin pasar por un logout explícito
+    // (ej. el token expiró y se vuelve a entrar directo).
+    try {
+      sessionStorage.removeItem('mind_pacientes_search_state');
+      sessionStorage.removeItem('mind_clinical_records_search_state');
+    } catch { /* sin almacenamiento */ }
 
     // ── Detección de Primer Ingreso (Contraseña Temporal) ────────────────
     // El backend genera contraseñas temporales con el patrón:

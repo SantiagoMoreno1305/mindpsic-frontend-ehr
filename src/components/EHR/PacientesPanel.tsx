@@ -152,8 +152,18 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   // tratantes, psychologistId=su-id siempre les daría una tabla vacía.
   const hasOwnPatients = userRole === 'ESPECIALISTA_B2B';
   const initialSearchState = readSearchState();
+  // "Mis Pacientes" guardado en sessionStorage no es válido para quien no es
+  // ESPECIALISTA_B2B — sessionStorage usa una clave fija, sin distinguir
+  // usuario/rol, así que si ANTES en esta misma pestaña del navegador entró
+  // un especialista (default 'mine') y ahora entra un CEO/DIRECTIVO/OPERATIVO,
+  // sin este chequeo heredaría "Mis Pacientes" en vez de partir en "Todos"
+  // (reportado en producción). Se ignora el valor restaurado si no le
+  // corresponde al rol actual, igual que si nunca se hubiera guardado nada.
+  const restoredViewTab = initialSearchState.viewTab === 'mine' && !hasOwnPatients
+    ? ''
+    : initialSearchState.viewTab;
   const [viewTab, setViewTab] = useState<ViewTab>(
-    initialSearchState.viewTab || (hasOwnPatients ? 'mine' : 'all')
+    restoredViewTab || (hasOwnPatients ? 'mine' : 'all')
   );
 
   // Sembrar el estado inicial desde el caché (si hay) para la combinación
