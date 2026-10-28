@@ -14,7 +14,14 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './e2e',
-  fullyParallel: false, // los flujos comparten el tenant socios_de_pruebas — evita choques de datos entre tests
+  // fullyParallel:false solo serializa DENTRO de un archivo — Playwright
+  // igual corría distintos specs en paralelo (6 workers) por defecto. Como
+  // varios flujos comparten el tenant socios_de_pruebas contra la misma
+  // base de datos (crean/editan/eliminan convenios, pacientes, etc.),
+  // workers:1 fuerza serialización real entre archivos y evita una carrera
+  // de datos silenciosa entre specs que hoy no chocan por suerte.
+  fullyParallel: false,
+  workers: 1,
   retries: 0,
   reporter: [['list']],
   use: {
