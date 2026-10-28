@@ -79,10 +79,20 @@ export default function ClinicalRecordsList({
   // esa carga terminara. Se cambia a paginar y buscar del lado del servidor,
   // igual que /api/patients?q=&page=&limit= en PacientesPanel (decisión
   // 2026-10-27).
-  const [patients, setPatients] = useState<RealPatient[]>([]);
-  const [total, setTotal] = useState(0);
+  //
+  // Sembrar desde el caché (si hay) para la combinación query+página=1 con
+  // la que arranca el componente — sin esto, el PRIMER render siempre pinta
+  // "Cargando…" (el valor inicial de `loading`) y recién en el siguiente
+  // tick se corrige con lo cacheado (el efecto de fetchPatients corre en un
+  // setTimeout). Ese salto es el parpadeo reportado en producción.
+  const initialCacheParams = new URLSearchParams({ page: '1', limit: String(PAGE_SIZE) });
+  if (query.trim()) initialCacheParams.set('q', query.trim());
+  const initialCached = expedientesCache.get(initialCacheParams.toString());
+
+  const [patients, setPatients] = useState<RealPatient[]>(initialCached?.patients ?? []);
+  const [total, setTotal] = useState(initialCached?.total ?? 0);
   const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialCached);
 
   useEffect(() => {
     const token = localStorage.getItem('mind_token');

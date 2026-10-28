@@ -155,8 +155,31 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   const [viewTab, setViewTab] = useState<ViewTab>(
     initialSearchState.viewTab || (hasOwnPatients ? 'mine' : 'all')
   );
-  const [patients, setPatients] = useState<BackendPatient[]>([]);
-  const [total, setTotal] = useState(0);
+
+  // Sembrar el estado inicial desde el caché (si hay) para la combinación
+  // de filtros+página con la que arranca el componente — replica
+  // effectivePsychologistId/effectiveStatus de más abajo, pero usando
+  // initialSearchState porque psychologistId/status todavía no existen como
+  // state acá arriba. Sin esto, el PRIMER render siempre pinta el esqueleto
+  // de carga (el valor inicial de `loading`) y recién en el siguiente tick
+  // (el efecto de fetchPatients corre en un setTimeout) se corrige con lo
+  // cacheado — ese salto es el parpadeo reportado en producción, aunque el
+  // caché ya tuviera el dato listo.
+  const initialEffectivePsychologistId = viewTab === 'mine' ? (userId || '') : initialSearchState.psychologistId;
+  const initialEffectiveStatus = viewTab === 'finalizado' ? 'finalizado' : initialSearchState.status;
+  const initialCacheParams = new URLSearchParams({
+    page: String(initialSearchState.page),
+    limit: String(PAGE_SIZE),
+    sort: `${initialSearchState.sortField}_${initialSearchState.sortDir}`,
+  });
+  if (initialSearchState.query.trim()) initialCacheParams.set('q', initialSearchState.query.trim());
+  if (initialSearchState.companyId) initialCacheParams.set('companyId', initialSearchState.companyId);
+  if (initialEffectivePsychologistId) initialCacheParams.set('psychologistId', initialEffectivePsychologistId);
+  if (initialEffectiveStatus) initialCacheParams.set('status', initialEffectiveStatus);
+  const initialCached = patientsListCache.get(initialCacheParams.toString());
+
+  const [patients, setPatients] = useState<BackendPatient[]>(initialCached?.patients ?? []);
+  const [total, setTotal] = useState(initialCached?.total ?? 0);
   // Conteos de cada pestaña — independientes de los filtros manuales
   // (convenio/psicólogo/búsqueda), para que el número junto a cada pestaña
   // diga "cuántos habría" y no se recalcule contra el filtro ya aplicado.
@@ -164,7 +187,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
   // cambiar (crear/editar/reactivar/cambio inline).
   const [tabCounts, setTabCounts] = useState({ mine: 0, all: 0, finalizado: 0 });
   const [page, setPage] = useState(initialSearchState.page);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialCached);
   // Refresco forzado (botón manual o tras crear/editar/eliminar/agendar) —
   // separado de `loading` a propósito: `loading` oculta las filas y muestra
   // el esqueleto, lo cual está bien para la carga inicial pero se ve mal
