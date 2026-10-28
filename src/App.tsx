@@ -26,6 +26,7 @@ import { playNotificationChime } from './lib/notificationSound';
 import { Toaster, toast } from 'react-hot-toast';
 import { invalidateCompaniesCache } from './hooks/useCompanies';
 import { invalidateSelectoresCache } from './components/DelegatedAppointmentModal';
+import { invalidatePatientsListCache } from './components/EHR/PacientesPanel';
 
 // Restaura la sesión guardada de forma SÍNCRONA, en la inicialización del
 // estado — no dentro de un useEffect. Si currentUser arrancara en null y se
@@ -212,6 +213,7 @@ export default function App() {
     // pestaña (de OTRO tenant) puede seguir viéndolos hasta por 5 minutos.
     invalidateCompaniesCache();
     invalidateSelectoresCache();
+    invalidatePatientsListCache();
     setCurrentUser(null);
     setIsDrMindOpen(false);
     setDrMindContextPatient(null);
@@ -229,6 +231,7 @@ export default function App() {
       localStorage.removeItem('mind_user');
       invalidateCompaniesCache();
       invalidateSelectoresCache();
+      invalidatePatientsListCache();
       setCurrentUser(null);
       setIsDrMindOpen(false);
       setDrMindContextPatient(null);

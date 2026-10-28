@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Search, FileText, Users, ChevronLeft, ChevronRight, ClipboardX, X } from 'lucide-react';
-import { getApiBase } from '../../lib/apiClient';
-import { normalizarBusqueda } from '../../lib/normalizarBusqueda';
+import { apiFetch, getApiBase } from '../../lib/apiClient';
 
 const PAGE_SIZE = 10;
 
@@ -43,17 +42,28 @@ function readSearchQuery(): string {
 }
 
 export default function ClinicalRecordsList({
-  patients,
   onSelect,
 }: {
-  patients: RealPatient[];
   onSelect: (patientId: string) => void;
 }) {
   const [query, setQuery] = useState(readSearchQuery());
   const [summary, setSummary] = useState<Summary | null>(null);
   const [pendingRips, setPendingRips] = useState<PendingRipsPatient[]>([]);
   const [showPendingRips, setShowPendingRips] = useState(false);
+
+  // RENDIMIENTO (mismo criterio que PacientesPanel, ver su comentario de
+  // cabecera): esta pestaña ("Expedientes") antes recibía el listado
+  // COMPLETO del tenant vía el hook usePatients (sin paginar) y filtraba del
+  // lado del cliente. Con un tenant de miles/cientos de miles de pacientes
+  // eso significa traer todo a memoria del navegador en cada login — además
+  // de bloquear el primer render de AdminPortal completo, que esperaba a que
+  // esa carga terminara. Se cambia a paginar y buscar del lado del servidor,
+  // igual que /api/patients?q=&page=&limit= en PacientesPanel (decisión
+  // 2026-10-27).
+  const [patients, setPatients] = useState<RealPatient[]>([]);
+  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const token = localStorage.getItem('mind_token');
@@ -89,36 +99,49 @@ export default function ClinicalRecordsList({
     sessionStorage.setItem(SEARCH_STATE_KEY, query);
   }, [query]);
 
-  const filtered = useMemo(() => {
-    // Insensible a tildes/mayúsculas/espacios extra, mismo criterio que
-    // GET /api/patients (ver utils/normalizar-busqueda.js en el backend):
-    // "Maria" encuentra a "María", "MARIA" y "María Fernanda" y viceversa.
-    // Palabra por palabra, en cualquier orden — "maria perez" encuentra a
-    // "María Fernanda Pérez".
-    const palabras = normalizarBusqueda(query).split(' ').filter(Boolean);
-    const qDocumento = query.replace(/[\s.-]/g, '');
-    if (!palabras.length && !qDocumento) return patients;
-    return patients.filter((p) => {
-      const name = normalizarBusqueda(`${p.firstName} ${p.lastName}`);
-      const matchesName = palabras.length > 0 && palabras.every((palabra) => name.includes(palabra));
-      const matchesDocument = !!qDocumento && !!p.documentId?.includes(qDocumento);
-      const matchesRecordNumber = !!palabras.length && !!p.recordNumber && normalizarBusqueda(p.recordNumber).includes(normalizarBusqueda(query));
-      return matchesName || matchesDocument || matchesRecordNumber;
-    });
-  }, [patients, query]);
+  const fetchPatients = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+      if (query.trim()) params.set('q', query.trim());
+      const res = await apiFetch(`/api/patients?${params.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setPatients(Array.isArray(data.patients) ? data.patients : []);
+      setTotal(typeof data.total === 'number' ? data.total : 0);
+    } catch (err) {
+      console.error('[ClinicalRecordsList] Error cargando pacientes:', err);
+      setPatients([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // La búsqueda cambia el conjunto de resultados — si te quedabas en la
-  // página 3 de la lista completa, un filtro que deja solo 1 resultado no
-  // debe seguir mostrando una página vacía.
+  // Búsqueda con debounce (igual que PacientesPanel) — cambiar de página se
+  // aplica de inmediato.
   useEffect(() => {
+    const handle = setTimeout(fetchPatients, query ? 300 : 0);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, query]);
+
+  // Una búsqueda nueva cambia el conjunto de resultados — si te quedabas en
+  // la página 3, un filtro que deja solo 1 resultado no debe seguir
+  // mostrando una página vacía.
+  const isFirstQueryRun = useRef(true);
+  useEffect(() => {
+    if (isFirstQueryRun.current) {
+      isFirstQueryRun.current = false;
+      return;
+    }
     setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 
-  const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const rangeEnd = Math.min(page * PAGE_SIZE, total);
-  const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -193,7 +216,7 @@ export default function ClinicalRecordsList({
         </div>
 
         <ul className="flex flex-col divide-y divide-slate-200">
-          {paginated.map((p) => {
+          {patients.map((p) => {
             const initials = `${p.firstName?.[0] ?? ''}${p.lastName?.[0] ?? ''}`.toUpperCase();
             return (
               <li key={p.id}>
@@ -222,9 +245,9 @@ export default function ClinicalRecordsList({
               </li>
             );
           })}
-          {filtered.length === 0 && (
+          {!loading && patients.length === 0 && (
             <li className="py-10 text-center text-sm text-slate-400">
-              No se encontraron pacientes para &ldquo;{query}&rdquo;.
+              {query ? <>No se encontraron pacientes para &ldquo;{query}&rdquo;.</> : 'No hay pacientes registrados.'}
             </li>
           )}
         </ul>

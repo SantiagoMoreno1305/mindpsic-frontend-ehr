@@ -739,7 +739,10 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
       )}
 
       {showForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs"
+          onClick={(e) => { if (e.target === e.currentTarget && !submitting) setShowForm(false); }}
+        >
           <div className="flex max-h-[85vh] w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
             <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4">
               <h2 className="text-base font-bold text-charcoal-900">Nuevo código de acceso</h2>
@@ -939,7 +942,10 @@ export default function AccessCodesPanel({ canCreate = true }: { canCreate?: boo
       )}
 
       {editLugarCode && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-charcoal-900/40 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-charcoal-900/40 p-4"
+          onClick={(e) => { if (e.target === e.currentTarget && !savingLugar) setEditLugarCode(null); }}
+        >
           <div className="w-full max-w-md rounded-2xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
               <div>

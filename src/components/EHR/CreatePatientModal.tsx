@@ -35,7 +35,7 @@
 import { useState, useEffect } from 'react';
 import {
   X, UserPlus, Save, Loader2, User, Building2, HeartPulse, CalendarClock, BarChart3,
-  Stethoscope, MapPin, Check,
+  Stethoscope, MapPin, Check, Plus,
 } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
@@ -272,6 +272,12 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   // formulario general — ver comentario en updatePatient). Mismo gate de rol
   // que exige el backend en authorizeSessions.
   const canAuthorizeSessions = userRole === 'CEO' || userRole === 'DIRECTIVO';
+  // Crear un convenio nuevo sin salir de este modal (decisión 2026-10-27) —
+  // restringido a quien ya ve la pestaña "Convenios" en AdminPortal (CEO/
+  // DIRECTIVO/OPERATIVO). Un especialista individual (ESPECIALISTA_B2B) solo
+  // puede ELEGIR entre convenios existentes, no crear uno — esos registros
+  // tienen implicaciones de facturación/tarifas que no son suyas para decidir.
+  const canCreateCompany = userRole === 'CEO' || userRole === 'DIRECTIVO' || userRole === 'OPERATIVO';
 
   // ── Datos personales ──
   const [firstName, setFirstName] = useState('');
@@ -331,7 +337,13 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
 
   // ── Convenio y atención ──
   const [companyId, setCompanyId] = useState('');
-  const { companies, loading: loadingCompanies } = useCompanies();
+  const { companies, loading: loadingCompanies, refetch: refetchCompanies } = useCompanies();
+  // Crear convenio sin salir del modal (ver canCreateCompany más arriba) —
+  // mismo patrón que "Agregar tipo de convenio" en DelegatedAppointmentModal.
+  const [isCreatingCompany, setIsCreatingCompany] = useState(false);
+  const [newCompanyName, setNewCompanyName] = useState('');
+  const [savingCompany, setSavingCompany] = useState(false);
+  const [companyCreateError, setCompanyCreateError] = useState<string | null>(null);
   const [psychologistId, setPsychologistId] = useState('');
   const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
   const [loadingSpecialists, setLoadingSpecialists] = useState(false);
@@ -550,6 +562,9 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setLegalRep1Parentesco('');
     setLegalRep1Correo('');
     setCompanyId('');
+    setIsCreatingCompany(false);
+    setNewCompanyName('');
+    setCompanyCreateError(null);
     setPsychologistId('');
     setAgreementType('');
     setSpecialtyId('');
@@ -566,6 +581,36 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   function handleClose() {
     reset();
     onClose();
+  }
+
+  async function handleCreateCompany() {
+    const name = newCompanyName.trim();
+    if (!name) return;
+    setSavingCompany(true);
+    setCompanyCreateError(null);
+    try {
+      const res = await apiFetch('/api/companies', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCompanyCreateError(data.error || 'Error al crear el convenio.');
+        return;
+      }
+      // Invalida el caché compartido (PacientesPanel, DelegatedAppointmentModal,
+      // el panel de Convenios) para que todos vean el convenio nuevo, no solo
+      // este modal.
+      await refetchCompanies();
+      setCompanyId(data.id);
+      setAgreementType('');
+      setNewCompanyName('');
+      setIsCreatingCompany(false);
+    } catch (err: any) {
+      setCompanyCreateError('Error de red: ' + (err?.message || 'intenta de nuevo.'));
+    } finally {
+      setSavingCompany(false);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -815,7 +860,10 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs sm:p-6">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs sm:p-6"
+      onClick={(e) => { if (e.target === e.currentTarget && !submitting) handleClose(); }}
+    >
       <div className="relative flex max-h-[92vh] w-full max-w-3xl flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 px-6 py-4">
           <div>
@@ -1124,18 +1172,68 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
             {activeTab === 'convenio' && (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <FieldLabel required>Convenio / Cliente corporativo</FieldLabel>
-                  <select
-                    value={companyId}
-                    onChange={(e) => { setCompanyId(e.target.value); setAgreementType(''); }}
-                    disabled={loadingCompanies}
-                    className={SELECT_CLASS}
-                  >
-                    <option value="">Selecciona un convenio / cliente corporativo</option>
-                    {companies.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <FieldLabel required>Convenio / Cliente corporativo</FieldLabel>
+                    {canCreateCompany && !isCreatingCompany && (
+                      <button
+                        type="button"
+                        onClick={() => { setIsCreatingCompany(true); setCompanyCreateError(null); }}
+                        className="mb-1.5 inline-flex items-center gap-1 text-[11px] font-bold text-toast-500 transition-colors hover:text-toast-600 cursor-pointer"
+                      >
+                        <Plus className="h-3 w-3" /> Crear nuevo convenio
+                      </button>
+                    )}
+                  </div>
+
+                  {isCreatingCompany ? (
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={newCompanyName}
+                          onChange={(e) => setNewCompanyName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCreateCompany(); } }}
+                          placeholder="Nombre del convenio / cliente corporativo..."
+                          className={INPUT_CLASS}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleCreateCompany}
+                          disabled={savingCompany || !newCompanyName.trim()}
+                          className="shrink-0 rounded-lg bg-charcoal-900 px-3 py-2.5 text-xs font-bold text-white transition-colors hover:bg-charcoal-800 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                          {savingCompany ? '...' : 'Guardar'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setIsCreatingCompany(false); setNewCompanyName(''); setCompanyCreateError(null); }}
+                          disabled={savingCompany}
+                          className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600 cursor-pointer"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      {companyCreateError && (
+                        <p className="mt-1.5 text-xs font-medium text-rose-600">{companyCreateError}</p>
+                      )}
+                      <p className="mt-1.5 text-[11px] text-slate-400">
+                        Solo el nombre — tarifas, tipos de convenio y datos de contacto se completan después desde "Convenios".
+                      </p>
+                    </div>
+                  ) : (
+                    <select
+                      value={companyId}
+                      onChange={(e) => { setCompanyId(e.target.value); setAgreementType(''); }}
+                      disabled={loadingCompanies}
+                      className={SELECT_CLASS}
+                    >
+                      <option value="">Selecciona un convenio / cliente corporativo</option>
+                      {companies.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  )}
                 </div>
                 <div>
                   <FieldLabel>Tipo de convenio</FieldLabel>

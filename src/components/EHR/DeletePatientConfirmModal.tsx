@@ -79,7 +79,10 @@ export default function DeletePatientConfirmModal({ isOpen, onClose, patient, on
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs"
+      onClick={(e) => { if (e.target === e.currentTarget && !submitting) handleClose(); }}
+    >
       <div className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-xl">
         <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-4">
           <div className="flex items-start gap-3">

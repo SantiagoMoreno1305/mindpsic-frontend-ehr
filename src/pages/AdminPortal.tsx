@@ -12,11 +12,11 @@ import {
   initialClinicalFiles
 } from '../data/mockData';
 import { useAppointments } from '../hooks/useAppointments';
-import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
 import { useCompanies, type CompanyRecord, type CompanyLocation } from '../hooks/useCompanies';
 import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
 import ClinicalRecordsPanel from '../components/EHR/ClinicalRecordsPanel';
+import MiPlanPanel from '../components/EHR/MiPlanPanel';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
@@ -36,8 +36,7 @@ import CalendarPanel, {
   CalendarFilterSelect,
 } from '../components/EHR/CalendarPanel';
 import { apiFetch, getApiBase } from '../lib/apiClient';
-import { 
-  Patient, 
+import {
   PsychologistPerformance,
   ClinicalFile,
   User
@@ -85,10 +84,11 @@ import {
   Tag,
   Inbox,
   FlaskConical,
-  UserRound
+  UserRound,
+  CreditCard
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat' | 'mi_perfil';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat' | 'mi_perfil' | 'mi_plan';
 
 interface AdminPortalProps {
   navRequest?: { target: 'home' | 'profile'; n: number };
@@ -141,7 +141,6 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   // IMPORTANT: Hooks MUST be called unconditionally at the top level — Rules of Hooks
   const token = localStorage.getItem('mind_token');
   const { appointments: realAppointments, loading: apptsLoading, refetch: refetchAppointments } = useAppointments(token);
-  const { patients: realPatients, loading: patientsLoading } = usePatients(token);
   const { unreadCount: globalUnreadCount } = useGlobalChat();
 
   // ── Calendario general del tenant (Consola de Alertas) ─────────────────
@@ -1037,7 +1036,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   // Recuerda la última tab visitada entre recargas — sin esto, cualquier
   // refresh de página remonta el componente y activeTab vuelve a su default
   // ('metrics' / "Tablero Gerencial"), sin importar dónde estaba el usuario.
-  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat', 'mi_perfil'];
+  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat', 'mi_perfil', 'mi_plan'];
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     const saved = localStorage.getItem('mind_admin_active_tab');
     return (saved && (ADMIN_TABS as string[]).includes(saved)) ? (saved as AdminTab) : 'metrics';
@@ -1389,29 +1388,6 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   const [performances, setPerformances] = useState<PsychologistPerformance[]>([]);
   const [clinicalFiles, setClinicalFiles] = useState<ClinicalFile[]>(initialClinicalFiles);
 
-  // Mapeo dinámico de pacientes reales consumidos desde el custom hook
-  const patients: Patient[] = (realPatients || []).map((p) => {
-    const docIdNum = parseInt(p?.documentId?.replace(/\D/g, '') || '') || p?.id?.charCodeAt(0) || 0;
-    const agreements = ['Sura Medicina Prepagada', 'Colmédica Prepagada', 'MindHealth Global', 'Particular'];
-    const agreement = agreements[docIdNum % agreements.length];
-    const genders = ['Femenino', 'Masculino', 'No especificado'];
-    const gender = genders[docIdNum % genders.length];
-    const age = 20 + (docIdNum % 50);
-
-    return {
-      id: p?.documentId || p?.id || '',
-      name: `${p?.firstName || ''} ${p?.lastName || ''}`.trim() || 'Desconocido',
-      gender: gender,
-      age: age,
-      email: p?.email || 'contacto@mindpsic.com',
-      phone: p?.phone || '300-000-0000',
-      status: 'Activo',
-      agreement: agreement,
-      progressNotesCount: (docIdNum % 5) + 1,
-      lastSessionDate: new Date(Date.now() - (docIdNum % 10) * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
-    };
-  });
-
   // Filter agreements (Convenios) state
   const [selectedAgreement, setSelectedAgreement] = useState<string>('todos');
 
@@ -1640,7 +1616,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
 
   // Estado de carga / guardia defensiva
-  if (authLoading || patientsLoading || apptsLoading) {
+  if (authLoading || apptsLoading) {
     return (
       <div className="flex items-center justify-center h-screen bg-slate-50">
         <p className="text-lg text-stone-600 font-semibold animate-pulse">
@@ -2217,6 +2193,22 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             <UserRound className="w-4 h-4 shrink-0" />
             Mi perfil
           </button>
+          {/* "Mi Plan" — estado de la suscripción del propio tenant (decisión
+              2026-10-27). CEO/DIRECTIVO únicamente, mismo gate que exige el
+              backend en GET /api/tenants/me/subscription — OPERATIVO no ve
+              precios ni método de pago del socio. */}
+          {(currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') && (
+            <button
+              onClick={() => goToTab('mi_plan')}
+              id="tab-adm-mi-plan"
+              className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs transition-colors cursor-pointer ${
+                activeTab === 'mi_plan' ? 'bg-white/10 text-white font-semibold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
+              }`}
+            >
+              <CreditCard className="w-4 h-4 shrink-0" />
+              Mi Plan
+            </button>
+          )}
           {currentUser.licenseNumber && (
             <p className="text-[9px] text-slate-500 font-mono mt-1">
               Lic. {currentUser.licenseNumber}
@@ -2820,7 +2812,6 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
               <ClinicalRecordsPanel
                 token={token}
                 userRole={currentUser?.role}
-                patients={realPatients}
                 onSelectPatient={(id) => { setSelectedPatientId(id); setClinicalHistoryReturnTab(null); }}
               />
             ) : (
@@ -2862,7 +2853,10 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             {/* MODAL: Crear profesional — lo que se escriba queda en caché
                 (sessionStorage) aunque se cierre sin enviar. */}
             {showCreateStaffModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+              onClick={(e) => { if (e.target === e.currentTarget && !isCreatingStaff) setShowCreateStaffModal(false); }}
+            >
             <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden bg-white rounded-2xl shadow-xl p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-black text-slate-900">Crear profesional</h3>
@@ -3252,7 +3246,10 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
         {/* MODAL: Editar profesional */}
         {showEditStaffModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={(e) => { if (e.target === e.currentTarget && !savingStaff) setShowEditStaffModal(false); }}
+          >
             <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto overflow-x-hidden bg-white rounded-2xl shadow-xl p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-black text-slate-900">Editar profesional</h3>
@@ -3674,7 +3671,10 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
         {/* MODAL: Historial de cambios de ficha profesional */}
         {showStaffHistoryModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={(e) => { if (e.target === e.currentTarget) setShowStaffHistoryModal(false); }}
+          >
             <div className="w-full max-w-lg max-h-[80vh] overflow-y-auto bg-white rounded-2xl shadow-xl p-6 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base font-black text-slate-900">Historial — {staffHistoryName}</h3>
@@ -3838,7 +3838,10 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             bloque con scroll, así que el título y la "X" desaparecían apenas
             bajabas un poco. */}
         {showCompanyModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={(e) => { if (e.target === e.currentTarget && !savingCompany) setShowCompanyModal(false); }}
+          >
             <div className="w-full max-w-lg max-h-[90vh] bg-white rounded-2xl shadow-xl flex flex-col overflow-hidden">
               <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-slate-100 shrink-0">
                 <h3 className="text-base font-black text-slate-900">
@@ -4208,6 +4211,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             onUserUpdated={(u) => { setCurrentUser(u); onUserUpdated?.(u); }}
             onBack={() => window.history.back()}
           />
+        )}
+
+        {/* VIEW: MI PLAN — estado de la suscripción (solo CEO/DIRECTIVO, ver botón del pie) */}
+        {activeTab === 'mi_plan' && (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') && (
+          <MiPlanPanel />
         )}
 
         {/* VIEW: PROYECTOS DE INVESTIGACIÓN */}

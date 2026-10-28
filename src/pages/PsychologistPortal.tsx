@@ -15,7 +15,6 @@ import ClinicalRecordsPanel from '../components/EHR/ClinicalRecordsPanel';
 import { useState, FormEvent, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppointments } from '../hooks/useAppointments';
-import { usePatients } from '../hooks/usePatients';
 import { useGlobalChat } from '../hooks/useGlobalChat';
 import { toast } from 'react-hot-toast';
 import { NEW_APPOINTMENT_EVENT, OPEN_APPOINTMENT_EVENT, getApiBase } from '../lib/apiClient';
@@ -159,20 +158,7 @@ export default function PsychologistPortal({
 
   const token = localStorage.getItem('mind_token');
   const { appointments: realAppointments, loading: apptsLoading, refetch: refetchAppointments } = useAppointments(token);
-  const { patients: realPatients } = usePatients(token);
   const { unreadCount } = useGlobalChat();
-
-  const getPatientName = (id: string | null): string => {
-    if (!id) return '';
-    // Fuente primaria: el paciente embebido en las citas reales (de ahí sale
-    // selectedPatientId en la mayoría de los flujos, incluyendo el selector
-    // de "Historias Clínicas").
-    const fromAppointment = realAppointments.find(a => a.patient?.id === id)?.patient;
-    if (fromAppointment) return `${fromAppointment.firstName || ''} ${fromAppointment.lastName || ''}`.trim();
-    const real = realPatients.find(p => p.id === id);
-    if (real) return `${real.firstName} ${real.lastName}`.trim();
-    return patients.find(p => p.id === id)?.name || '';
-  };
 
   // ---------------------------------------------------------------
   // RENDIMIENTO: precarga de los catálogos del agendamiento
@@ -1103,7 +1089,6 @@ export default function PsychologistPortal({
               <ClinicalRecordsPanel
                 token={token}
                 userRole={currentUser?.role}
-                patients={realPatients}
                 onSelectPatient={(id) => { setSelectedPatientId(id); setClinicalHistoryReturnTab(null); }}
               />
             ) : (
@@ -1174,7 +1159,10 @@ export default function PsychologistPortal({
         };
 
         return (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={(e) => { if (e.target === e.currentTarget) setSelectedSessionForModal(null); }}
+          >
             <div className="bg-white rounded-2xl w-full max-w-xl shadow-2xl overflow-hidden text-left">
 
               {/* Header oscuro institucional */}
