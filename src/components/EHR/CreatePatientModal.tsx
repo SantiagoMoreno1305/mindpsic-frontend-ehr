@@ -860,7 +860,10 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs sm:p-6">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs sm:p-6"
+      onClick={(e) => { if (e.target === e.currentTarget && !submitting) handleClose(); }}
+    >
       <div className="relative flex max-h-[92vh] w-full max-w-3xl flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 px-6 py-4">
           <div>
