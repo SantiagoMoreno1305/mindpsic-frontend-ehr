@@ -41,6 +41,25 @@ function readSearchQuery(): string {
   }
 }
 
+// Caché en memoria por combinación exacta de búsqueda+página (decisión
+// 2026-10-27, mismo patrón que patientsListCache en PacientesPanel.tsx) —
+// "Expedientes" se desmonta por completo al salir de "Historias Clínicas" o
+// al entrar a la ficha de un paciente, y se remonta desde cero al volver.
+// TTL corto (30s): esta lista puede cambiar (altas de pacientes nuevas).
+const EXPEDIENTES_CACHE_TTL_MS = 30 * 1000;
+interface ExpedientesCacheEntry {
+  patients: RealPatient[];
+  total: number;
+  ts: number;
+}
+const expedientesCache = new Map<string, ExpedientesCacheEntry>();
+
+// Mismo criterio que invalidatePatientsListCache/invalidatePendingDocsCache —
+// se llama en logout/cambio de sesión (ver App.tsx/Login.tsx).
+export function invalidateExpedientesCache(): void {
+  expedientesCache.clear();
+}
+
 export default function ClinicalRecordsList({
   onSelect,
 }: {
@@ -100,19 +119,39 @@ export default function ClinicalRecordsList({
   }, [query]);
 
   const fetchPatients = async () => {
-    setLoading(true);
+    const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+    if (query.trim()) params.set('q', query.trim());
+    const cacheKey = params.toString();
+
+    const cached = expedientesCache.get(cacheKey);
+    if (cached) {
+      // Instantáneo: se pinta lo que ya había, sin "Cargando…".
+      setPatients(cached.patients);
+      setTotal(cached.total);
+      setLoading(false);
+      if (Date.now() - cached.ts < EXPEDIENTES_CACHE_TTL_MS) return; // sigue fresco, nada que revalidar
+      // vencido — se deja lo cacheado en pantalla y se revalida abajo en silencio.
+    } else {
+      setLoading(true);
+    }
+
     try {
-      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
-      if (query.trim()) params.set('q', query.trim());
-      const res = await apiFetch(`/api/patients?${params.toString()}`);
+      const res = await apiFetch(`/api/patients?${cacheKey}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setPatients(Array.isArray(data.patients) ? data.patients : []);
-      setTotal(typeof data.total === 'number' ? data.total : 0);
+      const nextPatients: RealPatient[] = Array.isArray(data.patients) ? data.patients : [];
+      const nextTotal = typeof data.total === 'number' ? data.total : 0;
+      expedientesCache.set(cacheKey, { patients: nextPatients, total: nextTotal, ts: Date.now() });
+      setPatients(nextPatients);
+      setTotal(nextTotal);
     } catch (err) {
       console.error('[ClinicalRecordsList] Error cargando pacientes:', err);
-      setPatients([]);
-      setTotal(0);
+      if (!cached) {
+        setPatients([]);
+        setTotal(0);
+      }
+      // Si había algo cacheado (aunque vencido), se deja en pantalla en vez
+      // de vaciarlo por un error de red pasajero durante la revalidación.
     } finally {
       setLoading(false);
     }
