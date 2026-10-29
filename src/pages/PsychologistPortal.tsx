@@ -994,6 +994,12 @@ export default function PsychologistPortal({
               setCurrentDate={setCurrentDate}
               onSelectAppointment={(app) => setSelectedSessionForModal(app)}
               onNewAppointment={() => setShowNewAppointmentModal(true)}
+              onViewPatientProfile={(app) => {
+                window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
+                setSelectedPatientId(app.patientId);
+                setClinicalHistoryReturnTab(activeTab);
+                setActiveTab('clinical_history');
+              }}
               filterSlot={
                 <CalendarFilterGroup>
                   <CalendarFilterSelect

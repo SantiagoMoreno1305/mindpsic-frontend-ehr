@@ -14,6 +14,7 @@ import {
   Clock,
   CalendarDays,
   User2,
+  FileText,
 } from 'lucide-react';
 
 export type CalendarView = 'day' | 'week' | 'month';
@@ -158,6 +159,11 @@ interface CalendarPanelProps {
   setCurrentDate: (d: Date) => void;
   onSelectAppointment: (app: CalendarAppointment) => void;
   onNewAppointment: () => void;
+  // Ir directo al perfil del paciente desde la tarjeta de la cita, sin tener
+  // que abrir el detalle primero (decisión 2026-10-29, pedido explícito:
+  // "afuera, no tener que entrar a la tarjeta de la cita"). Opcional — si no
+  // se pasa, la tarjeta no muestra el ícono.
+  onViewPatientProfile?: (app: CalendarAppointment) => void;
   // Slot libre en el header, entre la navegación de fecha y el selector de
   // vista (Día/Semana/Mes) — p. ej. un filtro por psicólogo. CalendarPanel no
   // conoce ese concepto a propósito (lo usan tanto el calendario general del
@@ -173,6 +179,7 @@ export default function CalendarPanel({
   setCurrentDate,
   onSelectAppointment,
   onNewAppointment,
+  onViewPatientProfile,
   filterSlot,
 }: CalendarPanelProps) {
   const today = new Date();
@@ -265,10 +272,10 @@ export default function CalendarPanel({
           <MonthView currentDate={currentDate} appts={sorted} today={today} onSelectDay={(d) => { setCurrentDate(d); setView('day'); }} />
         )}
         {view === 'week' && (
-          <WeekView currentDate={currentDate} appts={sorted} today={today} onSelectAppointment={onSelectAppointment} />
+          <WeekView currentDate={currentDate} appts={sorted} today={today} onSelectAppointment={onSelectAppointment} onViewPatientProfile={onViewPatientProfile} />
         )}
         {view === 'day' && (
-          <DayView date={currentDate} appts={sorted} onSelectAppointment={onSelectAppointment} />
+          <DayView date={currentDate} appts={sorted} onSelectAppointment={onSelectAppointment} onViewPatientProfile={onViewPatientProfile} />
         )}
       </div>
     </div>
@@ -356,11 +363,13 @@ function WeekView({
   appts,
   today,
   onSelectAppointment,
+  onViewPatientProfile,
 }: {
   currentDate: Date;
   appts: CalendarAppointment[];
   today: Date;
   onSelectAppointment: (app: CalendarAppointment) => void;
+  onViewPatientProfile?: (app: CalendarAppointment) => void;
 }) {
   const start = new Date(currentDate);
   start.setDate(currentDate.getDate() - currentDate.getDay());
@@ -386,7 +395,7 @@ function WeekView({
             <div className="flex min-h-24 flex-col gap-1.5 p-2">
               {dayAppts.length === 0 && <p className="py-4 text-center text-[10px] text-slate-400">Sin citas</p>}
               {dayAppts.map((a) => (
-                <ApptCard key={a.id} a={a} compact onClick={() => onSelectAppointment(a)} />
+                <ApptCard key={a.id} a={a} compact onClick={() => onSelectAppointment(a)} onViewProfile={onViewPatientProfile ? () => onViewPatientProfile(a) : undefined} />
               ))}
             </div>
           </div>
@@ -402,10 +411,12 @@ function DayView({
   date,
   appts,
   onSelectAppointment,
+  onViewPatientProfile,
 }: {
   date: Date;
   appts: CalendarAppointment[];
   onSelectAppointment: (app: CalendarAppointment) => void;
+  onViewPatientProfile?: (app: CalendarAppointment) => void;
 }) {
   const dayAppts = appts.filter((a) => sameDay(a.appDate, date));
 
@@ -422,7 +433,7 @@ function DayView({
       ) : (
         <div className="flex flex-col gap-2">
           {dayAppts.map((a) => (
-            <ApptCard key={a.id} a={a} onClick={() => onSelectAppointment(a)} />
+            <ApptCard key={a.id} a={a} onClick={() => onSelectAppointment(a)} onViewProfile={onViewPatientProfile ? () => onViewPatientProfile(a) : undefined} />
           ))}
         </div>
       )}
@@ -442,18 +453,33 @@ function StatusChip({ status }: { status: string }) {
   );
 }
 
-function ApptCard({ a, compact, onClick }: { a: CalendarAppointment; compact?: boolean; onClick: () => void }) {
+function ApptCard({ a, compact, onClick, onViewProfile }: { a: CalendarAppointment; compact?: boolean; onClick: () => void; onViewProfile?: () => void }) {
   const isVirtual = a.modalidad === 'Virtual' || a.modalidad === 'VIRTUAL';
+
+  // Ir al perfil del paciente sin abrir la tarjeta (decisión 2026-10-29) —
+  // stopPropagation para que el clic en el ícono no dispare también el
+  // onClick de la tarjeta que lo envuelve.
+  const viewProfileButton = onViewProfile && (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onViewProfile(); }}
+      title="Ver perfil del paciente"
+      className="shrink-0 rounded-lg p-1.5 text-toast-500 transition-colors hover:bg-toast-50 hover:text-toast-600 cursor-pointer"
+    >
+      <FileText className="h-4 w-4" />
+    </button>
+  );
 
   if (compact) {
     return (
-      <div onClick={onClick} className="flex cursor-pointer flex-col gap-1.5 overflow-hidden rounded-lg border border-slate-200 bg-white p-2 transition-colors hover:bg-toast-50/60 hover:border-toast-200">
+      <div onClick={onClick} className="relative flex cursor-pointer flex-col gap-1.5 overflow-hidden rounded-lg border border-slate-200 bg-white p-2 transition-colors hover:bg-toast-50/60 hover:border-toast-200">
+        {viewProfileButton && <div className="absolute right-1 top-1">{viewProfileButton}</div>}
         <span className="flex items-center gap-1 text-xs font-semibold text-charcoal-900">
           <Clock className="h-3.5 w-3.5 shrink-0 text-charcoal-400" />
           {fmtTime(a.appDate)}
         </span>
         <StatusChip status={a.estatus} />
-        <p className="truncate text-xs font-semibold text-charcoal-900">{a.patientName}</p>
+        <p className="truncate pr-6 text-xs font-semibold text-charcoal-900">{a.patientName}</p>
         <p className="flex items-center gap-1 truncate text-[11px] text-slate-500">
           {isVirtual ? <Video className="h-3 w-3 shrink-0" /> : <MapPin className="h-3 w-3 shrink-0" />}
           <span className="truncate">{a.atencionType}</span>
@@ -484,6 +510,7 @@ function ApptCard({ a, compact, onClick }: { a: CalendarAppointment; compact?: b
           </p>
         )}
       </div>
+      {viewProfileButton}
     </div>
   );
 }

@@ -2281,6 +2281,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                 setEditingAppointment(null);
                 setShowDelegatedModal(true);
               }}
+              onViewPatientProfile={(app) => {
+                goToTab('patients');
+                setSelectedPatientId(app.patientId);
+                setClinicalHistoryReturnTab('patients');
+              }}
               filterSlot={
                 <CalendarFilterGroup>
                   <CalendarFilterSelect
