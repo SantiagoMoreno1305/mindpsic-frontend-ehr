@@ -4627,6 +4627,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           onSuccess={() => {
             refetchAppointments();
           }}
+          onViewPatientProfile={(patientId) => {
+            goToTab('patients');
+            setSelectedPatientId(patientId);
+            setClinicalHistoryReturnTab('patients');
+          }}
         />
       </main>
     </div>

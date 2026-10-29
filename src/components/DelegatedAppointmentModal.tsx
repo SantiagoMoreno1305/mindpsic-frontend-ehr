@@ -17,7 +17,7 @@
 
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { toast } from 'react-hot-toast';
-import { X, Plus, Pencil, Video, Building2, Link2, CalendarClock, User } from 'lucide-react';
+import { X, Plus, Pencil, Video, Building2, Link2, CalendarClock, User, FileText } from 'lucide-react';
 import { apiFetch, getApiBase } from '../lib/apiClient';
 import { getCompaniesCached, type CompanyRecord } from '../hooks/useCompanies';
 import PsychologistAvailabilityGrid from './PsychologistAvailabilityGrid';
@@ -275,6 +275,12 @@ interface DelegatedAppointmentModalProps {
   onClose: () => void;
   onSuccess?: () => void;
   initialData?: any; // Datos de la cita existente para modo edición
+  // Ir al perfil/historia clínica del paciente ya seleccionado (decisión
+  // 2026-10-29) — cada portal navega distinto (AdminPortal cambia de
+  // pestaña a "patients", PsychologistPortal a "clinical_history"), así que
+  // este modal compartido delega la navegación en vez de asumir una.
+  // Opcional: si no se pasa, el ícono simplemente no aparece.
+  onViewPatientProfile?: (patientId: string) => void;
 }
 
 export default function DelegatedAppointmentModal({
@@ -282,6 +288,7 @@ export default function DelegatedAppointmentModal({
   onClose,
   onSuccess,
   initialData,
+  onViewPatientProfile,
 }: DelegatedAppointmentModalProps) {
   // ── Data state ──────────────────────────────────────────────────────────
   const [specialists, setSpecialists] = useState<Specialist[]>([]);
@@ -1577,8 +1584,24 @@ export default function DelegatedAppointmentModal({
                         onBlur={() => setTimeout(() => setShowPatientResults(false), 150)}
                         disabled={isEditingAppointment}
                         placeholder="Buscar paciente por nombre o documento…"
-                        className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white disabled:opacity-50 disabled:bg-slate-100"
+                        className={`w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white disabled:opacity-50 disabled:bg-slate-100 ${
+                          form.patientId && !isCreatingPatient && onViewPatientProfile ? 'pr-9' : ''
+                        }`}
                       />
+                      {form.patientId && !isCreatingPatient && onViewPatientProfile && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const patientId = form.patientId;
+                            resetAndClose();
+                            onViewPatientProfile(patientId);
+                          }}
+                          title="Ver perfil del paciente"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-indigo-500 transition-colors hover:bg-indigo-50 hover:text-indigo-700 cursor-pointer"
+                        >
+                          <FileText className="h-4 w-4" />
+                        </button>
+                      )}
                       {showPatientResults && !isEditingAppointment && (
                         <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
                           {patientSearchLoading ? (

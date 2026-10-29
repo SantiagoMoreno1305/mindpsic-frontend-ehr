@@ -1022,6 +1022,14 @@ export default function PsychologistPortal({
                 setRescheduleTarget(null);
                 refetchAppointments();
               }}
+              onViewPatientProfile={(patientId) => {
+                setShowNewAppointmentModal(false);
+                setRescheduleTarget(null);
+                window.history.pushState({ mindpsicPatientChart: true }, '', window.location.href);
+                setSelectedPatientId(patientId);
+                setClinicalHistoryReturnTab(activeTab);
+                setActiveTab('clinical_history');
+              }}
             />
           </div>
         )}
