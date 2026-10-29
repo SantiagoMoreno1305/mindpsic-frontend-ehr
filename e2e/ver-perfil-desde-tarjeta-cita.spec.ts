@@ -39,6 +39,10 @@ test('el ícono en la tarjeta de la cita (Tablero Gerencial) va al perfil sin ab
     // existir una sola vez (una cita hoy = una tarjeta).
     const viewProfileButton = page.getByTitle('Ver perfil del paciente');
     await expect(viewProfileButton).toBeVisible({ timeout: 10000 });
+    // En la tarjeta completa (no compacta) el botón trae el texto "Perfil"
+    // junto al ícono — pedido explícito tras ver el ícono solo ("no sé para
+    // qué sirve"), decisión 2026-10-29.
+    await expect(viewProfileButton.getByText('Perfil', { exact: true })).toBeVisible();
     await viewProfileButton.click();
 
     // No debe abrirse el modal de agendamiento/edición — el clic en el

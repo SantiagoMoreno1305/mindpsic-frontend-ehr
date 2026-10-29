@@ -17,7 +17,7 @@
 
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { toast } from 'react-hot-toast';
-import { X, Plus, Pencil, Video, Building2, Link2, CalendarClock, User, FileText } from 'lucide-react';
+import { X, Plus, Pencil, Video, Building2, Link2, CalendarClock, User, UserRound } from 'lucide-react';
 import { apiFetch, getApiBase } from '../lib/apiClient';
 import { getCompaniesCached, type CompanyRecord } from '../hooks/useCompanies';
 import PsychologistAvailabilityGrid from './PsychologistAvailabilityGrid';
@@ -1599,7 +1599,7 @@ export default function DelegatedAppointmentModal({
                           title="Ver perfil del paciente"
                           className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-indigo-500 transition-colors hover:bg-indigo-50 hover:text-indigo-700 cursor-pointer"
                         >
-                          <FileText className="h-4 w-4" />
+                          <UserRound className="h-4 w-4" />
                         </button>
                       )}
                       {showPatientResults && !isEditingAppointment && (

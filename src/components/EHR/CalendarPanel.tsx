@@ -14,7 +14,7 @@ import {
   Clock,
   CalendarDays,
   User2,
-  FileText,
+  UserRound,
 } from 'lucide-react';
 
 export type CalendarView = 'day' | 'week' | 'month';
@@ -458,15 +458,19 @@ function ApptCard({ a, compact, onClick, onViewProfile }: { a: CalendarAppointme
 
   // Ir al perfil del paciente sin abrir la tarjeta (decisión 2026-10-29) —
   // stopPropagation para que el clic en el ícono no dispare también el
-  // onClick de la tarjeta que lo envuelve.
+  // onClick de la tarjeta que lo envuelve. Ícono de persona (mismo que "Mi
+  // perfil" en el resto de la app — una hoja/documento no comunicaba qué
+  // hacía) — con texto "Perfil" donde hay espacio (tarjeta completa); en la
+  // compacta, muy angosta, queda solo el ícono con tooltip.
   const viewProfileButton = onViewProfile && (
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onViewProfile(); }}
       title="Ver perfil del paciente"
-      className="shrink-0 rounded-lg p-1.5 text-toast-500 transition-colors hover:bg-toast-50 hover:text-toast-600 cursor-pointer"
+      className="shrink-0 inline-flex items-center gap-1 rounded-lg p-1.5 text-toast-500 transition-colors hover:bg-toast-50 hover:text-toast-600 cursor-pointer"
     >
-      <FileText className="h-4 w-4" />
+      <UserRound className="h-4 w-4" />
+      {!compact && <span className="text-xs font-semibold">Perfil</span>}
     </button>
   );
 
