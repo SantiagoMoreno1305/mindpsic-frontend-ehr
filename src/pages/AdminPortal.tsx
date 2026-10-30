@@ -17,6 +17,7 @@ import { useCompanies, type CompanyRecord, type CompanyLocation } from '../hooks
 import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
 import ClinicalRecordsPanel from '../components/EHR/ClinicalRecordsPanel';
 import MiPlanPanel from '../components/EHR/MiPlanPanel';
+import SatisfactionResultsPanel from '../components/EHR/SatisfactionResultsPanel';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
@@ -85,10 +86,11 @@ import {
   Inbox,
   FlaskConical,
   UserRound,
-  CreditCard
+  CreditCard,
+  Star
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat' | 'mi_perfil' | 'mi_plan';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat' | 'mi_perfil' | 'mi_plan' | 'satisfaction';
 
 interface AdminPortalProps {
   navRequest?: { target: 'home' | 'profile'; n: number };
@@ -1041,7 +1043,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   // Recuerda la última tab visitada entre recargas — sin esto, cualquier
   // refresh de página remonta el componente y activeTab vuelve a su default
   // ('metrics' / "Tablero Gerencial"), sin importar dónde estaba el usuario.
-  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat', 'mi_perfil', 'mi_plan'];
+  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat', 'mi_perfil', 'mi_plan', 'satisfaction'];
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     const saved = localStorage.getItem('mind_admin_active_tab');
     return (saved && (ADMIN_TABS as string[]).includes(saved)) ? (saved as AdminTab) : 'metrics';
@@ -2212,6 +2214,21 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
             >
               <CreditCard className="w-4 h-4 shrink-0" />
               Mi Plan
+            </button>
+          )}
+          {/* "Satisfacción" — resultados de las encuestas enviadas a los
+              propios pacientes (decisión 2026-10-30). Mismo gate que el
+              backend exige en GET /api/satisfaction-surveys/me/results. */}
+          {(currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') && (
+            <button
+              onClick={() => goToTab('satisfaction')}
+              id="tab-adm-satisfaction"
+              className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs transition-colors cursor-pointer ${
+                activeTab === 'satisfaction' ? 'bg-white/10 text-white font-semibold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
+              }`}
+            >
+              <Star className="w-4 h-4 shrink-0" />
+              Satisfacción
             </button>
           )}
           {currentUser.licenseNumber && (
@@ -4226,6 +4243,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
         {/* VIEW: MI PLAN — estado de la suscripción (solo CEO/DIRECTIVO, ver botón del pie) */}
         {activeTab === 'mi_plan' && (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') && (
           <MiPlanPanel />
+        )}
+
+        {/* VIEW: SATISFACCIÓN — resultados de las encuestas enviadas (solo CEO/DIRECTIVO, ver botón del pie) */}
+        {activeTab === 'satisfaction' && (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') && (
+          <SatisfactionResultsPanel />
         )}
 
         {/* VIEW: PROYECTOS DE INVESTIGACIÓN */}
