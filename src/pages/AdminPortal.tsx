@@ -2731,14 +2731,6 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   emailUsuario={currentUser?.email}
                 />
               </div>
-
-              <div className="border-t border-slate-100 mt-6 pt-6">
-                <h2 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center">
-                  <Video className="w-5 h-5 mr-1.5 text-toast-500" />
-                  Consola de Vídeo Administrador (WebRTC Control Hub)
-                </h2>
-                <p className="text-xs text-slate-400">Inspecciona consumo de ancho de banda, pérdida de paquetes y estatus de servidores de señalización en tiempo real.</p>
-              </div>
             </div>
           </div>
         )}
