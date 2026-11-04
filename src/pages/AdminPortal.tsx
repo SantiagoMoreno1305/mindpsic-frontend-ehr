@@ -355,6 +355,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
     lastName: string | null;
     email: string;
     phone: string | null;
+    gender: string | null;
     role: string;
     status: 'active' | 'inactive';
     documentType: string | null;
@@ -496,7 +497,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
 
   // ── Edición de colaborador (nombres/apellidos + ficha profesional) ──
   const emptyEditStaffForm = {
-    firstName: '', lastName: '', phone: '',
+    firstName: '', lastName: '', phone: '', gender: '',
     documentType: 'CC', documentId: '',
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
     canApproveSessionChanges: false,
@@ -577,6 +578,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
       firstName: member.firstName || fallbackFirstName || '',
       lastName: member.lastName || fallbackLastNameParts.join(' '),
       phone: member.phone || '',
+      gender: member.gender || '',
       documentType: member.documentType || 'CC',
       documentId: member.documentId || '',
       professionalCard: member.professionalCard || '',
@@ -625,6 +627,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           firstName: f.firstName.trim(),
           lastName: f.lastName.trim(),
           phone: f.phone.trim() || null,
+          gender: f.gender || null,
           documentType: f.documentId.trim() ? f.documentType : null,
           documentId: f.documentId.trim() || null,
           professionalCard: f.professionalCard.trim() || null,
@@ -3315,14 +3318,28 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Celular (WhatsApp)</label>
-                  <input
-                    type="tel" value={editStaffForm.phone}
-                    onChange={e => setEditStaffForm({ ...editStaffForm, phone: e.target.value })}
-                    placeholder="3001234567"
-                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                  />
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Celular (WhatsApp)</label>
+                    <input
+                      type="tel" value={editStaffForm.phone}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, phone: e.target.value })}
+                      placeholder="3001234567"
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Género</label>
+                    <select
+                      value={editStaffForm.gender}
+                      onChange={e => setEditStaffForm({ ...editStaffForm, gender: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    >
+                      <option value="">Prefiere no decir</option>
+                      <option value="M">Masculino</option>
+                      <option value="F">Femenino</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
