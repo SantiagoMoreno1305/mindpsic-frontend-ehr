@@ -206,7 +206,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   const MODALITY_OPTIONS = ['Presencial', 'Virtual'];
 
   const emptyStaffForm = {
-    firstName: '', lastName: '', email: '', phone: '',
+    firstName: '', lastName: '', email: '', phone: '', gender: '',
     role: 'ESPECIALISTA_B2B' as 'ESPECIALISTA_B2B' | 'OPERATIVO',
     documentType: 'CC', documentId: '',
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
@@ -307,6 +307,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           email: f.email.trim().toLowerCase(),
           phone: f.phone.trim() || undefined,
           role: f.role,
+          gender: f.gender || undefined,
           documentType: f.documentId.trim() ? f.documentType : undefined,
           documentId: f.documentId.trim() || undefined,
           professionalCard: f.professionalCard.trim() || undefined,
@@ -2934,15 +2935,30 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Celular (WhatsApp)</label>
-                  <input
-                    type="tel"
-                    value={newStaffForm.phone}
-                    onChange={e => setNewStaffForm({ ...newStaffForm, phone: e.target.value })}
-                    placeholder="3001234567"
-                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                  />
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Celular (WhatsApp)</label>
+                    <input
+                      type="tel"
+                      value={newStaffForm.phone}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, phone: e.target.value })}
+                      placeholder="3001234567"
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Género</label>
+                    <select
+                      value={newStaffForm.gender}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, gender: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    >
+                      <option value="">Prefiere no decir</option>
+                      <option value="M">Masculino</option>
+                      <option value="F">Femenino</option>
+                    </select>
+                    <p className="text-[10px] text-slate-400 mt-1">Autopercibido — no es un dato clínico, cada quien puede editarlo después en su propio perfil.</p>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
