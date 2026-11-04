@@ -1040,27 +1040,27 @@ export default function PsychologistPortal({
           </div>
         )}
 
-        {/* VIEW: VIDEO-CALL (usa activeVideoCall) */}
-        {activeTab === 'video' && (
-          <div className="max-w-7xl mx-auto space-y-6 text-left">
-            <div className="relative">
-              {activeVideoCall && (
-                <button
-                  onClick={() => setActiveVideoCall(null)}
-                  className="absolute top-2 right-2 z-10 bg-stone-900 text-white text-xs px-3 py-1 rounded-lg hover:bg-stone-700 transition cursor-pointer"
-                >
-                  Cerrar sala
-                </button>
-              )}
-              <VideollamadaVercel
-                pacienteId={activeVideoCall?.patientId}
-                salaId={activeVideoCall?.id}
-                tokenSesion={localStorage.getItem('mind_token') || ''}
-                emailUsuario={currentUser?.email}
-              />
-            </div>
+        {/* VIEW: VIDEO-CALL (usa activeVideoCall) — se mantiene montado y solo se
+            oculta con CSS al cambiar de pestaña, para no reiniciar la sesión de
+            MindHealth dentro del iframe en cada cambio de tab */}
+        <div className={activeTab === 'video' ? 'max-w-7xl mx-auto space-y-6 text-left' : 'hidden'}>
+          <div className="relative">
+            {activeVideoCall && (
+              <button
+                onClick={() => setActiveVideoCall(null)}
+                className="absolute top-2 right-2 z-10 bg-stone-900 text-white text-xs px-3 py-1 rounded-lg hover:bg-stone-700 transition cursor-pointer"
+              >
+                Cerrar sala
+              </button>
+            )}
+            <VideollamadaVercel
+              pacienteId={activeVideoCall?.patientId}
+              salaId={activeVideoCall?.id}
+              tokenSesion={localStorage.getItem('mind_token') || ''}
+              emailUsuario={currentUser?.email}
+            />
           </div>
-        )}
+        </div>
 
         {/* VIEW: EVALUATIONS */}
         {activeTab === 'evaluations' && <AssessmentsPanel />}

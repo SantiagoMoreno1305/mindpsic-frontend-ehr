@@ -2712,9 +2712,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           </div>
         )}
 
-        {/* VIEW: VIDEO-CALL QUALITY CONTROL & BITRATE HUD */}
-        {activeTab === 'video_admin' && ['CEO', 'DIRECTIVO', 'SUPER ADMIN', 'C-LEVEL', 'ESPECIALISTA_B2B'].includes(currentUser.role) && (
-          <div className="max-w-7xl mx-auto space-y-6 text-left">
+        {/* VIEW: VIDEO-CALL QUALITY CONTROL & BITRATE HUD — montado siempre que el
+            rol lo permite; solo se oculta con CSS al cambiar de pestaña para no
+            reiniciar la sesión de MindHealth dentro del iframe */}
+        {['CEO', 'DIRECTIVO', 'SUPER ADMIN', 'C-LEVEL', 'ESPECIALISTA_B2B'].includes(currentUser.role) && (
+          <div className={activeTab === 'video_admin' ? 'max-w-7xl mx-auto space-y-6 text-left' : 'hidden'}>
             <div className="bg-white rounded-2xl border border-slate-100 shadow-xs p-5 md:p-6">
               <div className="mb-4">
                 <h3 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center">
