@@ -558,14 +558,19 @@ export default function DelegatedAppointmentModal({
   // si el caller de verdad puede autorizar sesiones. Usa getStoredUser()
   // directo (no la constante canAuthorizeSessions de más abajo, declarada
   // después en el render) para no depender del orden de declaración.
+  // Se manda patientId: un CEO puede autorizar sesiones de un paciente de
+  // OTRO tenant, y los aprobadores válidos son los de ESE tenant, no los del
+  // tenant del propio CEO — sin esto, el desplegable salía vacío (o con
+  // gente que el backend iba a rechazar igual) cada vez que el paciente no
+  // era del tenant del caller.
   useEffect(() => {
     const role = getStoredUser()?.role;
-    if (!isOpen || (role !== 'CEO' && role !== 'DIRECTIVO')) return;
-    apiFetch('/api/session-changes/approvers')
+    if (!isOpen || (role !== 'CEO' && role !== 'DIRECTIVO') || !form.patientId) return;
+    apiFetch(`/api/session-changes/approvers?patientId=${form.patientId}`)
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => setApprovers(Array.isArray(data) ? data : []))
       .catch(() => setApprovers([]));
-  }, [isOpen]);
+  }, [isOpen, form.patientId]);
 
   /**
    * Carga de los selectores con caché y revalidación en segundo plano
