@@ -29,6 +29,12 @@ function runBackendScript(script: string): string {
 test('flujo completo: crear paciente, asignarle psicólogo y agendarle cita', async ({ page, request }) => {
   let patientId = '';
 
+  // try/finally alrededor de todo — sin esto, un fallo en cualquier paso
+  // ANTES de "Limpieza" (ej. agendar la cita) dejaba el paciente de prueba
+  // huérfano en socios_de_pruebas. Pasó en la práctica: dos corridas
+  // fallidas en el mismo día calendario dejaron pacientes sin borrar que
+  // además chocaban entre sí (ver el fix de hora/minuto más abajo).
+  try {
   await test.step('Login DIRECTIVO y abrir "Nuevo paciente"', async () => {
     await loginAs(page, DIRECTIVO_SOCIOS_PRUEBAS);
     await page.getByRole('button', { name: 'Pacientes', exact: true }).click();
@@ -116,11 +122,21 @@ test('flujo completo: crear paciente, asignarle psicólogo y agendarle cita', as
     // es lo que se pidió.
     await page.locator('label:has-text("¿Cuántas agendar ahora?") + input').fill('1');
 
-    // Fecha lejana en el futuro (90 días) a una hora poco común — minimiza
-    // el riesgo de chocar con una cita ya existente de este especialista.
+    // Fecha lejana en el futuro (90 días), hora/minuto derivados de `suffix`
+    // (el timestamp del propio run) — no un horario fijo. Dos corridas en el
+    // mismo día calendario (ej. si una anterior quedó con un paciente
+    // huérfano sin limpiar, al fallar a mitad de camino) calculaban antes
+    // SIEMPRE el mismo "90 días a las 07:00", chocando entre sí contra el
+    // mismo especialista y dejando el botón de confirmar deshabilitado.
+    // getFullYear/Month/Date en vez de toISOString().slice(0,10): ese
+    // devuelve la fecha en UTC, que puede quedar un día corrida según la
+    // zona horaria.
     const future = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
-    future.setHours(7, 0, 0, 0);
-    const isoLocal = `${future.toISOString().slice(0, 10)}T07:00`;
+    const hour = 8 + (suffix % 9); // 08:xx–16:xx, horario hábil
+    const minute = suffix % 60;
+    future.setHours(hour, minute, 0, 0);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const isoLocal = `${future.getFullYear()}-${pad(future.getMonth() + 1)}-${pad(future.getDate())}T${pad(hour)}:${pad(minute)}`;
     const dateInput = page.locator('input[type="datetime-local"]').first();
     await expect(dateInput).toBeVisible({ timeout: 5000 });
     await dateInput.fill(isoLocal);
@@ -130,17 +146,23 @@ test('flujo completo: crear paciente, asignarle psicólogo y agendarle cita', as
     await confirmButton.click();
     await expect(page.getByText('Cita creada exitosamente.')).toBeVisible({ timeout: 10000 });
   });
-
-  await test.step('Limpieza — borra el paciente de prueba (cascada: cita + autorización de sesiones)', async () => {
-    // El borrado físico es CEO-únicamente en el backend (ver deletePatient en
-    // patient.controller.js) — un CEO cruza tenants, así que el del tenant
-    // interno puede borrar en socios_de_pruebas. Exige el documento exacto
-    // en el body como confirmación.
-    const token = signTestToken(CEO_MINDGROUP);
-    const res = await request.delete(`http://localhost:3001/api/patients/${patientId}`, {
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      data: { documentId: DOCUMENT_ID },
-    });
-    expect(res.ok()).toBeTruthy();
-  });
+  } finally {
+    // Corre SIEMPRE, incluso si un paso anterior falló — guardado por
+    // patientId: si la creación del paciente ni llegó a responder, no hay
+    // nada que borrar.
+    if (patientId) {
+      await test.step('Limpieza — borra el paciente de prueba (cascada: cita + autorización de sesiones)', async () => {
+        // El borrado físico es CEO-únicamente en el backend (ver deletePatient
+        // en patient.controller.js) — un CEO cruza tenants, así que el del
+        // tenant interno puede borrar en socios_de_pruebas. Exige el
+        // documento exacto en el body como confirmación.
+        const token = signTestToken(CEO_MINDGROUP);
+        const res = await request.delete(`http://localhost:3001/api/patients/${patientId}`, {
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          data: { documentId: DOCUMENT_ID },
+        });
+        expect(res.ok()).toBeTruthy();
+      });
+    }
+  }
 });

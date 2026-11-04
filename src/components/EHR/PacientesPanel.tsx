@@ -1037,6 +1037,7 @@ export default function PacientesPanel({ token, onSelectPatient, userRole, userI
           fetchTabCounts();
           showToast('Cita agendada correctamente.');
         }}
+        onViewPatientProfile={onSelectPatient ? (patientId) => { setScheduleOpen(false); onSelectPatient(patientId); } : undefined}
       />
       <CreatePatientModal
         isOpen={editOpen}

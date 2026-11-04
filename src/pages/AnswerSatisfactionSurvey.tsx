@@ -163,8 +163,11 @@ export default function AnswerSatisfactionSurvey() {
           <div className="bg-white border border-toast-200 rounded-2xl shadow-sm overflow-hidden">
             <div className="px-6 py-5 border-b border-toast-100">
               <h1 className="text-charcoal-900 font-bold text-sm">Encuesta de satisfacción</h1>
-              <p className="text-charcoal-400 text-xs mt-0.5">
-                Hola {context.patientFirstName}, cuéntanos cómo fue tu experiencia en MindPsic. Toma menos de 2 minutos.
+              <p className="text-charcoal-400 text-xs mt-0.5 leading-relaxed">
+                Hola {context.patientFirstName}, gracias por tomarte un momento para esta breve encuesta. Tu
+                opinión es muy importante para ayudarnos a mejorar nuestro servicio — selecciona la opción que
+                mejor refleje tu experiencia. No necesitas escribir tu nombre ni ningún otro dato personal: este
+                enlace ya te identifica de forma privada.
               </p>
             </div>
 

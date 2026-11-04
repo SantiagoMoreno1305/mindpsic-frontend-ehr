@@ -17,6 +17,7 @@ import { useCompanies, type CompanyRecord, type CompanyLocation } from '../hooks
 import ClinicalPatientChart from '../components/EHR/ClinicalPatientChart';
 import ClinicalRecordsPanel from '../components/EHR/ClinicalRecordsPanel';
 import MiPlanPanel from '../components/EHR/MiPlanPanel';
+import SatisfactionResultsPanel from '../components/EHR/SatisfactionResultsPanel';
 import InternalChat from '../components/InternalChat';
 import VideollamadaVercel from '../components/VideollamadaVercel';
 import DelegatedAppointmentModal, { prefetchSelectoresAgendamiento } from '../components/DelegatedAppointmentModal';
@@ -85,10 +86,11 @@ import {
   Inbox,
   FlaskConical,
   UserRound,
-  CreditCard
+  CreditCard,
+  Star
 } from 'lucide-react';
 
-type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat' | 'mi_perfil' | 'mi_plan';
+type AdminTab = 'metrics' | 'video_admin' | 'advanced_docs' | 'patients' | 'clinical_history' | 'evaluations' | 'equipo' | 'convenios' | 'access_codes' | 'tariffs' | 'research_projects' | 'approvals' | 'billing_rips' | 'chat' | 'mi_perfil' | 'mi_plan' | 'satisfaction';
 
 interface AdminPortalProps {
   navRequest?: { target: 'home' | 'profile'; n: number };
@@ -204,7 +206,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   const MODALITY_OPTIONS = ['Presencial', 'Virtual'];
 
   const emptyStaffForm = {
-    firstName: '', lastName: '', email: '', phone: '',
+    firstName: '', lastName: '', email: '', phone: '', gender: '',
     role: 'ESPECIALISTA_B2B' as 'ESPECIALISTA_B2B' | 'OPERATIVO',
     documentType: 'CC', documentId: '',
     professionalCard: '', specialtyId: '', academicLevel: '', experienceYears: '', epsCode: '', epsLabel: '',
@@ -305,6 +307,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           email: f.email.trim().toLowerCase(),
           phone: f.phone.trim() || undefined,
           role: f.role,
+          gender: f.gender || undefined,
           documentType: f.documentId.trim() ? f.documentType : undefined,
           documentId: f.documentId.trim() || undefined,
           professionalCard: f.professionalCard.trim() || undefined,
@@ -1041,7 +1044,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   // Recuerda la última tab visitada entre recargas — sin esto, cualquier
   // refresh de página remonta el componente y activeTab vuelve a su default
   // ('metrics' / "Tablero Gerencial"), sin importar dónde estaba el usuario.
-  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat', 'mi_perfil', 'mi_plan'];
+  const ADMIN_TABS: AdminTab[] = ['metrics', 'video_admin', 'advanced_docs', 'patients', 'clinical_history', 'evaluations', 'equipo', 'convenios', 'access_codes', 'tariffs', 'research_projects', 'approvals', 'billing_rips', 'chat', 'mi_perfil', 'mi_plan', 'satisfaction'];
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     const saved = localStorage.getItem('mind_admin_active_tab');
     return (saved && (ADMIN_TABS as string[]).includes(saved)) ? (saved as AdminTab) : 'metrics';
@@ -2214,6 +2217,21 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
               Mi Plan
             </button>
           )}
+          {/* "Satisfacción" — resultados de las encuestas enviadas a los
+              propios pacientes (decisión 2026-10-30). Mismo gate que el
+              backend exige en GET /api/satisfaction-surveys/me/results. */}
+          {(currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') && (
+            <button
+              onClick={() => goToTab('satisfaction')}
+              id="tab-adm-satisfaction"
+              className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-xs transition-colors cursor-pointer ${
+                activeTab === 'satisfaction' ? 'bg-white/10 text-white font-semibold' : 'text-slate-300 hover:bg-white/5 hover:text-white'
+              }`}
+            >
+              <Star className="w-4 h-4 shrink-0" />
+              Satisfacción
+            </button>
+          )}
           {currentUser.licenseNumber && (
             <p className="text-[9px] text-slate-500 font-mono mt-1">
               Lic. {currentUser.licenseNumber}
@@ -2280,6 +2298,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
               onNewAppointment={() => {
                 setEditingAppointment(null);
                 setShowDelegatedModal(true);
+              }}
+              onViewPatientProfile={(app) => {
+                goToTab('patients');
+                setSelectedPatientId(app.patientId);
+                setClinicalHistoryReturnTab('patients');
               }}
               filterSlot={
                 <CalendarFilterGroup>
@@ -2690,9 +2713,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           </div>
         )}
 
-        {/* VIEW: VIDEO-CALL QUALITY CONTROL & BITRATE HUD */}
-        {activeTab === 'video_admin' && ['CEO', 'DIRECTIVO', 'SUPER ADMIN', 'C-LEVEL', 'ESPECIALISTA_B2B'].includes(currentUser.role) && (
-          <div className="max-w-7xl mx-auto space-y-6 text-left">
+        {/* VIEW: VIDEO-CALL QUALITY CONTROL & BITRATE HUD — montado siempre que el
+            rol lo permite; solo se oculta con CSS al cambiar de pestaña para no
+            reiniciar la sesión de MindHealth dentro del iframe */}
+        {['CEO', 'DIRECTIVO', 'SUPER ADMIN', 'C-LEVEL', 'ESPECIALISTA_B2B'].includes(currentUser.role) && (
+          <div className={activeTab === 'video_admin' ? 'max-w-7xl mx-auto space-y-6 text-left' : 'hidden'}>
             <div className="bg-white rounded-2xl border border-slate-100 shadow-xs p-5 md:p-6">
               <div className="mb-4">
                 <h3 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center">
@@ -2708,14 +2733,6 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   tokenSesion={localStorage.getItem('mind_token') || ''}
                   emailUsuario={currentUser?.email}
                 />
-              </div>
-
-              <div className="border-t border-slate-100 mt-6 pt-6">
-                <h2 className="text-sm font-extrabold text-slate-900 tracking-tight flex items-center">
-                  <Video className="w-5 h-5 mr-1.5 text-toast-500" />
-                  Consola de Vídeo Administrador (WebRTC Control Hub)
-                </h2>
-                <p className="text-xs text-slate-400">Inspecciona consumo de ancho de banda, pérdida de paquetes y estatus de servidores de señalización en tiempo real.</p>
               </div>
             </div>
           </div>
@@ -2918,15 +2935,30 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1.5">Celular (WhatsApp)</label>
-                  <input
-                    type="tel"
-                    value={newStaffForm.phone}
-                    onChange={e => setNewStaffForm({ ...newStaffForm, phone: e.target.value })}
-                    placeholder="3001234567"
-                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                  />
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Celular (WhatsApp)</label>
+                    <input
+                      type="tel"
+                      value={newStaffForm.phone}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, phone: e.target.value })}
+                      placeholder="3001234567"
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5">Género</label>
+                    <select
+                      value={newStaffForm.gender}
+                      onChange={e => setNewStaffForm({ ...newStaffForm, gender: e.target.value })}
+                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    >
+                      <option value="">Prefiere no decir</option>
+                      <option value="M">Masculino</option>
+                      <option value="F">Femenino</option>
+                    </select>
+                    <p className="text-[10px] text-slate-400 mt-1">Autopercibido — no es un dato clínico, cada quien puede editarlo después en su propio perfil.</p>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -4223,6 +4255,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           <MiPlanPanel />
         )}
 
+        {/* VIEW: SATISFACCIÓN — resultados de las encuestas enviadas (solo CEO/DIRECTIVO, ver botón del pie) */}
+        {activeTab === 'satisfaction' && (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO') && (
+          <SatisfactionResultsPanel />
+        )}
+
         {/* VIEW: PROYECTOS DE INVESTIGACIÓN */}
         {activeTab === 'research_projects' && showResearchTab && <ResearchProjectsPanel canManage={researchCap?.canManage ?? false} />}
 
@@ -4626,6 +4663,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           initialData={editingAppointment}
           onSuccess={() => {
             refetchAppointments();
+          }}
+          onViewPatientProfile={(patientId) => {
+            goToTab('patients');
+            setSelectedPatientId(patientId);
+            setClinicalHistoryReturnTab('patients');
           }}
         />
       </main>
