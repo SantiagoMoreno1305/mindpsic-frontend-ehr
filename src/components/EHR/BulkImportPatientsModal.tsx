@@ -26,6 +26,9 @@
  * Endpoints consumidos:
  *   GET  /api/users/specialists    → Psicólogos del tenant (para el select)
  *   GET  /api/eps?limit=100        → Catálogo de EPS completo (28 entradas, cabe entero)
+ *   GET  /api/agreement-types/all  → Tipos de convenio de TODOS los convenios del tenant
+ *   GET  /api/specialties/options  → Especialidades clínicas del tenant
+ *   GET  /api/relation-types       → Tipos de relación del tenant
  *   POST /api/patients/bulk-import → Validación + creación atómica del lote
  */
 import { useEffect, useState } from 'react';
@@ -48,6 +51,11 @@ interface AgreementTypeOption {
 }
 
 interface SpecialtyOption {
+  id: string;
+  name: string;
+}
+
+interface RelationTypeOption {
   id: string;
   name: string;
 }
@@ -108,6 +116,7 @@ interface ParsedRow {
   specialty: string;
   relacion: string;
   tipoAtencion: string;
+  isConsultaExterna: boolean;
   fechaSolicitud: string;
   fechaAgendamiento: string;
   fechaFinalizacion: string;
@@ -136,7 +145,9 @@ const BULK_STATUS_KEYS = Object.keys(PATIENT_STATUS_LABELS);
 // Mismos catálogos fijos que CreatePatientModal — deben coincidir EXACTAMENTE
 // con los que valida el backend (BULK_IMPORT_* en patient.controller.js).
 const PARENTESCO_OPTIONS = ['Madre', 'Padre', 'Hermano/a', 'Cónyuge / Pareja', 'Hijo/a', 'Abuelo/a', 'Tutor legal', 'Otro'];
-const RELACION_OPTIONS = ['Estudiante', 'Colaborador', 'Familiar de colaborador', 'Familiar de estudiante', 'Consultante'];
+// "Relación" ya NO es una lista fija — es un catálogo por tenant (ver
+// RelationType en schema.prisma), cargado en el useEffect de specialists/eps
+// más abajo (state relationTypes).
 const TIPO_ATENCION_LABEL_TO_VALUE: Record<string, string> = {
   'presencial': 'Presencial',
   'telepsicología': 'Telepsicologia',
@@ -187,6 +198,12 @@ const COL_CONVENIO = 'Convenio';
 const COL_TIPO_CONVENIO = 'Tipo de convenio';
 const COL_ESPECIALIDAD = 'Especialidad';
 const COL_RELACION = 'Relación';
+// Convenio+relación de la fila NO cambian por esto — solo marca que el
+// episodio llegó por Consulta Externa en vez del canal corporativo
+// habitual, para mantener el costo que ya se le venía manejando y agregar
+// el indicativo " (CE)" al número de historia clínica (ver generateRecordNumber
+// y el bloque de "isConsultaExterna" en bulkImportPatients).
+const COL_CONSULTA_EXTERNA = '¿Consulta externa?';
 const COL_TIPO_ATENCION = 'Tipo de atención';
 const COL_FECHA_SOLICITUD = 'Fecha de solicitud (dd/mm/aaaa)';
 const COL_FECHA_AGENDAMIENTO = 'Fecha de agendamiento (dd/mm/aaaa)';
@@ -231,7 +248,7 @@ const COLUMN_HEADERS = [
   COL_ESTADO,
   COL_EC_NOMBRES, COL_EC_APELLIDOS, COL_EC_TEL, COL_EC_PARENTESCO,
   COL_REQUIERE_REP_LEGAL, COL_REP_NOMBRES, COL_REP_APELLIDOS, COL_REP_TEL, COL_REP_PARENTESCO, COL_REP_CORREO,
-  COL_PSICOLOGO, COL_CONVENIO, COL_TIPO_CONVENIO, COL_ESPECIALIDAD, COL_RELACION, COL_TIPO_ATENCION,
+  COL_PSICOLOGO, COL_CONVENIO, COL_TIPO_CONVENIO, COL_ESPECIALIDAD, COL_RELACION, COL_CONSULTA_EXTERNA, COL_TIPO_ATENCION,
   COL_FECHA_SOLICITUD, COL_FECHA_AGENDAMIENTO, COL_FECHA_FINALIZACION, COL_SESIONES_APROBADAS,
   COL_SESIONES_CUMPLIDAS, COL_SESIONES_REPROGRAMADAS, COL_SESIONES_CANCELADAS, COL_SESIONES_PENDIENTES,
 ];
@@ -280,6 +297,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
   const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
   const [agreementTypes, setAgreementTypes] = useState<AgreementTypeOption[]>([]);
   const [specialties, setSpecialties] = useState<SpecialtyOption[]>([]);
+  const [relationTypes, setRelationTypes] = useState<RelationTypeOption[]>([]);
   const [epsCatalog, setEpsCatalog] = useState<EpsOption[]>([]);
   const [fileName, setFileName] = useState('');
   const [parsedRows, setParsedRows] = useState<ParsedRow[] | null>(null);
@@ -342,6 +360,12 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       .then(res => res.ok ? res.json() : [])
       .then(data => setSpecialties(Array.isArray(data) ? data : []))
       .catch(() => setSpecialties([]));
+    // Catálogo de "Relación" — por TENANT, igual que Especialidad (ver
+    // RelationType en schema.prisma).
+    apiFetch('/api/relation-types')
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setRelationTypes(Array.isArray(data) ? data : []))
+      .catch(() => setRelationTypes([]));
   }, [isOpen]);
 
   // TODOS los tipos de convenio del tenant, de TODOS los convenios a la vez
@@ -416,7 +440,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       const listaDepartamentos = writeFlatList(col++, DEPARTAMENTOS_ORDENADOS);
       const listaEstadoContacto = writeFlatList(col++, BULK_STATUS_KEYS.map(k => PATIENT_STATUS_LABELS[k]));
       const listaParentesco = writeFlatList(col++, PARENTESCO_OPTIONS);
-      const listaRelacion = writeFlatList(col++, RELACION_OPTIONS);
+      const listaRelacion = writeFlatList(col++, relationTypes.map(r => r.name));
       const listaTipoAtencion = writeFlatList(col++, TIPO_ATENCION_LABELS);
       const listaSiNo = writeFlatList(col++, SI_NO_OPTIONS);
       const psicologoNames = [SIN_ASIGNAR_LABEL, ...specialists.map(s => s.name)];
@@ -530,6 +554,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       applyListValidation(COL_ESTADO, 'ListaEstadoContacto', listaEstadoContacto.count);
       applyListValidation(COL_EC_PARENTESCO, 'ListaParentesco', listaParentesco.count);
       applyListValidation(COL_REQUIERE_REP_LEGAL, 'ListaSiNo', listaSiNo.count);
+      applyListValidation(COL_CONSULTA_EXTERNA, 'ListaSiNo', listaSiNo.count);
       applyListValidation(COL_REP_PARENTESCO, 'ListaParentesco', listaParentesco.count);
       applyListValidation(COL_PSICOLOGO, 'ListaPsicologos', listaPsicologos.count);
       applyListValidation(COL_CONVENIO, 'ListaConvenios', listaConvenios.count);
@@ -670,6 +695,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         [COL_EC_TEL, 'No', 'Exactamente 10 dígitos si se llena'],
         [COL_EC_PARENTESCO, 'No', 'Lista desplegable'],
         [COL_REQUIERE_REP_LEGAL, 'No', 'Lista desplegable — "Sí" o "No"'],
+        [COL_CONSULTA_EXTERNA, 'No', 'Lista desplegable — "Sí" o "No". El convenio y la relación de la fila NO cambian; solo marca que este episodio llegó por Consulta Externa, para mantener el costo que se le venía manejando y agregar "(CE)" a la historia clínica.'],
         [COL_REP_NOMBRES, 'No', 'Solo letras — obligatorio si "¿Requiere representante legal?" es "Sí"'],
         [COL_REP_APELLIDOS, 'No', 'Solo letras — obligatorio si "¿Requiere representante legal?" es "Sí"'],
         [COL_REP_TEL, 'No', 'Exactamente 10 dígitos si se llena'],
@@ -936,8 +962,17 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         }
 
         const relacion = String(r[COL_RELACION] || '').trim();
-        if (relacion && !RELACION_OPTIONS.includes(relacion)) {
+        if (relacion && !relationTypes.some(rt => rt.name === relacion)) {
           errors.push({ row: rowNumber, field: 'relacion', message: `Relación "${relacion}" no reconocida — usa el selector de la celda.` });
+        }
+
+        const consultaExternaRaw = String(r[COL_CONSULTA_EXTERNA] || '').trim();
+        let isConsultaExterna = false;
+        if (consultaExternaRaw) {
+          const normalized = consultaExternaRaw.toLowerCase();
+          if (normalized === 'sí' || normalized === 'si') isConsultaExterna = true;
+          else if (normalized === 'no') isConsultaExterna = false;
+          else errors.push({ row: rowNumber, field: 'isConsultaExterna', message: `"${COL_CONSULTA_EXTERNA}" debe ser "Sí" o "No" — usa el selector de la celda.` });
         }
 
         const tipoAtencionRaw = String(r[COL_TIPO_ATENCION] || '').trim();
@@ -1022,6 +1057,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           agreementType,
           specialty,
           relacion,
+          isConsultaExterna,
           tipoAtencion,
           fechaSolicitud,
           fechaAgendamiento,

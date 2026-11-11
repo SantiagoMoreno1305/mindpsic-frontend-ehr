@@ -315,6 +315,7 @@ export interface BackendPatient {
   specialtyName?: string | null;
   relacion?: string | null;
   tipoAtencion?: string | null;
+  isConsultaExterna?: boolean | null;
   fechaSolicitud?: string | null;
   fechaAgendamiento?: string | null;
   fechaFinalizacion?: string | null;

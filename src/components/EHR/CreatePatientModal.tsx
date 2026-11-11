@@ -32,7 +32,7 @@
  *   GET  /api/initial-assessment/:id → Contacto de emergencia actual (modo edición)
  *   PUT  /api/initial-assessment/:id → Actualización del contacto de emergencia (modo edición)
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   X, UserPlus, Save, Loader2, User, Building2, HeartPulse, CalendarClock, BarChart3,
   Stethoscope, MapPin, Check, Plus,
@@ -43,6 +43,11 @@ import { COLOMBIA_DEPARTAMENTOS, DEPARTAMENTOS_ORDENADOS } from '../../data/colo
 import type { BackendPatient } from '../../types';
 
 interface AgreementTypeOption {
+  id: string;
+  name: string;
+}
+
+interface RelationTypeOption {
   id: string;
   name: string;
 }
@@ -150,9 +155,6 @@ const ESTRATO_OPTIONS = [1, 2, 3, 4, 5, 6];
 // el contacto de emergencia — se mantiene igual para no confundir con dos
 // listas distintas de parentesco en la misma app.
 const PARENTESCO_OPTIONS = ['Madre', 'Padre', 'Hermano/a', 'Cónyuge / Pareja', 'Hijo/a', 'Abuelo/a', 'Tutor legal', 'Otro'];
-// Relación del paciente con el convenio que lo cubre — debe coincidir
-// exactamente con PATIENT_RELACION_VALUES en patient.controller.js.
-const RELACION_OPTIONS = ['Estudiante', 'Colaborador', 'Familiar de colaborador', 'Familiar de estudiante', 'Consultante'];
 // Debe coincidir exactamente con PATIENT_TIPO_ATENCION_VALUES en patient.controller.js.
 const TIPO_ATENCION_OPTIONS: { value: string; label: string }[] = [
   { value: 'Presencial', label: 'Presencial' },
@@ -349,12 +351,34 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   const [loadingSpecialists, setLoadingSpecialists] = useState(false);
   const [agreementType, setAgreementType] = useState('');
   const [agreementTypes, setAgreementTypes] = useState<AgreementTypeOption[]>([]);
+  // Crear tipo de convenio sin salir del modal — mismo patrón que "Crear
+  // nuevo convenio" arriba, pero sin gate de rol: el backend no exige
+  // ninguno para este catálogo (ver comentario en company.controller.js).
+  const [isCreatingAgreementType, setIsCreatingAgreementType] = useState(false);
+  const [newAgreementTypeName, setNewAgreementTypeName] = useState('');
+  const [savingAgreementType, setSavingAgreementType] = useState(false);
+  const [agreementTypeCreateError, setAgreementTypeCreateError] = useState<string | null>(null);
   // Especialidad clínica del paciente — catálogo ÚNICO de la clínica (no por
   // convenio, a diferencia de agreementType), decisión 2026-10-13: antes solo
   // se elegía POR CITA, nunca al crear/editar el paciente.
   const [specialtyId, setSpecialtyId] = useState('');
   const [specialties, setSpecialties] = useState<SpecialtyOption[]>([]);
   const [relacion, setRelacion] = useState('');
+  // Convenio+relación se mantienen tal cual (companyId/agreementType/relacion
+  // sin tocar) pero este episodio llega por Consulta Externa en vez del
+  // canal corporativo habitual — mantiene el costo que ya se le venía
+  // manejando (tariff.service.js solo depende de companyId) y agrega el
+  // indicativo " (CE)" al número de historia clínica, igual que se viene
+  // haciendo a mano en el Excel histórico de cargue masivo.
+  const [isConsultaExterna, setIsConsultaExterna] = useState(false);
+  // Catálogo por TENANT (no por convenio, a diferencia de agreementType) —
+  // ver RelationType en schema.prisma. Se carga una sola vez al abrir el
+  // modal, no depende de companyId.
+  const [relationTypes, setRelationTypes] = useState<RelationTypeOption[]>([]);
+  const [isCreatingRelationType, setIsCreatingRelationType] = useState(false);
+  const [newRelationTypeName, setNewRelationTypeName] = useState('');
+  const [savingRelationType, setSavingRelationType] = useState(false);
+  const [relationTypeCreateError, setRelationTypeCreateError] = useState<string | null>(null);
   const [tipoAtencion, setTipoAtencion] = useState('');
 
   // ── Fechas del proceso ──
@@ -380,15 +404,36 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   }, [isOpen]);
 
   // Propio de CADA convenio (companyId) — no un catálogo compartido de todo
-  // el tenant, ver comentario en schema.prisma. Se recarga cada vez que
-  // cambia el convenio elegido arriba.
-  useEffect(() => {
-    if (!isOpen || !companyId) { setAgreementTypes([]); return; }
-    apiFetch(`/api/agreement-types?companyId=${companyId}`)
+  // el tenant, ver comentario en schema.prisma. Extraída de la función del
+  // efecto (en vez de solo el cuerpo del efecto) para poder recargar el
+  // catálogo también después de crear un tipo nuevo, sin duplicar el fetch.
+  const fetchAgreementTypes = useCallback((id: string) => {
+    if (!id) { setAgreementTypes([]); return; }
+    apiFetch(`/api/agreement-types?companyId=${id}`)
       .then(res => res.ok ? res.json() : [])
       .then(data => setAgreementTypes(Array.isArray(data) ? data : []))
       .catch(() => setAgreementTypes([]));
-  }, [isOpen, companyId]);
+  }, []);
+
+  // Se recarga cada vez que cambia el convenio elegido arriba.
+  useEffect(() => {
+    if (!isOpen) { setAgreementTypes([]); return; }
+    fetchAgreementTypes(companyId);
+  }, [isOpen, companyId, fetchAgreementTypes]);
+
+  // Catálogo de "Relación" — por TENANT, se carga una sola vez al abrir
+  // (no depende de companyId, a diferencia de agreementType).
+  const fetchRelationTypes = useCallback(() => {
+    apiFetch('/api/relation-types')
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setRelationTypes(Array.isArray(data) ? data : []))
+      .catch(() => setRelationTypes([]));
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) { setRelationTypes([]); return; }
+    fetchRelationTypes();
+  }, [isOpen, fetchRelationTypes]);
 
   // Catálogo único de la clínica (no depende del convenio elegido) — mismo
   // endpoint que usa el selector de "Especialidad" al agendar una cita.
@@ -438,6 +483,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setAgreementType(patient.agreementType || '');
     setSpecialtyId(patient.specialtyId || '');
     setRelacion(patient.relacion || '');
+    setIsConsultaExterna(!!patient.isConsultaExterna);
     setTipoAtencion(patient.tipoAtencion || '');
     setFechaSolicitud(patient.fechaSolicitud ? patient.fechaSolicitud.slice(0, 10) : '');
     setFechaAgendamiento(patient.fechaAgendamiento ? patient.fechaAgendamiento.slice(0, 10) : '');
@@ -567,8 +613,14 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setCompanyCreateError(null);
     setPsychologistId('');
     setAgreementType('');
+    setIsCreatingAgreementType(false);
+    setNewAgreementTypeName('');
+    setAgreementTypeCreateError(null);
     setSpecialtyId('');
     setRelacion('');
+    setIsCreatingRelationType(false);
+    setNewRelationTypeName('');
+    setRelationTypeCreateError(null);
     setTipoAtencion('');
     setFechaSolicitud('');
     setFechaAgendamiento('');
@@ -610,6 +662,58 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
       setCompanyCreateError('Error de red: ' + (err?.message || 'intenta de nuevo.'));
     } finally {
       setSavingCompany(false);
+    }
+  }
+
+  async function handleCreateAgreementType() {
+    const name = newAgreementTypeName.trim();
+    if (!name || !companyId) return;
+    setSavingAgreementType(true);
+    setAgreementTypeCreateError(null);
+    try {
+      const res = await apiFetch('/api/agreement-types', {
+        method: 'POST',
+        body: JSON.stringify({ name, companyId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAgreementTypeCreateError(data.error || 'Error al crear el tipo de convenio.');
+        return;
+      }
+      fetchAgreementTypes(companyId);
+      setAgreementType(data.name);
+      setNewAgreementTypeName('');
+      setIsCreatingAgreementType(false);
+    } catch (err: any) {
+      setAgreementTypeCreateError('Error de red: ' + (err?.message || 'intenta de nuevo.'));
+    } finally {
+      setSavingAgreementType(false);
+    }
+  }
+
+  async function handleCreateRelationType() {
+    const name = newRelationTypeName.trim();
+    if (!name) return;
+    setSavingRelationType(true);
+    setRelationTypeCreateError(null);
+    try {
+      const res = await apiFetch('/api/relation-types', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setRelationTypeCreateError(data.error || 'Error al crear el tipo de relación.');
+        return;
+      }
+      fetchRelationTypes();
+      setRelacion(data.name);
+      setNewRelationTypeName('');
+      setIsCreatingRelationType(false);
+    } catch (err: any) {
+      setRelationTypeCreateError('Error de red: ' + (err?.message || 'intenta de nuevo.'));
+    } finally {
+      setSavingRelationType(false);
     }
   }
 
@@ -695,6 +799,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
             specialtyId: specialtyId || null,
             relacion: relacion || null,
             tipoAtencion: tipoAtencion || null,
+            isConsultaExterna,
             fechaSolicitud: fechaSolicitud || null,
             fechaAgendamiento: fechaAgendamiento || null,
             fechaFinalizacion: fechaFinalizacion || null,
@@ -775,6 +880,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
           specialtyId: specialtyId || undefined,
           relacion: relacion || undefined,
           tipoAtencion: tipoAtencion || undefined,
+          isConsultaExterna,
           fechaSolicitud: fechaSolicitud || undefined,
           fechaAgendamiento: fechaAgendamiento || undefined,
           fechaFinalizacion: fechaFinalizacion || undefined,
@@ -1236,19 +1342,69 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                   )}
                 </div>
                 <div>
-                  <FieldLabel>Tipo de convenio</FieldLabel>
-                  <select
-                    value={agreementType}
-                    onChange={(e) => setAgreementType(e.target.value)}
-                    disabled={!companyId}
-                    title={!companyId ? 'Elige primero un convenio / cliente corporativo.' : undefined}
-                    className={`${SELECT_CLASS} disabled:cursor-not-allowed disabled:opacity-60`}
-                  >
-                    <option value="">Sin especificar</option>
-                    {agreementTypes.map((t) => (
-                      <option key={t.id} value={t.name}>{t.name}</option>
-                    ))}
-                  </select>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <FieldLabel>Tipo de convenio</FieldLabel>
+                    {companyId && !isCreatingAgreementType && (
+                      <button
+                        type="button"
+                        onClick={() => { setIsCreatingAgreementType(true); setAgreementTypeCreateError(null); }}
+                        className="mb-1.5 inline-flex items-center gap-1 text-[11px] font-bold text-toast-500 transition-colors hover:text-toast-600 cursor-pointer"
+                      >
+                        <Plus className="h-3 w-3" /> Crear nuevo tipo
+                      </button>
+                    )}
+                  </div>
+
+                  {isCreatingAgreementType ? (
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={newAgreementTypeName}
+                          onChange={(e) => setNewAgreementTypeName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCreateAgreementType(); } }}
+                          placeholder="Nombre del tipo de convenio..."
+                          className={INPUT_CLASS}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleCreateAgreementType}
+                          disabled={savingAgreementType || !newAgreementTypeName.trim()}
+                          className="shrink-0 rounded-lg bg-charcoal-900 px-3 py-2.5 text-xs font-bold text-white transition-colors hover:bg-charcoal-800 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                          {savingAgreementType ? '...' : 'Guardar'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setIsCreatingAgreementType(false); setNewAgreementTypeName(''); setAgreementTypeCreateError(null); }}
+                          disabled={savingAgreementType}
+                          className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600 cursor-pointer"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      {agreementTypeCreateError && (
+                        <p className="mt-1.5 text-xs font-medium text-rose-600">{agreementTypeCreateError}</p>
+                      )}
+                      <p className="mt-1.5 text-[11px] text-slate-400">
+                        Queda asociado a "{companies.find((c) => c.id === companyId)?.name}" — otros convenios no lo verán.
+                      </p>
+                    </div>
+                  ) : (
+                    <select
+                      value={agreementType}
+                      onChange={(e) => setAgreementType(e.target.value)}
+                      disabled={!companyId}
+                      title={!companyId ? 'Elige primero un convenio / cliente corporativo.' : undefined}
+                      className={`${SELECT_CLASS} disabled:cursor-not-allowed disabled:opacity-60`}
+                    >
+                      <option value="">Sin especificar</option>
+                      {agreementTypes.map((t) => (
+                        <option key={t.id} value={t.name}>{t.name}</option>
+                      ))}
+                    </select>
+                  )}
                 </div>
                 <div>
                   <FieldLabel>Especialidad</FieldLabel>
@@ -1260,11 +1416,61 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                   </select>
                 </div>
                 <div>
-                  <FieldLabel>Relación</FieldLabel>
-                  <select value={relacion} onChange={(e) => setRelacion(e.target.value)} className={SELECT_CLASS}>
-                    <option value="">Sin especificar</option>
-                    {RELACION_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                  </select>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <FieldLabel>Relación</FieldLabel>
+                    {!isCreatingRelationType && (
+                      <button
+                        type="button"
+                        onClick={() => { setIsCreatingRelationType(true); setRelationTypeCreateError(null); }}
+                        className="mb-1.5 inline-flex items-center gap-1 text-[11px] font-bold text-toast-500 transition-colors hover:text-toast-600 cursor-pointer"
+                      >
+                        <Plus className="h-3 w-3" /> Crear nuevo tipo
+                      </button>
+                    )}
+                  </div>
+
+                  {isCreatingRelationType ? (
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={newRelationTypeName}
+                          onChange={(e) => setNewRelationTypeName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCreateRelationType(); } }}
+                          placeholder="Nombre de la relación..."
+                          className={INPUT_CLASS}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleCreateRelationType}
+                          disabled={savingRelationType || !newRelationTypeName.trim()}
+                          className="shrink-0 rounded-lg bg-charcoal-900 px-3 py-2.5 text-xs font-bold text-white transition-colors hover:bg-charcoal-800 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                          {savingRelationType ? '...' : 'Guardar'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setIsCreatingRelationType(false); setNewRelationTypeName(''); setRelationTypeCreateError(null); }}
+                          disabled={savingRelationType}
+                          className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600 cursor-pointer"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      {relationTypeCreateError && (
+                        <p className="mt-1.5 text-xs font-medium text-rose-600">{relationTypeCreateError}</p>
+                      )}
+                      <p className="mt-1.5 text-[11px] text-slate-400">
+                        Queda disponible para cualquier paciente de este tenant, no solo este convenio.
+                      </p>
+                    </div>
+                  ) : (
+                    <select value={relacion} onChange={(e) => setRelacion(e.target.value)} className={SELECT_CLASS}>
+                      <option value="">Sin especificar</option>
+                      {relationTypes.map((r) => <option key={r.id} value={r.name}>{r.name}</option>)}
+                    </select>
+                  )}
                 </div>
                 <div>
                   <FieldLabel>Tipo de atención</FieldLabel>
@@ -1272,6 +1478,24 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                     <option value="">Sin especificar</option>
                     {TIPO_ATENCION_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                    <input
+                      type="checkbox"
+                      checked={isConsultaExterna}
+                      onChange={(e) => setIsConsultaExterna(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-toast-500 focus:ring-toast-400"
+                    />
+                    <span>
+                      <span className="block text-xs font-bold text-charcoal-900">¿Consulta externa?</span>
+                      <span className="mt-0.5 block text-[11px] text-slate-500">
+                        El convenio y la relación de arriba se mantienen sin cambios — solo marca que este
+                        episodio llegó por Consulta Externa en vez del canal corporativo, para mantener el
+                        costo que se le venía manejando y agregar el indicativo &quot;(CE)&quot; a la historia clínica.
+                      </span>
+                    </span>
+                  </label>
                 </div>
                 <div className="sm:col-span-2">
                   <FieldLabel>Psicólogo asignado</FieldLabel>
