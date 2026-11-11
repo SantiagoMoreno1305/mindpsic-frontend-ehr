@@ -43,7 +43,7 @@ interface SigningContext {
   };
 }
 
-type ViewState = 'loading' | 'error' | 'ready' | 'submitting' | 'done';
+type ViewState = 'loading' | 'error' | 'verify-contact' | 'ready' | 'submitting' | 'done';
 
 const ERROR_MESSAGES: Record<string, string> = {
   NOT_FOUND: 'Este enlace no es válido. Verifica que lo copiaste completo, o pide al consultorio que te envíe uno nuevo.',
@@ -51,6 +51,16 @@ const ERROR_MESSAGES: Record<string, string> = {
   REVOKED: 'Este enlace ya no está activo — seguramente se generó uno más reciente. Revisa tu correo más nuevo.',
   EXPIRED: 'Este enlace venció. Pide al consultorio que te envíe uno nuevo.',
 };
+
+// Verificacion de contacto (opcion A, revision juridica): antes de mostrar
+// el texto real, confirma que quien abrio el enlace de verdad tiene acceso
+// al mismo canal por el que se mando — ver getSigningContext en
+// consent.service.js (Mind), que devuelve esto en vez del contenido.
+interface ContactVerificationInfo {
+  patientName: string;
+  sentViaEmail: boolean;
+  sentViaWhatsapp: boolean;
+}
 
 function getTokenFromPath(): string {
   const marker = '/firmar/';
@@ -80,18 +90,26 @@ export default function SignConsent() {
   const [accepted, setAccepted] = useState(false);
   const [dataAuthAccepted, setDataAuthAccepted] = useState(false);
 
-  useEffect(() => {
-    if (!token) {
-      setErrorCode('NOT_FOUND');
-      setState('error');
-      return;
-    }
+  const [contactInfo, setContactInfo] = useState<ContactVerificationInfo | null>(null);
+  const [otpId, setOtpId] = useState<string | null>(null);
+  const [otpCode, setOtpCode] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
+  const [sendingCode, setSendingCode] = useState(false);
+  const [verifyingCode, setVerifyingCode] = useState(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+
+  const loadContext = () => {
     fetch(`${API_BASE}/api/consent/${token}`)
       .then(async (res) => {
         const body = await res.json();
         if (!res.ok) {
           setErrorCode(body.error || 'NOT_FOUND');
           setState('error');
+          return;
+        }
+        if (body.error === 'CONTACT_VERIFICATION_REQUIRED') {
+          setContactInfo({ patientName: body.patientName, sentViaEmail: body.sentViaEmail, sentViaWhatsapp: body.sentViaWhatsapp });
+          setState('verify-contact');
           return;
         }
         setContext(body);
@@ -104,7 +122,60 @@ export default function SignConsent() {
         setErrorCode('NOT_FOUND');
         setState('error');
       });
+  };
+
+  useEffect(() => {
+    if (!token) {
+      setErrorCode('NOT_FOUND');
+      setState('error');
+      return;
+    }
+    loadContext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  const requestCode = async () => {
+    setSendingCode(true);
+    setVerifyError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/consent/${token}/contact-code`, { method: 'POST' });
+      const body = await res.json();
+      if (!res.ok) {
+        setVerifyError(body.error || 'No se pudo enviar el código. Intenta de nuevo.');
+        return;
+      }
+      setOtpId(body.otpId);
+      setCodeSent(true);
+    } catch {
+      setVerifyError('No se pudo conectar. Verifica tu conexión e intenta de nuevo.');
+    } finally {
+      setSendingCode(false);
+    }
+  };
+
+  const verifyCode = async () => {
+    if (!otpId || otpCode.trim().length !== 6) return;
+    setVerifyingCode(true);
+    setVerifyError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/consent/${token}/contact-code/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ otpId, code: otpCode.trim() }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        setVerifyError(body.error || 'El código no coincide.');
+        return;
+      }
+      setState('loading');
+      loadContext();
+    } catch {
+      setVerifyError('No se pudo conectar. Verifica tu conexión e intenta de nuevo.');
+    } finally {
+      setVerifyingCode(false);
+    }
+  };
 
   const isAsentimiento = context?.consentType === 'Asentimiento informado';
 
@@ -173,6 +244,77 @@ export default function SignConsent() {
             </div>
             <h1 className="text-charcoal-900 font-bold text-base mb-2">No pudimos abrir este enlace</h1>
             <p className="text-charcoal-400 text-sm leading-relaxed">{ERROR_MESSAGES[errorCode] || ERROR_MESSAGES.NOT_FOUND}</p>
+          </div>
+        )}
+
+        {state === 'verify-contact' && contactInfo && (
+          <div className="bg-white border border-toast-200 rounded-2xl p-8 text-center shadow-sm">
+            <div className="w-12 h-12 rounded-full bg-toast-100 border border-toast-200 flex items-center justify-center mx-auto mb-4">
+              <ShieldCheck className="w-6 h-6 text-toast-500" />
+            </div>
+            <h1 className="text-charcoal-900 font-bold text-base mb-2">
+              {contactInfo.patientName ? `Hola, ${contactInfo.patientName}` : 'Antes de continuar'}
+            </h1>
+            <p className="text-charcoal-400 text-sm leading-relaxed mb-5">
+              Para tu seguridad, antes de mostrarte el documento necesitamos confirmar que
+              {contactInfo.sentViaEmail && contactInfo.sentViaWhatsapp
+                ? ' tienes acceso al correo o WhatsApp'
+                : contactInfo.sentViaWhatsapp
+                ? ' tienes acceso al WhatsApp'
+                : ' tienes acceso al correo'}{' '}
+              donde te mandamos este enlace.
+            </p>
+
+            {!codeSent ? (
+              <button
+                type="button"
+                disabled={sendingCode}
+                onClick={requestCode}
+                className="w-full flex items-center justify-center gap-2 bg-charcoal-900 text-white text-sm font-bold rounded-xl py-3 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-charcoal-800 transition-colors"
+              >
+                {sendingCode ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Enviarme el código
+              </button>
+            ) : (
+              <div className="space-y-3 text-left">
+                <label className="block">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-charcoal-400">Código de 6 dígitos</span>
+                  <input
+                    value={otpCode}
+                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    inputMode="numeric"
+                    autoFocus
+                    className="mt-1 w-full text-center text-lg tracking-[0.4em] font-mono border border-toast-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-toast-300"
+                    placeholder="······"
+                  />
+                </label>
+
+                {verifyError && <p className="text-xs text-rose-500 font-medium">{verifyError}</p>}
+
+                <button
+                  type="button"
+                  disabled={otpCode.trim().length !== 6 || verifyingCode}
+                  onClick={verifyCode}
+                  className="w-full flex items-center justify-center gap-2 bg-charcoal-900 text-white text-sm font-bold rounded-xl py-3 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-charcoal-800 transition-colors"
+                >
+                  {verifyingCode ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                  Confirmar código
+                </button>
+
+                <button
+                  type="button"
+                  disabled={sendingCode}
+                  onClick={requestCode}
+                  className="w-full text-xs text-charcoal-400 hover:text-charcoal-700 py-1"
+                >
+                  No me llegó — enviar de nuevo
+                </button>
+              </div>
+            )}
+
+            {codeSent && !verifyError && (
+              <p className="text-[10px] text-charcoal-400 mt-4">El código vence en 15 minutos.</p>
+            )}
           </div>
         )}
 

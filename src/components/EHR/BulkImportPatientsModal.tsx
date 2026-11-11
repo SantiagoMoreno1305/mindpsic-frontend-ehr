@@ -26,11 +26,14 @@
  * Endpoints consumidos:
  *   GET  /api/users/specialists    → Psicólogos del tenant (para el select)
  *   GET  /api/eps?limit=100        → Catálogo de EPS completo (28 entradas, cabe entero)
+ *   GET  /api/agreement-types/all  → Tipos de convenio de TODOS los convenios del tenant
+ *   GET  /api/specialties/options  → Especialidades clínicas del tenant
+ *   GET  /api/relation-types       → Tipos de relación del tenant
  *   POST /api/patients/bulk-import → Validación + creación atómica del lote
  */
 import { useEffect, useState } from 'react';
 import ExcelJS from 'exceljs';
-import { X, Download, Upload, Loader2, AlertTriangle, CheckCircle2, FileSpreadsheet } from 'lucide-react';
+import { X, Download, Upload, Loader2, AlertTriangle, CheckCircle2, FileSpreadsheet, Undo2 } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
 import { PATIENT_STATUS_LABELS } from './CreatePatientModal';
@@ -52,6 +55,11 @@ interface SpecialtyOption {
   name: string;
 }
 
+interface RelationTypeOption {
+  id: string;
+  name: string;
+}
+
 interface EpsOption {
   code: string;
   nombre: string;
@@ -61,6 +69,13 @@ interface RowError {
   row: number;
   field: string;
   message: string;
+}
+
+interface ParsedHistoryRow {
+  documentId: string;
+  fecha: string;
+  estado: string;
+  psychologistId: string | null;
 }
 
 interface ParsedRow {
@@ -101,6 +116,7 @@ interface ParsedRow {
   specialty: string;
   relacion: string;
   tipoAtencion: string;
+  isConsultaExterna: boolean;
   fechaSolicitud: string;
   fechaAgendamiento: string;
   fechaFinalizacion: string;
@@ -129,7 +145,9 @@ const BULK_STATUS_KEYS = Object.keys(PATIENT_STATUS_LABELS);
 // Mismos catálogos fijos que CreatePatientModal — deben coincidir EXACTAMENTE
 // con los que valida el backend (BULK_IMPORT_* en patient.controller.js).
 const PARENTESCO_OPTIONS = ['Madre', 'Padre', 'Hermano/a', 'Cónyuge / Pareja', 'Hijo/a', 'Abuelo/a', 'Tutor legal', 'Otro'];
-const RELACION_OPTIONS = ['Estudiante', 'Colaborador', 'Familiar de colaborador', 'Familiar de estudiante', 'Consultante'];
+// "Relación" ya NO es una lista fija — es un catálogo por tenant (ver
+// RelationType en schema.prisma), cargado en el useEffect de specialists/eps
+// más abajo (state relationTypes).
 const TIPO_ATENCION_LABEL_TO_VALUE: Record<string, string> = {
   'presencial': 'Presencial',
   'telepsicología': 'Telepsicologia',
@@ -180,6 +198,12 @@ const COL_CONVENIO = 'Convenio';
 const COL_TIPO_CONVENIO = 'Tipo de convenio';
 const COL_ESPECIALIDAD = 'Especialidad';
 const COL_RELACION = 'Relación';
+// Convenio+relación de la fila NO cambian por esto — solo marca que el
+// episodio llegó por Consulta Externa en vez del canal corporativo
+// habitual, para mantener el costo que ya se le venía manejando y agregar
+// el indicativo " (CE)" al número de historia clínica (ver generateRecordNumber
+// y el bloque de "isConsultaExterna" en bulkImportPatients).
+const COL_CONSULTA_EXTERNA = '¿Consulta externa?';
 const COL_TIPO_ATENCION = 'Tipo de atención';
 const COL_FECHA_SOLICITUD = 'Fecha de solicitud (dd/mm/aaaa)';
 const COL_FECHA_AGENDAMIENTO = 'Fecha de agendamiento (dd/mm/aaaa)';
@@ -195,6 +219,26 @@ const COL_SESIONES_REPROGRAMADAS = 'Sesiones reprogramadas (historial)';
 const COL_SESIONES_CANCELADAS = 'Sesiones canceladas (historial)';
 const COL_SESIONES_PENDIENTES = 'Sesiones pendientes (historial)';
 
+// Hoja "Historial detallado" (opcional) — alternativa a las 4 columnas de
+// arriba para quien sí tiene la fecha real de cada sesión pasada al migrar
+// desde otro sistema (ver discusión 2026-11-07): una fila por sesión, no por
+// paciente. Un paciente usa uno de los dos caminos, nunca ambos — se valida
+// tanto aquí como en el backend (bulkImportPatients).
+const COL_HIST_DOCUMENTO = 'Número de documento';
+const COL_HIST_FECHA = 'Fecha de la sesión (dd/mm/aaaa)';
+const COL_HIST_ESTADO = 'Estado de la sesión';
+const COL_HIST_PSICOLOGO = 'Psicólogo (opcional)';
+const HISTORY_SHEET_NAME = 'Historial detallado';
+const HISTORY_COLUMN_HEADERS = [COL_HIST_DOCUMENTO, COL_HIST_FECHA, COL_HIST_ESTADO, COL_HIST_PSICOLOGO];
+// Deben coincidir EXACTAMENTE con BULK_IMPORT_DETAILED_HISTORY_STATUS_OPTIONS
+// en el backend (patient.controller.js) — mismos valores de Appointment.status
+// que ya usa el historial agregado (BULK_IMPORT_SESSION_HISTORY_STATUS ahí).
+const HISTORY_STATUS_OPTIONS = ['Atendida', 'Reprogramada', 'Cancelada', 'Pendiente'];
+// Mismo tope que BULK_IMPORT_DETAILED_HISTORY_MAX_TOTAL en el backend — se
+// valida también aquí para un error inmediato sin esperar la respuesta del
+// servidor.
+const BULK_IMPORT_DETAILED_HISTORY_MAX_TOTAL = 5000;
+
 const COLUMN_HEADERS = [
   COL_NOMBRES, COL_APELLIDOS, COL_TIPO_DOC, COL_NUM_DOC, COL_FECHA_NAC,
   COL_SEXO_BIO, COL_GENERO, COL_ESTADO_CIVIL, COL_DEP_NACIMIENTO, COL_CIUDAD_NACIMIENTO,
@@ -204,7 +248,7 @@ const COLUMN_HEADERS = [
   COL_ESTADO,
   COL_EC_NOMBRES, COL_EC_APELLIDOS, COL_EC_TEL, COL_EC_PARENTESCO,
   COL_REQUIERE_REP_LEGAL, COL_REP_NOMBRES, COL_REP_APELLIDOS, COL_REP_TEL, COL_REP_PARENTESCO, COL_REP_CORREO,
-  COL_PSICOLOGO, COL_CONVENIO, COL_TIPO_CONVENIO, COL_ESPECIALIDAD, COL_RELACION, COL_TIPO_ATENCION,
+  COL_PSICOLOGO, COL_CONVENIO, COL_TIPO_CONVENIO, COL_ESPECIALIDAD, COL_RELACION, COL_CONSULTA_EXTERNA, COL_TIPO_ATENCION,
   COL_FECHA_SOLICITUD, COL_FECHA_AGENDAMIENTO, COL_FECHA_FINALIZACION, COL_SESIONES_APROBADAS,
   COL_SESIONES_CUMPLIDAS, COL_SESIONES_REPROGRAMADAS, COL_SESIONES_CANCELADAS, COL_SESIONES_PENDIENTES,
 ];
@@ -253,15 +297,25 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
   const [specialists, setSpecialists] = useState<SpecialistOption[]>([]);
   const [agreementTypes, setAgreementTypes] = useState<AgreementTypeOption[]>([]);
   const [specialties, setSpecialties] = useState<SpecialtyOption[]>([]);
+  const [relationTypes, setRelationTypes] = useState<RelationTypeOption[]>([]);
   const [epsCatalog, setEpsCatalog] = useState<EpsOption[]>([]);
   const [fileName, setFileName] = useState('');
   const [parsedRows, setParsedRows] = useState<ParsedRow[] | null>(null);
+  const [parsedHistory, setParsedHistory] = useState<ParsedHistoryRow[] | null>(null);
   const [clientErrors, setClientErrors] = useState<RowError[]>([]);
   const [serverErrors, setServerErrors] = useState<RowError[]>([]);
   const [generalError, setGeneralError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [generatingTemplate, setGeneratingTemplate] = useState(false);
   const [successCount, setSuccessCount] = useState<number | null>(null);
+  // "Revertir esta carga" — ventana de 5 minutos (ver BULK_IMPORT_REVERT_WINDOW_MS
+  // en patient.controller.js) para deshacer TODA la carga de un golpe si se
+  // subió el archivo equivocado. secondsLeft en null = fuera de ventana o no aplica.
+  const [revertBatchId, setRevertBatchId] = useState<string | null>(null);
+  const [revertDeadline, setRevertDeadline] = useState<number | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const [reverting, setReverting] = useState(false);
+  const [revertResultMessage, setRevertResultMessage] = useState<string | null>(null);
 
   // Convenio por defecto del tenant (el que se usa cuando una fila deja la
   // columna "Convenio" vacía) — mismo criterio que el backend (Company.
@@ -314,6 +368,12 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       .then(res => res.ok ? res.json() : [])
       .then(data => setSpecialties(Array.isArray(data) ? data : []))
       .catch(() => setSpecialties([]));
+    // Catálogo de "Relación" — por TENANT, igual que Especialidad (ver
+    // RelationType en schema.prisma).
+    apiFetch('/api/relation-types')
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setRelationTypes(Array.isArray(data) ? data : []))
+      .catch(() => setRelationTypes([]));
   }, [isOpen]);
 
   // TODOS los tipos de convenio del tenant, de TODOS los convenios a la vez
@@ -332,6 +392,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
   function reset() {
     setFileName('');
     setParsedRows(null);
+    setParsedHistory(null);
     setClientErrors([]);
     setServerErrors([]);
     setGeneralError(null);
@@ -387,7 +448,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       const listaDepartamentos = writeFlatList(col++, DEPARTAMENTOS_ORDENADOS);
       const listaEstadoContacto = writeFlatList(col++, BULK_STATUS_KEYS.map(k => PATIENT_STATUS_LABELS[k]));
       const listaParentesco = writeFlatList(col++, PARENTESCO_OPTIONS);
-      const listaRelacion = writeFlatList(col++, RELACION_OPTIONS);
+      const listaRelacion = writeFlatList(col++, relationTypes.map(r => r.name));
       const listaTipoAtencion = writeFlatList(col++, TIPO_ATENCION_LABELS);
       const listaSiNo = writeFlatList(col++, SI_NO_OPTIONS);
       const psicologoNames = [SIN_ASIGNAR_LABEL, ...specialists.map(s => s.name)];
@@ -396,6 +457,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       const listaConvenios = writeFlatList(col++, convenioNames);
       const especialidadNames = specialties.map(s => s.name);
       const listaEspecialidades = writeFlatList(col++, especialidadNames);
+      const listaHistorialEstado = writeFlatList(col++, HISTORY_STATUS_OPTIONS);
 
       addDefinedName(listaTipoDoc.colIndex, listaTipoDoc.count, 'ListaTipoDoc');
       addDefinedName(listaSexo.colIndex, listaSexo.count, 'ListaSexo');
@@ -412,6 +474,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       addDefinedName(listaPsicologos.colIndex, listaPsicologos.count, 'ListaPsicologos');
       addDefinedName(listaConvenios.colIndex, listaConvenios.count, 'ListaConvenios');
       addDefinedName(listaEspecialidades.colIndex, listaEspecialidades.count, 'ListaEspecialidades');
+      addDefinedName(listaHistorialEstado.colIndex, listaHistorialEstado.count, 'ListaHistorialEstado');
 
       // Tipo de convenio POR convenio — un bloque de dos filas por cada
       // convenio: el encabezado (nombre REAL del convenio, sin sanear — a
@@ -499,6 +562,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       applyListValidation(COL_ESTADO, 'ListaEstadoContacto', listaEstadoContacto.count);
       applyListValidation(COL_EC_PARENTESCO, 'ListaParentesco', listaParentesco.count);
       applyListValidation(COL_REQUIERE_REP_LEGAL, 'ListaSiNo', listaSiNo.count);
+      applyListValidation(COL_CONSULTA_EXTERNA, 'ListaSiNo', listaSiNo.count);
       applyListValidation(COL_REP_PARENTESCO, 'ListaParentesco', listaParentesco.count);
       applyListValidation(COL_PSICOLOGO, 'ListaPsicologos', listaPsicologos.count);
       applyListValidation(COL_CONVENIO, 'ListaConvenios', listaConvenios.count);
@@ -560,6 +624,46 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         }
       }
 
+      // ── Hoja "Historial detallado" (opcional) — una fila por sesión real,
+      // no por paciente (ver COL_HIST_* arriba). ──────────────────────────────
+      const wsHist = wb.addWorksheet(HISTORY_SHEET_NAME);
+      wsHist.addRow(HISTORY_COLUMN_HEADERS);
+      const histHeaderRow = wsHist.getRow(1);
+      histHeaderRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1C1917' } };
+      });
+      HISTORY_COLUMN_HEADERS.forEach((_, i) => { wsHist.getColumn(i + 1).width = 30; });
+      wsHist.addRow(['1024556778', '14/03/2025', 'Atendida', SIN_ASIGNAR_LABEL]);
+
+      function histColIndexOf(header: string): number {
+        return HISTORY_COLUMN_HEADERS.indexOf(header) + 1;
+      }
+      const cHistEstado = histColIndexOf(COL_HIST_ESTADO);
+      const cHistPsicologo = histColIndexOf(COL_HIST_PSICOLOGO);
+      for (let r = 2; r <= TEMPLATE_VALIDATION_ROWS + 1; r++) {
+        wsHist.getCell(r, cHistEstado).dataValidation = {
+          type: 'list',
+          allowBlank: true,
+          formulae: ['ListaHistorialEstado'],
+          showErrorMessage: true,
+          errorStyle: 'stop',
+          errorTitle: 'Valor no válido',
+          error: 'Selecciona uno de los valores de la lista desplegable.',
+        };
+        if (listaPsicologos.count > 0) {
+          wsHist.getCell(r, cHistPsicologo).dataValidation = {
+            type: 'list',
+            allowBlank: true,
+            formulae: ['ListaPsicologos'],
+            showErrorMessage: true,
+            errorStyle: 'stop',
+            errorTitle: 'Valor no válido',
+            error: 'Selecciona uno de los valores de la lista desplegable.',
+          };
+        }
+      }
+
       // ── Hoja "Instrucciones" — documentación de respaldo (obligatoriedad,
       // formatos de texto libre) — los valores enumerados ya no dependen de
       // copiar el texto exacto de aquí porque ahora son selects reales, pero
@@ -599,6 +703,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         [COL_EC_TEL, 'No', 'Exactamente 10 dígitos si se llena'],
         [COL_EC_PARENTESCO, 'No', 'Lista desplegable'],
         [COL_REQUIERE_REP_LEGAL, 'No', 'Lista desplegable — "Sí" o "No"'],
+        [COL_CONSULTA_EXTERNA, 'No', 'Lista desplegable — "Sí" o "No". El convenio y la relación de la fila NO cambian; solo marca que este episodio llegó por Consulta Externa, para mantener el costo que se le venía manejando y agregar "(CE)" a la historia clínica.'],
         [COL_REP_NOMBRES, 'No', 'Solo letras — obligatorio si "¿Requiere representante legal?" es "Sí"'],
         [COL_REP_APELLIDOS, 'No', 'Solo letras — obligatorio si "¿Requiere representante legal?" es "Sí"'],
         [COL_REP_TEL, 'No', 'Exactamente 10 dígitos si se llena'],
@@ -618,6 +723,13 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         [COL_SESIONES_REPROGRAMADAS, 'No', 'Igual que la anterior, pero para sesiones reprogramadas.'],
         [COL_SESIONES_CANCELADAS, 'No', 'Igual que la anterior, pero para sesiones canceladas.'],
         [COL_SESIONES_PENDIENTES, 'No', 'Igual que la anterior, pero para sesiones pendientes.'],
+        [''],
+        [`Hoja "${HISTORY_SHEET_NAME}" (opcional) — para migrar el historial REAL de sesiones de un paciente (fecha exacta de cada una), en vez de solo el conteo agregado de las 4 columnas de arriba. Una fila por SESIÓN, no por paciente.`],
+        [COL_HIST_DOCUMENTO, 'Sí', 'Debe coincidir EXACTAMENTE con el "Número de documento" de una fila de la hoja "Pacientes".'],
+        [COL_HIST_FECHA, 'Sí', 'Formato dd/mm/aaaa — no puede ser una fecha futura (este historial es de sesiones pasadas).'],
+        [COL_HIST_ESTADO, 'Sí', 'Lista desplegable'],
+        [COL_HIST_PSICOLOGO, 'No', 'Lista desplegable'],
+        ['IMPORTANTE', '', `Un paciente usa esta hoja O las columnas "(historial)" de la hoja Pacientes para su historial de sesiones — nunca las dos a la vez.`],
         [''],
         ['Valores válidos de "Estado de contacto":', statusValues],
         ['Valores válidos de "Régimen de salud":', REGIMEN_OPTIONS.join(' / ')],
@@ -656,13 +768,10 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
     return '';
   }
 
-  // Lee la hoja "Pacientes" (o la primera) como filas {encabezado: valor}.
-  // Se usa ExcelJS (no xlsx) porque el archivo lo elige el usuario: solo .xlsx,
-  // y sin ejecutar fórmulas (se toma su resultado).
-  async function readPatientRows(buf: ArrayBuffer): Promise<Record<string, any>[]> {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(buf);
-    const sheet = wb.getWorksheet('Pacientes') ?? wb.worksheets[0];
+  // Lee una hoja ya cargada como filas {encabezado: valor}. Se usa ExcelJS
+  // (no xlsx) porque el archivo lo elige el usuario: solo .xlsx, y sin
+  // ejecutar fórmulas (se toma su resultado).
+  function readSheetAsRows(sheet: ExcelJS.Worksheet | undefined): Record<string, any>[] {
     if (!sheet) return [];
     const headers: string[] = [];
     sheet.getRow(1).eachCell((cell, col) => { headers[col - 1] = cellPlainText(cell.value).trim(); });
@@ -678,6 +787,18 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       if (Object.values(obj).some((v) => v !== '')) rows.push(obj);
     });
     return rows;
+  }
+
+  // Lee la hoja "Pacientes" (o la primera) y, si existe, la hoja opcional
+  // "Historial detallado" — ambas del mismo archivo subido.
+  async function readUploadedSheets(buf: ArrayBuffer): Promise<{ patientRows: Record<string, any>[]; historyRows: Record<string, any>[] }> {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf);
+    const patientSheet = wb.getWorksheet('Pacientes') ?? wb.worksheets[0];
+    return {
+      patientRows: readSheetAsRows(patientSheet),
+      historyRows: readSheetAsRows(wb.getWorksheet(HISTORY_SHEET_NAME)),
+    };
   }
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -701,7 +822,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
 
     try {
       const buf = await file.arrayBuffer();
-      const raw = await readPatientRows(buf);
+      const { patientRows: raw, historyRows: rawHistory } = await readUploadedSheets(buf);
 
       if (raw.length === 0) {
         setGeneralError('El archivo no tiene filas para importar.');
@@ -849,8 +970,17 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         }
 
         const relacion = String(r[COL_RELACION] || '').trim();
-        if (relacion && !RELACION_OPTIONS.includes(relacion)) {
+        if (relacion && !relationTypes.some(rt => rt.name === relacion)) {
           errors.push({ row: rowNumber, field: 'relacion', message: `Relación "${relacion}" no reconocida — usa el selector de la celda.` });
+        }
+
+        const consultaExternaRaw = String(r[COL_CONSULTA_EXTERNA] || '').trim();
+        let isConsultaExterna = false;
+        if (consultaExternaRaw) {
+          const normalized = consultaExternaRaw.toLowerCase();
+          if (normalized === 'sí' || normalized === 'si') isConsultaExterna = true;
+          else if (normalized === 'no') isConsultaExterna = false;
+          else errors.push({ row: rowNumber, field: 'isConsultaExterna', message: `"${COL_CONSULTA_EXTERNA}" debe ser "Sí" o "No" — usa el selector de la celda.` });
         }
 
         const tipoAtencionRaw = String(r[COL_TIPO_ATENCION] || '').trim();
@@ -935,6 +1065,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           agreementType,
           specialty,
           relacion,
+          isConsultaExterna,
           tipoAtencion,
           fechaSolicitud,
           fechaAgendamiento,
@@ -947,11 +1078,81 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         };
       });
 
+      // Historial detallado (hoja opcional) — una fila por sesión, no por
+      // paciente (ver COL_HIST_* arriba). Depende de `rows` ya armado, para
+      // cruzar el documento contra los pacientes de esta misma carga.
+      const documentIdToRowNumber = new Map(rows.map((r, i) => [r.documentId, i + 2]));
+      const historyDocumentIds = new Set<string>();
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const history: ParsedHistoryRow[] = rawHistory.map((r, idx) => {
+        const rowNumber = idx + 2;
+        const addHistError = (field: string, message: string) => errors.push({ row: rowNumber, field: `Historial · ${field}`, message });
+
+        const documentId = String(r[COL_HIST_DOCUMENTO] || '').trim();
+        if (!documentId) {
+          addHistError('documento', 'Número de documento es obligatorio.');
+        } else if (!documentIdToRowNumber.has(documentId)) {
+          addHistError('documento', `El documento "${documentId}" no corresponde a ningún paciente de la hoja "Pacientes".`);
+        } else {
+          historyDocumentIds.add(documentId);
+        }
+
+        const fecha = parseDateCell(r[COL_HIST_FECHA], rowNumber, 'Historial · fecha', 'Fecha de la sesión', errors);
+        if (!fecha && !r[COL_HIST_FECHA]) {
+          addHistError('fecha', 'Fecha de la sesión es obligatoria.');
+        } else if (fecha && fecha > todayIso) {
+          addHistError('fecha', 'La fecha de la sesión no puede ser futura — este historial es de sesiones pasadas.');
+        }
+
+        const estado = String(r[COL_HIST_ESTADO] || '').trim();
+        if (!estado) {
+          addHistError('estado', 'Estado de la sesión es obligatorio.');
+        } else if (!HISTORY_STATUS_OPTIONS.includes(estado)) {
+          addHistError('estado', `Estado "${estado}" no reconocido — usa el selector de la celda.`);
+        }
+
+        const psicologoRaw = String(r[COL_HIST_PSICOLOGO] || '').trim();
+        let psychologistId: string | null = null;
+        if (psicologoRaw && psicologoRaw.toLowerCase() !== SIN_ASIGNAR_LABEL.toLowerCase()) {
+          const match = specialistByName.get(psicologoRaw.toLowerCase());
+          if (!match) {
+            addHistError('psicólogo', `Psicólogo "${psicologoRaw}" no reconocido — usa el selector de la celda.`);
+          } else {
+            psychologistId = match;
+          }
+        }
+
+        return { documentId, fecha, estado, psychologistId };
+      });
+
+      if (history.length > BULK_IMPORT_DETAILED_HISTORY_MAX_TOTAL) {
+        errors.push({
+          row: 0,
+          field: HISTORY_SHEET_NAME,
+          message: `El historial detallado no puede tener más de ${BULK_IMPORT_DETAILED_HISTORY_MAX_TOTAL} filas en un solo archivo — divide la migración en lotes más pequeños.`,
+        });
+      }
+
+      // Exclusión mutua: un paciente usa el historial detallado O las
+      // columnas agregadas, nunca ambos (ver misma validación en el backend).
+      rows.forEach((r, i) => {
+        const hasAggregate = [r.sessionsCumplidas, r.sessionsReprogramadas, r.sessionsCanceladas, r.sessionsPendientes].some((v) => v !== '');
+        if (hasAggregate && historyDocumentIds.has(r.documentId)) {
+          errors.push({
+            row: i + 2,
+            field: 'sessionsCumplidas',
+            message: `Este paciente ya tiene filas en "${HISTORY_SHEET_NAME}" — no uses también las columnas de historial agregado para él.`,
+          });
+        }
+      });
+
       setParsedRows(rows);
+      setParsedHistory(history);
       setClientErrors(errors);
     } catch {
       setGeneralError('No se pudo leer el archivo. Verifica que sea un .xlsx generado con "Descargar plantilla".');
       setParsedRows(null);
+      setParsedHistory(null);
     } finally {
       e.target.value = '';
     }
@@ -1019,7 +1220,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
       try {
         const res = await apiFetch('/api/session-changes/bulk-import/request', {
           method: 'POST',
-          body: JSON.stringify({ rows: parsedRows, approverId }),
+          body: JSON.stringify({ rows: parsedRows, approverId, detailedSessionHistory: parsedHistory || [] }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -1044,7 +1245,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
     try {
       const res = await apiFetch('/api/patients/bulk-import', {
         method: 'POST',
-        body: JSON.stringify({ rows: parsedRows }),
+        body: JSON.stringify({ rows: parsedRows, detailedSessionHistory: parsedHistory || [] }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -1056,11 +1257,50 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         return;
       }
       setSuccessCount(data.count);
+      if (data.batchId && data.revertDeadline) {
+        setRevertBatchId(data.batchId);
+        setRevertDeadline(new Date(data.revertDeadline).getTime());
+      }
       onImported(data.count);
     } catch {
       setGeneralError('No se pudo contactar el servidor.');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!revertDeadline) { setSecondsLeft(null); return; }
+    const tick = () => {
+      const remaining = Math.max(0, Math.round((revertDeadline - Date.now()) / 1000));
+      setSecondsLeft(remaining);
+      if (remaining <= 0) setRevertDeadline(null);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [revertDeadline]);
+
+  async function handleRevertBatch() {
+    if (!revertBatchId) return;
+    if (!window.confirm(`¿Revertir esta carga? Se van a borrar permanentemente los ${successCount} pacientes que se acaban de importar. Esta acción no se puede deshacer.`)) {
+      return;
+    }
+    setReverting(true);
+    try {
+      const res = await apiFetch(`/api/patients/bulk-import/${revertBatchId}/revert`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setRevertResultMessage(data.error || `HTTP ${res.status}`);
+        return;
+      }
+      setRevertResultMessage(data.message);
+      setRevertBatchId(null);
+      setRevertDeadline(null);
+    } catch {
+      setRevertResultMessage('No se pudo contactar el servidor para revertir la carga.');
+    } finally {
+      setReverting(false);
     }
   }
 
@@ -1128,6 +1368,7 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
             <p className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
               <FileSpreadsheet className="h-4 w-4 shrink-0" />
               {parsedRows.length} fila(s) listas para importar.
+              {parsedHistory && parsedHistory.length > 0 ? ` Incluye ${parsedHistory.length} sesión(es) de historial detallado.` : ''}
             </p>
           )}
 
@@ -1210,10 +1451,29 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           )}
 
           {successCount !== null && (
-            <p className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700">
-              <CheckCircle2 className="h-4 w-4 shrink-0" />
-              {successCount} paciente(s) importado(s) correctamente.
-            </p>
+            <div className="space-y-2">
+              <p className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                {successCount} paciente(s) importado(s) correctamente.
+              </p>
+              {revertResultMessage ? (
+                <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
+                  {revertResultMessage}
+                </p>
+              ) : secondsLeft !== null && secondsLeft > 0 ? (
+                <button
+                  type="button"
+                  onClick={handleRevertBatch}
+                  disabled={reverting}
+                  className="inline-flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-600 transition-colors hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
+                >
+                  {reverting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
+                  {reverting
+                    ? 'Revirtiendo...'
+                    : `¿Subiste el archivo equivocado? Revertir esta carga (${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')})`}
+                </button>
+              ) : null}
+            </div>
           )}
         </div>
 

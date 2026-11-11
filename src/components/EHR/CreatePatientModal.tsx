@@ -31,8 +31,16 @@
  *   PUT  /api/patients/:id           → Actualización del paciente (modo edición)
  *   GET  /api/initial-assessment/:id → Contacto de emergencia actual (modo edición)
  *   PUT  /api/initial-assessment/:id → Actualización del contacto de emergencia (modo edición)
+ *
+ * Paso opcional post-creación — autorizar el cupo inicial de sesiones sin
+ * tener que ir luego a "Agendar cita" (mismo método que usa
+ * DelegatedAppointmentModal, ver authorizeControls ahí):
+ *   GET  /api/patients/:id/schedule-summary   → canCallerSelfAuthorizeSessions del paciente recién creado
+ *   GET  /api/session-changes/approvers?patientId= → aprobadores del tenant (solo CEO/DIRECTIVO)
+ *   POST /api/patients/:id/authorize-sessions → aplica directo o arma la solicitud de código
+ *   POST /api/session-changes/verify          → verifica el código y aplica el cambio
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   X, UserPlus, Save, Loader2, User, Building2, HeartPulse, CalendarClock, BarChart3,
   Stethoscope, MapPin, Check, Plus,
@@ -43,6 +51,11 @@ import { COLOMBIA_DEPARTAMENTOS, DEPARTAMENTOS_ORDENADOS } from '../../data/colo
 import type { BackendPatient } from '../../types';
 
 interface AgreementTypeOption {
+  id: string;
+  name: string;
+}
+
+interface RelationTypeOption {
   id: string;
   name: string;
 }
@@ -150,9 +163,6 @@ const ESTRATO_OPTIONS = [1, 2, 3, 4, 5, 6];
 // el contacto de emergencia — se mantiene igual para no confundir con dos
 // listas distintas de parentesco en la misma app.
 const PARENTESCO_OPTIONS = ['Madre', 'Padre', 'Hermano/a', 'Cónyuge / Pareja', 'Hijo/a', 'Abuelo/a', 'Tutor legal', 'Otro'];
-// Relación del paciente con el convenio que lo cubre — debe coincidir
-// exactamente con PATIENT_RELACION_VALUES en patient.controller.js.
-const RELACION_OPTIONS = ['Estudiante', 'Colaborador', 'Familiar de colaborador', 'Familiar de estudiante', 'Consultante'];
 // Debe coincidir exactamente con PATIENT_TIPO_ATENCION_VALUES en patient.controller.js.
 const TIPO_ATENCION_OPTIONS: { value: string; label: string }[] = [
   { value: 'Presencial', label: 'Presencial' },
@@ -267,11 +277,6 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   const isEditMode = !!patient;
   const [activeTab, setActiveTab] = useState<TabKey>('personal');
 
-  // Cupo inicial de sesiones — solo tiene sentido al CREAR (en edición, el
-  // cupo se gestiona aparte vía "Autorizar sesiones", nunca desde este
-  // formulario general — ver comentario en updatePatient). Mismo gate de rol
-  // que exige el backend en authorizeSessions.
-  const canAuthorizeSessions = userRole === 'CEO' || userRole === 'DIRECTIVO';
   // Crear un convenio nuevo sin salir de este modal (decisión 2026-10-27) —
   // restringido a quien ya ve la pestaña "Convenios" en AdminPortal (CEO/
   // DIRECTIVO/OPERATIVO). Un especialista individual (ESPECIALISTA_B2B) solo
@@ -349,13 +354,84 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   const [loadingSpecialists, setLoadingSpecialists] = useState(false);
   const [agreementType, setAgreementType] = useState('');
   const [agreementTypes, setAgreementTypes] = useState<AgreementTypeOption[]>([]);
+  // Crear tipo de convenio sin salir del modal — mismo patrón que "Crear
+  // nuevo convenio" arriba, pero sin gate de rol: el backend no exige
+  // ninguno para este catálogo (ver comentario en company.controller.js).
+  const [isCreatingAgreementType, setIsCreatingAgreementType] = useState(false);
+  const [newAgreementTypeName, setNewAgreementTypeName] = useState('');
+  const [savingAgreementType, setSavingAgreementType] = useState(false);
+  const [agreementTypeCreateError, setAgreementTypeCreateError] = useState<string | null>(null);
   // Especialidad clínica del paciente — catálogo ÚNICO de la clínica (no por
   // convenio, a diferencia de agreementType), decisión 2026-10-13: antes solo
   // se elegía POR CITA, nunca al crear/editar el paciente.
   const [specialtyId, setSpecialtyId] = useState('');
   const [specialties, setSpecialties] = useState<SpecialtyOption[]>([]);
   const [relacion, setRelacion] = useState('');
+  // Convenio+relación se mantienen tal cual (companyId/agreementType/relacion
+  // sin tocar) pero este episodio llega por Consulta Externa en vez del
+  // canal corporativo habitual — mantiene el costo que ya se le venía
+  // manejando (tariff.service.js solo depende de companyId) y agrega el
+  // indicativo " (CE)" al número de historia clínica, igual que se viene
+  // haciendo a mano en el Excel histórico de cargue masivo.
+  const [isConsultaExterna, setIsConsultaExterna] = useState(false);
+  // Catálogo por TENANT (no por convenio, a diferencia de agreementType) —
+  // ver RelationType en schema.prisma. Se carga una sola vez al abrir el
+  // modal, no depende de companyId.
+  const [relationTypes, setRelationTypes] = useState<RelationTypeOption[]>([]);
+  const [isCreatingRelationType, setIsCreatingRelationType] = useState(false);
+  const [newRelationTypeName, setNewRelationTypeName] = useState('');
+  const [savingRelationType, setSavingRelationType] = useState(false);
+  const [relationTypeCreateError, setRelationTypeCreateError] = useState<string | null>(null);
   const [tipoAtencion, setTipoAtencion] = useState('');
+
+  // ── Autorización inicial de sesiones (solo al crear, opcional) ──
+  // Mismo método que "Agendar cita" (ver authorizeControls en
+  // DelegatedAppointmentModal): o se aplica directo (ESPECIALISTA_B2B con
+  // allowSpecialistSelfAuthorizeSessions sobre su propio paciente) o pasa
+  // por el control de dos personas (código a un aprobador). Solo tiene
+  // sentido ofrecerlo DESPUÉS de crear el paciente real — authorize-sessions
+  // necesita su id, que no existe antes de guardar — por eso el flujo pausa
+  // en un paso extra (ver postCreatePatient) en vez de mandarlo en el mismo
+  // POST de creación.
+  const canAttemptInitialSessions = userRole === 'CEO' || userRole === 'DIRECTIVO' || userRole === 'ESPECIALISTA_B2B';
+  const [initialSessionsLibres, setInitialSessionsLibres] = useState(false);
+  const [initialSessionsCount, setInitialSessionsCount] = useState('');
+  const [postCreatePatient, setPostCreatePatient] = useState<BackendPatient | null>(null);
+  const [postCreateAppInvitation, setPostCreateAppInvitation] = useState<{ sent: boolean; destino?: string | null; error?: string } | undefined>(undefined);
+  const [checkingSelfAuthorize, setCheckingSelfAuthorize] = useState(false);
+  const [postCreateIsSelfAuthorize, setPostCreateIsSelfAuthorize] = useState(false);
+  const [initialApprovers, setInitialApprovers] = useState<{ id: string; name: string; email: string }[]>([]);
+  const [initialApproverId, setInitialApproverId] = useState('');
+  const [authorizingInitialSessions, setAuthorizingInitialSessions] = useState(false);
+  const [pendingInitialRequestId, setPendingInitialRequestId] = useState<string | null>(null);
+  const [pendingInitialExpiresInMinutes, setPendingInitialExpiresInMinutes] = useState<number | null>(null);
+  const [verifyInitialCodeInput, setVerifyInitialCodeInput] = useState('');
+  const [verifyingInitialCode, setVerifyingInitialCode] = useState(false);
+  const [initialSessionsError, setInitialSessionsError] = useState<string | null>(null);
+  const [initialSessionsSuccessMsg, setInitialSessionsSuccessMsg] = useState<string | null>(null);
+
+  // Al abrir el paso post-creación, se consulta si este caller puede
+  // autoautorizar sobre el paciente recién creado (mismo endpoint que usa
+  // DelegatedAppointmentModal) y, si no, la lista de aprobadores de SU
+  // tenant — no tiene sentido pedirla antes porque depende del patientId.
+  useEffect(() => {
+    if (!postCreatePatient) return;
+    setCheckingSelfAuthorize(true);
+    apiFetch(`/api/patients/${postCreatePatient.id}/schedule-summary`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const selfAuth = !!data?.canCallerSelfAuthorizeSessions;
+        setPostCreateIsSelfAuthorize(selfAuth);
+        if (!selfAuth && (userRole === 'CEO' || userRole === 'DIRECTIVO')) {
+          return apiFetch(`/api/session-changes/approvers?patientId=${postCreatePatient.id}`)
+            .then((r) => (r.ok ? r.json() : []))
+            .then((list) => setInitialApprovers(Array.isArray(list) ? list : []))
+            .catch(() => setInitialApprovers([]));
+        }
+      })
+      .catch(() => setPostCreateIsSelfAuthorize(false))
+      .finally(() => setCheckingSelfAuthorize(false));
+  }, [postCreatePatient, userRole]);
 
   // ── Fechas del proceso ──
   const [fechaSolicitud, setFechaSolicitud] = useState('');
@@ -380,15 +456,36 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
   }, [isOpen]);
 
   // Propio de CADA convenio (companyId) — no un catálogo compartido de todo
-  // el tenant, ver comentario en schema.prisma. Se recarga cada vez que
-  // cambia el convenio elegido arriba.
-  useEffect(() => {
-    if (!isOpen || !companyId) { setAgreementTypes([]); return; }
-    apiFetch(`/api/agreement-types?companyId=${companyId}`)
+  // el tenant, ver comentario en schema.prisma. Extraída de la función del
+  // efecto (en vez de solo el cuerpo del efecto) para poder recargar el
+  // catálogo también después de crear un tipo nuevo, sin duplicar el fetch.
+  const fetchAgreementTypes = useCallback((id: string) => {
+    if (!id) { setAgreementTypes([]); return; }
+    apiFetch(`/api/agreement-types?companyId=${id}`)
       .then(res => res.ok ? res.json() : [])
       .then(data => setAgreementTypes(Array.isArray(data) ? data : []))
       .catch(() => setAgreementTypes([]));
-  }, [isOpen, companyId]);
+  }, []);
+
+  // Se recarga cada vez que cambia el convenio elegido arriba.
+  useEffect(() => {
+    if (!isOpen) { setAgreementTypes([]); return; }
+    fetchAgreementTypes(companyId);
+  }, [isOpen, companyId, fetchAgreementTypes]);
+
+  // Catálogo de "Relación" — por TENANT, se carga una sola vez al abrir
+  // (no depende de companyId, a diferencia de agreementType).
+  const fetchRelationTypes = useCallback(() => {
+    apiFetch('/api/relation-types')
+      .then(res => res.ok ? res.json() : [])
+      .then(data => setRelationTypes(Array.isArray(data) ? data : []))
+      .catch(() => setRelationTypes([]));
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen) { setRelationTypes([]); return; }
+    fetchRelationTypes();
+  }, [isOpen, fetchRelationTypes]);
 
   // Catálogo único de la clínica (no depende del convenio elegido) — mismo
   // endpoint que usa el selector de "Especialidad" al agendar una cita.
@@ -438,6 +535,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setAgreementType(patient.agreementType || '');
     setSpecialtyId(patient.specialtyId || '');
     setRelacion(patient.relacion || '');
+    setIsConsultaExterna(!!patient.isConsultaExterna);
     setTipoAtencion(patient.tipoAtencion || '');
     setFechaSolicitud(patient.fechaSolicitud ? patient.fechaSolicitud.slice(0, 10) : '');
     setFechaAgendamiento(patient.fechaAgendamiento ? patient.fechaAgendamiento.slice(0, 10) : '');
@@ -567,8 +665,14 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setCompanyCreateError(null);
     setPsychologistId('');
     setAgreementType('');
+    setIsCreatingAgreementType(false);
+    setNewAgreementTypeName('');
+    setAgreementTypeCreateError(null);
     setSpecialtyId('');
     setRelacion('');
+    setIsCreatingRelationType(false);
+    setNewRelationTypeName('');
+    setRelationTypeCreateError(null);
     setTipoAtencion('');
     setFechaSolicitud('');
     setFechaAgendamiento('');
@@ -576,6 +680,21 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     setSessionStats(null);
     setError(null);
     setDuplicatePatient(null);
+    setInitialSessionsLibres(false);
+    setInitialSessionsCount('');
+    setPostCreatePatient(null);
+    setPostCreateAppInvitation(undefined);
+    setCheckingSelfAuthorize(false);
+    setPostCreateIsSelfAuthorize(false);
+    setInitialApprovers([]);
+    setInitialApproverId('');
+    setAuthorizingInitialSessions(false);
+    setPendingInitialRequestId(null);
+    setPendingInitialExpiresInMinutes(null);
+    setVerifyInitialCodeInput('');
+    setVerifyingInitialCode(false);
+    setInitialSessionsError(null);
+    setInitialSessionsSuccessMsg(null);
   }
 
   function handleClose() {
@@ -610,6 +729,58 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
       setCompanyCreateError('Error de red: ' + (err?.message || 'intenta de nuevo.'));
     } finally {
       setSavingCompany(false);
+    }
+  }
+
+  async function handleCreateAgreementType() {
+    const name = newAgreementTypeName.trim();
+    if (!name || !companyId) return;
+    setSavingAgreementType(true);
+    setAgreementTypeCreateError(null);
+    try {
+      const res = await apiFetch('/api/agreement-types', {
+        method: 'POST',
+        body: JSON.stringify({ name, companyId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAgreementTypeCreateError(data.error || 'Error al crear el tipo de convenio.');
+        return;
+      }
+      fetchAgreementTypes(companyId);
+      setAgreementType(data.name);
+      setNewAgreementTypeName('');
+      setIsCreatingAgreementType(false);
+    } catch (err: any) {
+      setAgreementTypeCreateError('Error de red: ' + (err?.message || 'intenta de nuevo.'));
+    } finally {
+      setSavingAgreementType(false);
+    }
+  }
+
+  async function handleCreateRelationType() {
+    const name = newRelationTypeName.trim();
+    if (!name) return;
+    setSavingRelationType(true);
+    setRelationTypeCreateError(null);
+    try {
+      const res = await apiFetch('/api/relation-types', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setRelationTypeCreateError(data.error || 'Error al crear el tipo de relación.');
+        return;
+      }
+      fetchRelationTypes();
+      setRelacion(data.name);
+      setNewRelationTypeName('');
+      setIsCreatingRelationType(false);
+    } catch (err: any) {
+      setRelationTypeCreateError('Error de red: ' + (err?.message || 'intenta de nuevo.'));
+    } finally {
+      setSavingRelationType(false);
     }
   }
 
@@ -695,6 +866,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
             specialtyId: specialtyId || null,
             relacion: relacion || null,
             tipoAtencion: tipoAtencion || null,
+            isConsultaExterna,
             fechaSolicitud: fechaSolicitud || null,
             fechaAgendamiento: fechaAgendamiento || null,
             fechaFinalizacion: fechaFinalizacion || null,
@@ -775,6 +947,7 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
           specialtyId: specialtyId || undefined,
           relacion: relacion || undefined,
           tipoAtencion: tipoAtencion || undefined,
+          isConsultaExterna,
           fechaSolicitud: fechaSolicitud || undefined,
           fechaAgendamiento: fechaAgendamiento || undefined,
           fechaFinalizacion: fechaFinalizacion || undefined,
@@ -816,6 +989,17 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
         }
       }
 
+      // Si se pidió cupo inicial, no se cierra todavía — se pausa en el paso
+      // de autorización (mismo método que al agendar) para no obligar a
+      // volver a entrar después desde "Agendar cita" a hacer esto mismo.
+      const wantsInitialSessions = canAttemptInitialSessions
+        && (initialSessionsLibres || initialSessionsCount.trim() !== '');
+      if (wantsInitialSessions) {
+        setPostCreatePatient(created);
+        setPostCreateAppInvitation(appInvitation);
+        return;
+      }
+
       onCreated?.(created, false, appInvitation);
       reset();
       onClose();
@@ -847,7 +1031,219 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
     }
   }
 
+  // Cierra el modal después del paso de autorización (se haya aplicado,
+  // pedido un código, o el usuario haya elegido omitirlo) — recién acá se
+  // avisa al llamador que el paciente quedó creado, igual que antes cuando
+  // no había cupo inicial de por medio.
+  function finalizePostCreate() {
+    if (postCreatePatient) {
+      onCreated?.(postCreatePatient, false, postCreateAppInvitation);
+    }
+    reset();
+    onClose();
+  }
+
+  // Aplica el cupo inicial — mismo endpoint y misma lógica de dos caminos
+  // que handleAuthorizeSessions en DelegatedAppointmentModal (self-authorize
+  // directo vs. código de un aprobador), adaptada a un único "Agregar"
+  // porque un paciente recién creado no tiene nada que restar todavía.
+  async function handleApplyInitialSessions() {
+    if (!postCreatePatient) return;
+    const n = Number(initialSessionsCount);
+    if (!initialSessionsLibres && (!Number.isInteger(n) || n <= 0)) {
+      setInitialSessionsError('Ingresa un número entero de sesiones mayor a 0 (o marca "sesiones libres").');
+      return;
+    }
+    if (!postCreateIsSelfAuthorize && !initialApproverId) {
+      setInitialSessionsError('Elige a quién le va a llegar el código de confirmación.');
+      return;
+    }
+    setAuthorizingInitialSessions(true);
+    setInitialSessionsError(null);
+    try {
+      const res = await apiFetch(`/api/patients/${postCreatePatient.id}/authorize-sessions`, {
+        method: 'POST',
+        body: JSON.stringify({
+          changeType: 'ADD',
+          companyId,
+          unlimited: initialSessionsLibres,
+          sessionsAuthorized: initialSessionsLibres ? undefined : n,
+          ...(postCreateIsSelfAuthorize ? {} : { approverId: initialApproverId }),
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data.applied) {
+        setInitialSessionsSuccessMsg('Sesiones autorizadas.');
+        return;
+      }
+      setPendingInitialRequestId(data.requestId);
+      setPendingInitialExpiresInMinutes(data.expiresInMinutes);
+      const approverName = initialApprovers.find((a) => a.id === initialApproverId)?.name || 'el aprobador elegido';
+      setInitialSessionsSuccessMsg(`Código enviado a ${approverName} — pídele que te lo dicte.`);
+    } catch (err: any) {
+      setInitialSessionsError(`Error al solicitar la autorización: ${err.message}`);
+    } finally {
+      setAuthorizingInitialSessions(false);
+    }
+  }
+
+  // Verifica el código del aprobador — mismo endpoint que
+  // handleVerifySessionChange en DelegatedAppointmentModal.
+  async function handleVerifyInitialSessionsCode() {
+    if (!pendingInitialRequestId || !verifyInitialCodeInput.trim()) {
+      setInitialSessionsError('Ingresa el código que te dictaron.');
+      return;
+    }
+    setVerifyingInitialCode(true);
+    setInitialSessionsError(null);
+    try {
+      const res = await apiFetch('/api/session-changes/verify', {
+        method: 'POST',
+        body: JSON.stringify({ requestId: pendingInitialRequestId, code: verifyInitialCodeInput.trim() }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+      setInitialSessionsSuccessMsg('Sesiones autorizadas.');
+      setPendingInitialRequestId(null);
+    } catch (err: any) {
+      setInitialSessionsError(`Error al verificar el código: ${err.message}`);
+    } finally {
+      setVerifyingInitialCode(false);
+    }
+  }
+
   if (!isOpen) return null;
+
+  // Paciente ya creado, pausado en el paso de autorización del cupo inicial
+  // — reemplaza TODO el formulario de pestañas por este paso único, mismo
+  // patrón visual que authorizeControls en DelegatedAppointmentModal.
+  if (postCreatePatient) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-xs sm:p-6"
+        onClick={(e) => { if (e.target === e.currentTarget) finalizePostCreate(); }}
+      >
+        <div className="relative flex max-h-[92vh] w-full max-w-md flex-col rounded-2xl border border-slate-200 bg-white shadow-xl">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 px-6 py-4">
+            <div>
+              <h2 className="text-lg font-bold tracking-tight text-charcoal-900">Paciente creado</h2>
+              <p className="mt-0.5 text-sm text-slate-500">
+                {postCreatePatient.firstName} {postCreatePatient.lastName} — autoriza el cupo inicial de sesiones, o hazlo después desde "Agendar cita".
+              </p>
+            </div>
+          </div>
+          <div className="flex-1 space-y-3 overflow-y-auto px-6 py-5">
+            {checkingSelfAuthorize ? (
+              <div className="flex items-center gap-2 text-sm text-slate-400">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Verificando permisos…
+              </div>
+            ) : !canAttemptInitialSessions ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-100 p-2.5 text-[11px] leading-relaxed text-slate-500">
+                No puedes agregar sesiones — contacta al centro administrativo.
+              </div>
+            ) : initialSessionsSuccessMsg && !pendingInitialRequestId ? (
+              <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">{initialSessionsSuccessMsg}</p>
+            ) : pendingInitialRequestId ? (
+              <div className="space-y-1.5 rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+                <p className="text-[11px] font-semibold text-indigo-700">
+                  Código enviado{pendingInitialExpiresInMinutes ? ` — vence en ${pendingInitialExpiresInMinutes} min` : ''}. Pídele el código a quien lo recibió.
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text" inputMode="numeric" maxLength={6} value={verifyInitialCodeInput}
+                    onChange={(e) => setVerifyInitialCodeInput(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Código de 6 dígitos"
+                    className="min-w-0 flex-1 rounded-lg border border-indigo-300 p-2 text-xs font-mono tracking-widest outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleVerifyInitialSessionsCode}
+                    disabled={verifyingInitialCode}
+                    className="shrink-0 rounded-lg bg-indigo-600 px-2.5 py-2 text-[11px] font-bold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {verifyingInitialCode ? '...' : 'Confirmar'}
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setPendingInitialRequestId(null); setPendingInitialExpiresInMinutes(null); setVerifyInitialCodeInput(''); }}
+                  className="text-[10px] font-semibold text-slate-500 hover:text-slate-700"
+                >
+                  Cancelar y pedir un código nuevo
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  {initialSessionsLibres ? (
+                    <div className="flex-1 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700">Libres (sin tope)</div>
+                  ) : (
+                    <input
+                      type="number" min={1} value={initialSessionsCount}
+                      onChange={(e) => setInitialSessionsCount(e.target.value)}
+                      placeholder="Ej. 3"
+                      className={INPUT_CLASS}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleApplyInitialSessions}
+                    disabled={authorizingInitialSessions}
+                    className="shrink-0 rounded-lg bg-indigo-600 px-3 py-2.5 text-[11px] font-bold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {authorizingInitialSessions ? '...' : postCreateIsSelfAuthorize ? 'Autorizar sesiones' : 'Solicitar código'}
+                  </button>
+                </div>
+                <label className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500">
+                  <input
+                    type="checkbox" checked={initialSessionsLibres}
+                    onChange={(e) => { setInitialSessionsLibres(e.target.checked); if (e.target.checked) setInitialSessionsCount(''); }}
+                  />
+                  Libres (sin tope)
+                </label>
+                {postCreateIsSelfAuthorize ? (
+                  <p className="text-[10px] text-emerald-600">Se aplica directo — tienes el permiso de autoautorizar sesiones de tus propios pacientes.</p>
+                ) : (
+                  <>
+                    <select
+                      value={initialApproverId}
+                      onChange={(e) => setInitialApproverId(e.target.value)}
+                      className="w-full rounded-lg border border-slate-200 bg-white p-2 text-[11px] outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="">¿A quién le llega el código?</option>
+                      {initialApprovers.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    </select>
+                    {initialApprovers.length === 0 && (
+                      <p className="text-[10px] text-amber-600">Nadie en tu equipo tiene el permiso de aprobador todavía — actívalo desde Equipo y Accesos.</p>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+            {initialSessionsError && (
+              <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">{initialSessionsError}</p>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center justify-end gap-3 border-t border-slate-100 px-6 py-4">
+            <button
+              type="button"
+              onClick={finalizePostCreate}
+              className="rounded-lg px-4 py-2.5 text-sm font-semibold text-slate-500 transition-colors hover:text-charcoal-900 cursor-pointer"
+            >
+              {initialSessionsSuccessMsg && !pendingInitialRequestId ? 'Listo' : 'Omitir por ahora'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const age = calculateAge(birthDate);
 
@@ -1236,19 +1632,69 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                   )}
                 </div>
                 <div>
-                  <FieldLabel>Tipo de convenio</FieldLabel>
-                  <select
-                    value={agreementType}
-                    onChange={(e) => setAgreementType(e.target.value)}
-                    disabled={!companyId}
-                    title={!companyId ? 'Elige primero un convenio / cliente corporativo.' : undefined}
-                    className={`${SELECT_CLASS} disabled:cursor-not-allowed disabled:opacity-60`}
-                  >
-                    <option value="">Sin especificar</option>
-                    {agreementTypes.map((t) => (
-                      <option key={t.id} value={t.name}>{t.name}</option>
-                    ))}
-                  </select>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <FieldLabel>Tipo de convenio</FieldLabel>
+                    {companyId && !isCreatingAgreementType && (
+                      <button
+                        type="button"
+                        onClick={() => { setIsCreatingAgreementType(true); setAgreementTypeCreateError(null); }}
+                        className="mb-1.5 inline-flex items-center gap-1 text-[11px] font-bold text-toast-500 transition-colors hover:text-toast-600 cursor-pointer"
+                      >
+                        <Plus className="h-3 w-3" /> Crear nuevo tipo
+                      </button>
+                    )}
+                  </div>
+
+                  {isCreatingAgreementType ? (
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={newAgreementTypeName}
+                          onChange={(e) => setNewAgreementTypeName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCreateAgreementType(); } }}
+                          placeholder="Nombre del tipo de convenio..."
+                          className={INPUT_CLASS}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleCreateAgreementType}
+                          disabled={savingAgreementType || !newAgreementTypeName.trim()}
+                          className="shrink-0 rounded-lg bg-charcoal-900 px-3 py-2.5 text-xs font-bold text-white transition-colors hover:bg-charcoal-800 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                          {savingAgreementType ? '...' : 'Guardar'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setIsCreatingAgreementType(false); setNewAgreementTypeName(''); setAgreementTypeCreateError(null); }}
+                          disabled={savingAgreementType}
+                          className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600 cursor-pointer"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      {agreementTypeCreateError && (
+                        <p className="mt-1.5 text-xs font-medium text-rose-600">{agreementTypeCreateError}</p>
+                      )}
+                      <p className="mt-1.5 text-[11px] text-slate-400">
+                        Queda asociado a "{companies.find((c) => c.id === companyId)?.name}" — otros convenios no lo verán.
+                      </p>
+                    </div>
+                  ) : (
+                    <select
+                      value={agreementType}
+                      onChange={(e) => setAgreementType(e.target.value)}
+                      disabled={!companyId}
+                      title={!companyId ? 'Elige primero un convenio / cliente corporativo.' : undefined}
+                      className={`${SELECT_CLASS} disabled:cursor-not-allowed disabled:opacity-60`}
+                    >
+                      <option value="">Sin especificar</option>
+                      {agreementTypes.map((t) => (
+                        <option key={t.id} value={t.name}>{t.name}</option>
+                      ))}
+                    </select>
+                  )}
                 </div>
                 <div>
                   <FieldLabel>Especialidad</FieldLabel>
@@ -1260,11 +1706,61 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                   </select>
                 </div>
                 <div>
-                  <FieldLabel>Relación</FieldLabel>
-                  <select value={relacion} onChange={(e) => setRelacion(e.target.value)} className={SELECT_CLASS}>
-                    <option value="">Sin especificar</option>
-                    {RELACION_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
-                  </select>
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <FieldLabel>Relación</FieldLabel>
+                    {!isCreatingRelationType && (
+                      <button
+                        type="button"
+                        onClick={() => { setIsCreatingRelationType(true); setRelationTypeCreateError(null); }}
+                        className="mb-1.5 inline-flex items-center gap-1 text-[11px] font-bold text-toast-500 transition-colors hover:text-toast-600 cursor-pointer"
+                      >
+                        <Plus className="h-3 w-3" /> Crear nuevo tipo
+                      </button>
+                    )}
+                  </div>
+
+                  {isCreatingRelationType ? (
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={newRelationTypeName}
+                          onChange={(e) => setNewRelationTypeName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleCreateRelationType(); } }}
+                          placeholder="Nombre de la relación..."
+                          className={INPUT_CLASS}
+                        />
+                        <button
+                          type="button"
+                          onClick={handleCreateRelationType}
+                          disabled={savingRelationType || !newRelationTypeName.trim()}
+                          className="shrink-0 rounded-lg bg-charcoal-900 px-3 py-2.5 text-xs font-bold text-white transition-colors hover:bg-charcoal-800 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                        >
+                          {savingRelationType ? '...' : 'Guardar'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setIsCreatingRelationType(false); setNewRelationTypeName(''); setRelationTypeCreateError(null); }}
+                          disabled={savingRelationType}
+                          className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-lg border border-slate-200 text-slate-400 transition-colors hover:bg-slate-50 hover:text-slate-600 cursor-pointer"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                      {relationTypeCreateError && (
+                        <p className="mt-1.5 text-xs font-medium text-rose-600">{relationTypeCreateError}</p>
+                      )}
+                      <p className="mt-1.5 text-[11px] text-slate-400">
+                        Queda disponible para cualquier paciente de este tenant, no solo este convenio.
+                      </p>
+                    </div>
+                  ) : (
+                    <select value={relacion} onChange={(e) => setRelacion(e.target.value)} className={SELECT_CLASS}>
+                      <option value="">Sin especificar</option>
+                      {relationTypes.map((r) => <option key={r.id} value={r.name}>{r.name}</option>)}
+                    </select>
+                  )}
                 </div>
                 <div>
                   <FieldLabel>Tipo de atención</FieldLabel>
@@ -1272,6 +1768,24 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                     <option value="">Sin especificar</option>
                     {TIPO_ATENCION_OPTIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                    <input
+                      type="checkbox"
+                      checked={isConsultaExterna}
+                      onChange={(e) => setIsConsultaExterna(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-toast-500 focus:ring-toast-400"
+                    />
+                    <span>
+                      <span className="block text-xs font-bold text-charcoal-900">¿Consulta externa?</span>
+                      <span className="mt-0.5 block text-[11px] text-slate-500">
+                        El convenio y la relación de arriba se mantienen sin cambios — solo marca que este
+                        episodio llegó por Consulta Externa en vez del canal corporativo, para mantener el
+                        costo que se le venía manejando y agregar el indicativo &quot;(CE)&quot; a la historia clínica.
+                      </span>
+                    </span>
+                  </label>
                 </div>
                 <div className="sm:col-span-2">
                   <FieldLabel>Psicólogo asignado</FieldLabel>
@@ -1288,10 +1802,35 @@ export default function CreatePatientModal({ isOpen, onClose, patient, onCreated
                   </select>
                   <p className="mt-1 text-[10.5px] text-slate-400">Opcional — si no lo eliges ahora, se asignará automáticamente al agendar la primera cita.</p>
                 </div>
-                {!isEditMode && canAuthorizeSessions && (
+                {!isEditMode && canAttemptInitialSessions && (
                   <div className="sm:col-span-2">
-                    <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-2.5 text-[10.5px] leading-relaxed text-slate-400">
-                      El cupo de sesiones se autoriza después de crear el paciente, desde "Agendar cita" — requiere un código de confirmación de un aprobador (control de dos personas).
+                    <FieldLabel>Sesiones iniciales (opcional)</FieldLabel>
+                    <div className="flex items-center gap-2">
+                      {initialSessionsLibres ? (
+                        <div className="flex-1 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700">Libres (sin tope)</div>
+                      ) : (
+                        <input
+                          type="number" min={1}
+                          value={initialSessionsCount}
+                          onChange={(e) => setInitialSessionsCount(e.target.value)}
+                          placeholder="Ej. 3"
+                          disabled={!companyId}
+                          className={`${INPUT_CLASS} disabled:cursor-not-allowed disabled:opacity-60`}
+                        />
+                      )}
+                      <label className="flex shrink-0 items-center gap-1.5 text-[11px] font-medium text-slate-500">
+                        <input
+                          type="checkbox" checked={initialSessionsLibres}
+                          onChange={(e) => { setInitialSessionsLibres(e.target.checked); if (e.target.checked) setInitialSessionsCount(''); }}
+                          disabled={!companyId}
+                        />
+                        Libres
+                      </label>
+                    </div>
+                    <p className="mt-1 text-[10.5px] text-slate-400">
+                      {companyId
+                        ? 'Al guardar, se te pedirá confirmar la autorización — mismo control de dos personas que al agendar (o aplicación directa si tienes el permiso de autoautorizar). Déjalo vacío para autorizarlo después desde "Agendar cita".'
+                        : 'Elige primero un convenio para poder autorizar sesiones.'}
                     </p>
                   </div>
                 )}

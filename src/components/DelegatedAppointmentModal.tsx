@@ -82,6 +82,10 @@ interface ScheduleSummary {
     documentType: string | null;
     phone: string | null;
     companyName: string | null;
+    companyShortCode: string | null;
+    agreementType: string | null;
+    relacion: string | null;
+    isConsultaExterna: boolean;
   };
   // Lote de sesiones VIGENTE del paciente — null si nunca se le autorizó
   // ninguno, o si el último se cerró (agotado o cambio de convenio). Sin
@@ -324,6 +328,14 @@ export default function DelegatedAppointmentModal({
   // de traer/cachear el listado entero como sí se hace con especialistas,
   // convenios y especialidades (esos son catálogos acotados por diseño).
   const [selectedPatientFull, setSelectedPatientFull] = useState<PatientOption | null>(null);
+  // Convenio+relación del paciente no cambian por esto — solo marca que ESTE
+  // episodio llegó por Consulta Externa en vez del canal corporativo
+  // habitual, para mantener el costo que se le venía manejando y agregar
+  // "(CE)" a la historia clínica (ver isConsultaExterna en patient.controller.js).
+  // Es administrativo, no clínico — editable solo para CEO/DIRECTIVO/OPERATIVO,
+  // mismo criterio que canManageStatus en PacientesPanel.tsx.
+  const [isConsultaExterna, setIsConsultaExterna] = useState(false);
+  const [savingConsultaExterna, setSavingConsultaExterna] = useState(false);
   const [patientSearchTerm, setPatientSearchTerm] = useState('');
   const [patientSearchResults, setPatientSearchResults] = useState<PatientOption[]>([]);
   const [patientSearchLoading, setPatientSearchLoading] = useState(false);
@@ -665,6 +677,7 @@ export default function DelegatedAppointmentModal({
   useEffect(() => {
     if (!form.patientId || isCreatingPatient) {
       setScheduleSummary(null);
+      setIsConsultaExterna(false);
       lastAutoSizedPatientId.current = null;
       return;
     }
@@ -684,6 +697,11 @@ export default function DelegatedAppointmentModal({
         if (data.patient.companyName) {
           setForm((prev) => ({ ...prev, corporateClient: data.patient.companyName! }));
         }
+        // Tipo de convenio ya guardado del paciente — antes faltaba este
+        // precargue y el selector siempre arrancaba en "Sin especificar"
+        // aunque el paciente ya tuviera uno asignado.
+        setForm((prev) => ({ ...prev, agreementType: data.patient.agreementType || '' }));
+        setIsConsultaExterna(!!data.patient.isConsultaExterna);
 
         // Sugerir cuántas sesiones agendar ahora, y precargar el convenio en
         // el formulario de "Autorizar sesiones" — solo la primera vez que se
@@ -1230,6 +1248,34 @@ export default function DelegatedAppointmentModal({
   const storedUser = getStoredUser();
   const isSelfAuthorize = !!scheduleSummary?.canCallerSelfAuthorizeSessions;
   const canAuthorizeSessions = storedUser?.role === 'CEO' || storedUser?.role === 'DIRECTIVO' || isSelfAuthorize;
+  // "Consulta Externa" es administrativo, no clínico — mismo criterio que
+  // canManageStatus en PacientesPanel.tsx. El backend (updatePatient) rechaza
+  // igual el cambio si lo intenta un ESPECIALISTA_B2B; esto es solo para que
+  // el checkbox se vea deshabilitado en vez de fallar en silencio.
+  const canEditConsultaExterna = storedUser?.role === 'CEO' || storedUser?.role === 'DIRECTIVO' || storedUser?.role === 'OPERATIVO';
+
+  const handleToggleConsultaExterna = async (checked: boolean) => {
+    if (!form.patientId) return;
+    const previous = isConsultaExterna;
+    setIsConsultaExterna(checked);
+    setSavingConsultaExterna(true);
+    try {
+      const res = await apiFetch(`/api/patients/${form.patientId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ isConsultaExterna: checked }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        setIsConsultaExterna(previous);
+        toast.error(errBody?.error || 'No se pudo actualizar "Consulta Externa".');
+      }
+    } catch {
+      setIsConsultaExterna(previous);
+      toast.error('Error de red al actualizar "Consulta Externa".');
+    } finally {
+      setSavingConsultaExterna(false);
+    }
+  };
   // Un especialista solo puede agendarse a sí mismo — nunca debe ver (ni
   // poder elegir) a los demás psicólogos del tenant en este selector, aunque
   // el endpoint /api/users/specialists sí le traiga la lista completa (la
@@ -1730,8 +1776,16 @@ export default function DelegatedAppointmentModal({
               {form.corporateClient && (
                 <div>
                   <div className="flex justify-between items-end mb-1">
-                    <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                    <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
                       Tipo de convenio
+                      {scheduleSummary?.patient.companyShortCode && (
+                        <span
+                          className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-bold tracking-wide text-indigo-600 normal-case"
+                          title="Indicativo con el que este paciente venía registrado (HC)"
+                        >
+                          {scheduleSummary.patient.companyShortCode}
+                        </span>
+                      )}
                     </label>
                     {!isCreatingAgreementType && (
                       <button
@@ -1789,6 +1843,35 @@ export default function DelegatedAppointmentModal({
                     </p>
                   )}
                 </div>
+              )}
+
+              {/* ── Consulta Externa — convenio/relación del paciente NO cambian;
+                  solo marca que ESTE episodio llegó por Consulta Externa en vez
+                  del canal corporativo habitual, para mantener el costo que se
+                  le venía manejando y agregar "(CE)" a la historia clínica.
+                  Administrativo, no clínico — ver canEditConsultaExterna. ── */}
+              {form.patientId && !isCreatingPatient && (
+                <label
+                  className={`flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 ${canEditConsultaExterna ? 'cursor-pointer' : 'cursor-not-allowed opacity-75'}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={isConsultaExterna}
+                    disabled={!canEditConsultaExterna || savingConsultaExterna}
+                    onChange={(e) => handleToggleConsultaExterna(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>
+                    <span className="block text-xs font-bold text-slate-700">
+                      ¿Consulta externa?{savingConsultaExterna ? ' (guardando…)' : ''}
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-slate-500">
+                      Este paciente viene como Consulta Externa de su mismo convenio — el convenio y la
+                      relación de arriba no cambian.
+                      {!canEditConsultaExterna && ' Solo CEO/administrativos pueden modificar esto.'}
+                    </span>
+                  </span>
+                </label>
               )}
 
               {/* ── Fila 2: Sesiones (estado) + Agregar sesión / agendar ahora ── */}
