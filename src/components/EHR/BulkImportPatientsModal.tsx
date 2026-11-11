@@ -33,7 +33,7 @@
  */
 import { useEffect, useState } from 'react';
 import ExcelJS from 'exceljs';
-import { X, Download, Upload, Loader2, AlertTriangle, CheckCircle2, FileSpreadsheet } from 'lucide-react';
+import { X, Download, Upload, Loader2, AlertTriangle, CheckCircle2, FileSpreadsheet, Undo2 } from 'lucide-react';
 import { apiFetch } from '../../lib/apiClient';
 import { useCompanies } from '../../hooks/useCompanies';
 import { PATIENT_STATUS_LABELS } from './CreatePatientModal';
@@ -308,6 +308,14 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
   const [submitting, setSubmitting] = useState(false);
   const [generatingTemplate, setGeneratingTemplate] = useState(false);
   const [successCount, setSuccessCount] = useState<number | null>(null);
+  // "Revertir esta carga" — ventana de 5 minutos (ver BULK_IMPORT_REVERT_WINDOW_MS
+  // en patient.controller.js) para deshacer TODA la carga de un golpe si se
+  // subió el archivo equivocado. secondsLeft en null = fuera de ventana o no aplica.
+  const [revertBatchId, setRevertBatchId] = useState<string | null>(null);
+  const [revertDeadline, setRevertDeadline] = useState<number | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const [reverting, setReverting] = useState(false);
+  const [revertResultMessage, setRevertResultMessage] = useState<string | null>(null);
 
   // Convenio por defecto del tenant (el que se usa cuando una fila deja la
   // columna "Convenio" vacía) — mismo criterio que el backend (Company.
@@ -1249,11 +1257,50 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
         return;
       }
       setSuccessCount(data.count);
+      if (data.batchId && data.revertDeadline) {
+        setRevertBatchId(data.batchId);
+        setRevertDeadline(new Date(data.revertDeadline).getTime());
+      }
       onImported(data.count);
     } catch {
       setGeneralError('No se pudo contactar el servidor.');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!revertDeadline) { setSecondsLeft(null); return; }
+    const tick = () => {
+      const remaining = Math.max(0, Math.round((revertDeadline - Date.now()) / 1000));
+      setSecondsLeft(remaining);
+      if (remaining <= 0) setRevertDeadline(null);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [revertDeadline]);
+
+  async function handleRevertBatch() {
+    if (!revertBatchId) return;
+    if (!window.confirm(`¿Revertir esta carga? Se van a borrar permanentemente los ${successCount} pacientes que se acaban de importar. Esta acción no se puede deshacer.`)) {
+      return;
+    }
+    setReverting(true);
+    try {
+      const res = await apiFetch(`/api/patients/bulk-import/${revertBatchId}/revert`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setRevertResultMessage(data.error || `HTTP ${res.status}`);
+        return;
+      }
+      setRevertResultMessage(data.message);
+      setRevertBatchId(null);
+      setRevertDeadline(null);
+    } catch {
+      setRevertResultMessage('No se pudo contactar el servidor para revertir la carga.');
+    } finally {
+      setReverting(false);
     }
   }
 
@@ -1404,10 +1451,29 @@ export default function BulkImportPatientsModal({ isOpen, onClose, onImported }:
           )}
 
           {successCount !== null && (
-            <p className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700">
-              <CheckCircle2 className="h-4 w-4 shrink-0" />
-              {successCount} paciente(s) importado(s) correctamente.
-            </p>
+            <div className="space-y-2">
+              <p className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-semibold text-emerald-700">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                {successCount} paciente(s) importado(s) correctamente.
+              </p>
+              {revertResultMessage ? (
+                <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs text-slate-600">
+                  {revertResultMessage}
+                </p>
+              ) : secondsLeft !== null && secondsLeft > 0 ? (
+                <button
+                  type="button"
+                  onClick={handleRevertBatch}
+                  disabled={reverting}
+                  className="inline-flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-600 transition-colors hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
+                >
+                  {reverting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
+                  {reverting
+                    ? 'Revirtiendo...'
+                    : `¿Subiste el archivo equivocado? Revertir esta carga (${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')})`}
+                </button>
+              ) : null}
+            </div>
           )}
         </div>
 
