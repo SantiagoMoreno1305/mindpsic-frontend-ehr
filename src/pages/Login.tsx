@@ -253,7 +253,7 @@ export default function Login({ onOpenDataPolicy, onLoginSuccess }: LoginProps) 
   return (
     /* ── PAGE SHELL: fondo crema MindHealth ── */
     <div
-      className="min-h-[92vh] flex flex-col lg:flex-row font-sans antialiased"
+      className="h-full min-h-0 overflow-y-auto flex flex-col lg:flex-row font-sans antialiased"
       style={{ backgroundColor: '#FAF6F3' }}
     >
       {/* ══════════════════════════════════════════════
