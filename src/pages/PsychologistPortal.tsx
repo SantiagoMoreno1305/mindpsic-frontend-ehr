@@ -1163,13 +1163,18 @@ export default function PsychologistPortal({
         // Una cita cancelada es un estado final — bloquea todas las acciones
         // que la alterarían (unirse, marcar asistencia, cancelar de nuevo),
         // no solo la reprogramación.
-        const isCancelled = statusLabel === 'Cancelada';
+        // Anulada/Reasignada (2026-11-18) también son finales: la cita ya no
+        // es de este psicólogo o ya no existe.
+        const isCancelled = statusLabel === 'Cancelada' || statusLabel === 'Anulada' || statusLabel === 'Reasignada a otro profesional';
         const STATUS_TONE: Record<string, string> = {
           Programada: 'bg-toast-500/15 text-toast-300 border-toast-500/30',
           Atendida: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
           'No Atendido': 'bg-rose-500/15 text-rose-300 border-rose-500/30',
           Reprogramada: 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30',
           Cancelada: 'bg-slate-500/15 text-slate-300 border-slate-500/30',
+          Anulada: 'bg-slate-500/15 text-slate-300 border-slate-500/30',
+          'Reasignada a otro profesional': 'bg-slate-500/15 text-slate-300 border-slate-500/30',
+          'Por reagendar': 'bg-amber-500/15 text-amber-300 border-amber-500/30',
         };
 
         return (

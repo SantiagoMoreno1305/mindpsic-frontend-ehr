@@ -17,10 +17,12 @@
 
 import { useState, useEffect, useRef, FormEvent } from 'react';
 import { toast } from 'react-hot-toast';
-import { X, Plus, Pencil, Video, Building2, Link2, CalendarClock, User, UserRound } from 'lucide-react';
+import { X, Plus, Pencil, Video, Building2, CalendarClock, LockKeyhole, CircleCheck, CircleAlert, Loader2, User, UserRound, Info, Send, ChevronUp, ChevronDown } from 'lucide-react';
 import { apiFetch, getApiBase } from '../lib/apiClient';
+import { esCitaInactiva, ocupaHorario, ESTADO_POR_REAGENDAR } from '../lib/appointmentStatus';
 import { getCompaniesCached, type CompanyRecord } from '../hooks/useCompanies';
-import PsychologistAvailabilityGrid from './PsychologistAvailabilityGrid';
+import PsychologistAvailabilityGrid, { APPOINTMENT_DURATION_MINUTES, formatSlotTime, slotConflicts } from './PsychologistAvailabilityGrid';
+import { ChangePsychologistDrawer, NewAgreementDrawer, type ChangePsychologistResult, type NewAgreementResult, type NewAgreementSelection } from './PatientHistoryDrawers';
 
 // ── Tipos locales (alineados con Prisma pero desacoplados) ────────────────
 interface Specialist {
@@ -45,6 +47,11 @@ interface PatientOption {
   phone?: string | null;
   documentType?: string | null;
   birthDate?: string | null;
+  recordNumber?: string | null;
+  companyId?: string | null;
+  corporateClient?: string | null;
+  psychologistId?: string | null;
+  psychologist?: { id: string; name: string } | null;
 }
 
 
@@ -71,6 +78,7 @@ interface ActiveAuthorization {
   companyId: string;
   companyName: string;
   sessionsAuthorized: number | null; // null = sesiones libres
+  isConsultaExterna?: boolean;
 }
 
 interface ScheduleSummary {
@@ -135,19 +143,15 @@ function formatDateTime(dateStr: string) {
   return { dateLabel, timeLabel };
 }
 
-// ── Agendamiento múltiple (varias sesiones en una sola confirmación) ──────
-// `slotDates` guarda un datetime-local por sesión a crear. Al crecer la
-// lista, las fechas nuevas se sugieren +7 días desde la última fecha ya
-// llena (cadencia semanal, típica de terapia) — quedan editables, no es una
-// cadena rígida.
-function addWeeks(dateTimeLocal: string, weeks: number): string {
-  if (!dateTimeLocal) return '';
-  const d = new Date(dateTimeLocal);
-  if (isNaN(d.getTime())) return '';
-  d.setDate(d.getDate() + weeks * 7);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function formatScheduleDate(dateTimeLocal: string, year = false): string {
+  const date = new Date(dateTimeLocal);
+  if (Number.isNaN(date.getTime())) return 'Selecciona una fecha';
+  return date.toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric', month: 'short', ...(year ? { year: 'numeric' } : {}) }).replace(/\./g, '');
 }
+
+// ── Agendamiento múltiple (varias sesiones en una sola confirmación) ──────
+// `slotDates` guarda un datetime-local por cita. Cada horario se elige
+// explícitamente en la grilla, sin crear selecciones automáticas.
 
 // ── Documento / Teléfono: solo dígitos, tope de longitud aplicado al vuelo
 // (no se puede ni escribir un carácter inválido, no es solo un mensaje de
@@ -167,10 +171,18 @@ function resizeSlotDates(current: string[], targetCount: number): string[] {
   if (safeTarget <= current.length) return current.slice(0, safeTarget);
   const next = [...current];
   while (next.length < safeTarget) {
-    const prev = next[next.length - 1];
-    next.push(prev ? addWeeks(prev, 1) : '');
+    next.push('');
   }
   return next;
+}
+
+// Mismo día/hora, una semana después — para autocompletar las sesiones
+// restantes de un bloque (ver fillSlotFromAvailability más abajo).
+function addWeekToDateTimeLocal(dateTimeLocal: string): string {
+  const d = new Date(dateTimeLocal);
+  d.setDate(d.getDate() + 7);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -314,12 +326,16 @@ export default function DelegatedAppointmentModal({
   // valida (defensa en profundidad); esto es para no dejar ni intentar.
   const isLockedForReschedule = isEditingAppointment && !!initialData && (
     initialData.status === 'Atendida' ||
-    initialData.status === 'Cancelada' ||
-    (!!initialData.date && new Date(initialData.date).getTime() < Date.now())
+    esCitaInactiva(initialData.status) ||
+    // 'Por reagendar' se puede reprogramar aunque su fecha ya pasó: esa
+    // fecha nunca fue válida (el nuevo tratante ya la tenía ocupada).
+    (initialData.status !== ESTADO_POR_REAGENDAR && !!initialData.date && new Date(initialData.date).getTime() < Date.now())
   );
   const lockedRescheduleReason = !isLockedForReschedule ? null
     : initialData.status === 'Atendida' ? 'Esta cita ya fue atendida — no se puede reprogramar.'
     : initialData.status === 'Cancelada' ? 'Esta cita fue cancelada — no se puede reprogramar.'
+    : initialData.status === 'Anulada' ? 'Esta cita fue anulada — no se puede reprogramar.'
+    : initialData.status === 'Reasignada' ? 'Esta cita se reasignó a otro profesional — no se puede reprogramar.'
     : 'La fecha y hora de esta cita ya pasaron — no se puede reprogramar.';
 
   // ── Buscador de paciente (autocomplete, no listado completo) ───────────
@@ -356,42 +372,74 @@ export default function DelegatedAppointmentModal({
   // Solo se usan para AUTORIZAR el cupo inicial al crear un paciente nuevo
   // ── Agendamiento múltiple: una fecha/hora por sesión a crear ahora ─────
   const [slotDates, setSlotDates] = useState<string[]>(['']);
+  const [activeSlotIndex, setActiveSlotIndex] = useState<number | null>(null);
+  const [editingSlotIndex, setEditingSlotIndex] = useState<number | null>(null);
+  const [editingSlotDateTime, setEditingSlotDateTime] = useState('');
+  const [editingSlotOriginal, setEditingSlotOriginal] = useState('');
   const lastAutoSizedPatientId = useRef<string | null>(null);
   // Fecha/hora original de la cita al entrar en modo edición — para saber si
   // el usuario realmente la movió (y por lo tanto sí toca marcarla como
   // "Reprogramada") o si guardó sin tocar la fecha (no hay nada que reprogramar).
   const originalDateTimeRef = useRef<string>('');
 
-  // Clic en un espacio libre del grid de disponibilidad del psicólogo →
-  // llena la primera sesión sin fecha. Si es la Sesión 1, aplica la misma
-  // cascada semanal (+7 días) que al editarla a mano; si es una sesión
-  // intermedia, solo llena esa (no pisa fechas ya ajustadas manualmente).
+  // Cada clic en el calendario asigna exactamente un horario. Las sesiones
+  // restantes siguen vacías para poder elegirlas en cualquier día visible.
   const fillSlotFromAvailability = (dateTimeLocal: string) => {
+    if (slotConflicts(dateTimeLocal, [...psychologistBusyTimes, ...slotDates.filter(Boolean)])) {
+      toast.error('Ese horario se cruza con otra cita o sesión elegida.');
+      return;
+    }
+    const firstEmptyIndex = slotDates.findIndex((slot) => !slot);
+    if (firstEmptyIndex === -1) {
+      toast('Todas las sesiones ya tienen fecha asignada.');
+      return;
+    }
     setSlotDates((prev) => {
       const idx = prev.findIndex((s) => !s);
-      if (idx === -1) {
-        toast('Todas las sesiones ya tienen fecha asignada.');
-        return prev;
+      if (idx === -1) return prev;
+      const next = [...prev];
+      next[idx] = dateTimeLocal;
+      // Autocompleta semanalmente las sesiones restantes (mismo día/hora, una
+      // semana después de la anterior) — si una semana choca con otra cita,
+      // se detiene ahí y deja esa sesión en adelante sin fecha, para que el
+      // usuario las elija manualmente en el calendario (ver "Horarios elegidos").
+      let cursor = dateTimeLocal;
+      for (let i = idx + 1; i < next.length; i++) {
+        if (next[i]) continue;
+        cursor = addWeekToDateTimeLocal(cursor);
+        const occupied = [...psychologistBusyTimes, ...next.filter((s, j) => j !== i && s)];
+        if (slotConflicts(cursor, occupied)) break;
+        next[i] = cursor;
       }
-      if (idx === 0) {
-        return prev.map((s, i) => {
-          if (i === 0) return dateTimeLocal;
-          if (s) return s;
-          // No autocompleta la cascada semanal sobre un horario que ya está
-          // ocupado — deja esa sesión sin fecha para que quede pendiente y
-          // el administrativo elija otro horario a propósito.
-          const suggested = addWeeks(dateTimeLocal, i);
-          return psychologistBusyTimes.has(suggested) ? '' : suggested;
-        });
-      }
-      return prev.map((s, i) => (i === idx ? dateTimeLocal : s));
+      return next;
     });
+    setActiveSlotIndex(firstEmptyIndex);
   };
 
   // Clic en una sesión ya resaltada como pendiente en el grid → la limpia,
   // para corregir un día mal seleccionado sin tener que borrar el campo a mano.
   const clearSlotFromAvailability = (dateTimeLocal: string) => {
     setSlotDates((prev) => prev.map((s) => (s === dateTimeLocal ? '' : s)));
+    if (activeSlotIndex !== null && slotDates[activeSlotIndex] === dateTimeLocal) setActiveSlotIndex(null);
+    if (editingSlotIndex !== null && slotDates[editingSlotIndex] === dateTimeLocal) closeSlotEdit();
+  };
+
+  const startSlotEdit = (index: number) => {
+    const original = slotDates[index];
+    if (!original) return;
+    setShowAuthorizationDrawer(false);
+    setAvailabilityTab('availability');
+    setEditingSlotIndex(index);
+    setActiveSlotIndex(index);
+    setEditingSlotDateTime(original);
+    setEditingSlotOriginal(original);
+  };
+
+  const closeSlotEdit = () => {
+    setEditingSlotIndex(null);
+    setEditingSlotDateTime('');
+    setEditingSlotOriginal('');
+    setEditingDayCheckedDate('');
   };
 
   // ── Autorizar sesiones (crear el primer lote, ampliar el vigente, o
@@ -417,9 +465,10 @@ export default function DelegatedAppointmentModal({
   const [pendingChangeExpiresInMinutes, setPendingChangeExpiresInMinutes] = useState<number | null>(null);
   const [verifyCodeInput, setVerifyCodeInput] = useState('');
   const [verifyingCode, setVerifyingCode] = useState(false);
-  // Fuerza mostrar el formulario de autorizar aunque todavía queden sesiones
-  // disponibles (para cambiar de convenio de forma proactiva, no solo al agotar).
-  const [showAuthForm, setShowAuthForm] = useState(false);
+  const [showAuthorizationDrawer, setShowAuthorizationDrawer] = useState(false);
+  const [historyDrawer, setHistoryDrawer] = useState<'change' | 'agreement' | null>(null);
+  const [availabilityRefreshKey, setAvailabilityRefreshKey] = useState(0);
+  const [availabilityTab, setAvailabilityTab] = useState<'availability' | 'history'>('availability');
 
   // ── Patient Provisioning State ──────────────────────────────────────────
   const [isCreatingPatient, setIsCreatingPatient] = useState(false);
@@ -461,6 +510,48 @@ export default function DelegatedAppointmentModal({
   // detecta antes de intentar guardar. Clave = mismo string "YYYY-MM-DDTHH:mm"
   // que usan los inputs datetime-local, para comparar sin conversión.
   const [psychologistBusyTimes, setPsychologistBusyTimes] = useState<Set<string>>(new Set());
+  const [editingDayBusyTimes, setEditingDayBusyTimes] = useState<Set<string>>(new Set());
+  const [editingDayLoading, setEditingDayLoading] = useState(false);
+  const [editingDayError, setEditingDayError] = useState(false);
+  const [editingDayCheckedDate, setEditingDayCheckedDate] = useState('');
+  const editingSlotConflicts = editingSlotIndex !== null && slotConflicts(editingSlotDateTime, [
+    ...psychologistBusyTimes,
+    ...editingDayBusyTimes,
+    ...slotDates.filter((value, index) => index !== editingSlotIndex && value),
+  ]);
+  const editingSlotIsPast = editingSlotDateTime ? new Date(editingSlotDateTime).getTime() < Date.now() : true;
+  const editingDayReady = !editingDayLoading && !editingDayError && editingDayCheckedDate === editingSlotDateTime.slice(0, 10);
+
+  useEffect(() => {
+    if (editingSlotIndex === null || !editingSlotDateTime || !form.userId) return;
+    let cancelled = false;
+    const dayStart = new Date(`${editingSlotDateTime.slice(0, 10)}T00:00`);
+    if (Number.isNaN(dayStart.getTime())) return;
+    const nextDay = new Date(dayStart);
+    nextDay.setDate(nextDay.getDate() + 1);
+    nextDay.setMinutes(nextDay.getMinutes() + APPOINTMENT_DURATION_MINUTES);
+    const from = new Date(dayStart.getTime() - APPOINTMENT_DURATION_MINUTES * 60_000);
+    setEditingDayLoading(true);
+    setEditingDayError(false);
+    setEditingDayCheckedDate('');
+    apiFetch(`/api/appointments?psychologistId=${form.userId}&from=${from.toISOString()}&to=${nextDay.toISOString()}`)
+      .then((res) => { if (!res.ok) throw new Error('No se pudo consultar la disponibilidad'); return res.json(); })
+      .then((data: any[]) => {
+        if (cancelled) return;
+        if (!Array.isArray(data)) throw new Error('Respuesta de disponibilidad inválida');
+        const busy = new Set<string>();
+        for (const appt of data) {
+          if (!ocupaHorario(appt.status)) continue;
+          const date = new Date(appt.date);
+          busy.add(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}T${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`);
+        }
+        setEditingDayBusyTimes(busy);
+        setEditingDayCheckedDate(editingSlotDateTime.slice(0, 10));
+      })
+      .catch(() => { if (!cancelled) setEditingDayError(true); })
+      .finally(() => { if (!cancelled) setEditingDayLoading(false); });
+    return () => { cancelled = true; };
+  }, [editingSlotIndex, editingSlotDateTime.slice(0, 10), form.userId]);
 
   useEffect(() => {
     if (!form.userId) { setPsychologistBusyTimes(new Set()); return; }
@@ -480,7 +571,7 @@ export default function DelegatedAppointmentModal({
         if (cancelled || !Array.isArray(data)) return;
         const busy = new Set<string>();
         for (const appt of data) {
-          if (appt.status === 'Cancelada') continue;
+          if (!ocupaHorario(appt.status)) continue;
           if (isEditingAppointment && appt.id === initialData?.id) continue; // no choca contra sí misma
           busy.add(toLocalKey(new Date(appt.date)));
         }
@@ -488,7 +579,7 @@ export default function DelegatedAppointmentModal({
       })
       .catch(() => { if (!cancelled) setPsychologistBusyTimes(new Set()); });
     return () => { cancelled = true; };
-  }, [form.userId, isEditingAppointment, initialData?.id]);
+  }, [form.userId, isEditingAppointment, initialData?.id, availabilityRefreshKey]);
 
   // Si initialData cambia, actualizar el form
   useEffect(() => {
@@ -531,6 +622,11 @@ export default function DelegatedAppointmentModal({
           phone: initialData.patient.phone,
           documentType: initialData.patient.documentType,
           birthDate: initialData.patient.birthDate,
+          recordNumber: initialData.patient.recordNumber,
+          companyId: initialData.patient.companyId,
+          corporateClient: initialData.patient.corporateClient,
+          psychologistId: initialData.patient.psychologistId || initialData.patient.psychologist?.id,
+          psychologist: initialData.patient.psychologist,
         });
       } else {
         setSelectedPatientFull(null);
@@ -547,11 +643,13 @@ export default function DelegatedAppointmentModal({
     setPatientSearchResults([]);
     setShowPatientResults(false);
     setSlotDates(['']);
+    closeSlotEdit();
     setAuthCompanyId('');
     setAuthSessionsInput('');
     setAuthLibres(false);
     setAuthChangeType('ADD');
-    setShowAuthForm(false);
+    setShowAuthorizationDrawer(false);
+    setHistoryDrawer(null);
     setAuthApproverId('');
     setPendingChangeRequestId(null);
     setPendingChangeExpiresInMinutes(null);
@@ -752,6 +850,24 @@ export default function DelegatedAppointmentModal({
   // ── Submit ──────────────────────────────────────────────────────────────
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (!isEditingAppointment) {
+      if (!form.patientId || !hasUsableBatch) {
+        toast.error('Selecciona un paciente con sesiones autorizadas antes de agendar.');
+        return;
+      }
+      if (!slotDates.length || slotDates.some((dateTime) => !dateTime || Number.isNaN(new Date(dateTime).getTime()))) {
+        toast.error('Selecciona un horario para cada cita en el calendario.');
+        return;
+      }
+      if ((!isUnlimitedAuth && slotDates.length > (scheduleSummary?.sessionsRemaining ?? 0)) || slotDates.some((dateTime, index) => slotConflicts(dateTime, [...psychologistBusyTimes, ...slotDates.filter((_, otherIndex) => otherIndex !== index)]))) {
+        toast.error('Revisa el cupo y los horarios seleccionados antes de confirmar.');
+        return;
+      }
+      if (new Set(slotDates).size !== slotDates.length) {
+        toast.error('Cada cita debe tener un horario distinto.');
+        return;
+      }
+    }
     setIsSubmitting(true);
 
     // Declarado ACÁ (no dentro del try) para que el catch pueda leerlo: solo
@@ -957,6 +1073,11 @@ export default function DelegatedAppointmentModal({
         phone: newPatient.phone,
         documentType: newPatient.documentType,
         birthDate: newPatient.birthDate,
+        recordNumber: newPatient.recordNumber,
+        companyId: newPatient.companyId,
+        corporateClient: newPatient.corporateClient,
+        psychologistId: newPatient.psychologistId,
+        psychologist: newPatient.psychologist,
       };
 
       setSelectedPatientFull(newOption);
@@ -998,11 +1119,13 @@ export default function DelegatedAppointmentModal({
     setPatientSearchResults([]);
     setShowPatientResults(false);
     setSlotDates(['']);
+    closeSlotEdit();
     setAuthCompanyId('');
     setAuthSessionsInput('');
     setAuthLibres(false);
     setAuthChangeType('ADD');
-    setShowAuthForm(false);
+    setShowAuthorizationDrawer(false);
+    setHistoryDrawer(null);
     setAuthApproverId('');
     setPendingChangeRequestId(null);
     setPendingChangeExpiresInMinutes(null);
@@ -1043,7 +1166,7 @@ export default function DelegatedAppointmentModal({
     setPendingChangeRequestId(null);
     setPendingChangeExpiresInMinutes(null);
     setVerifyCodeInput('');
-    setShowAuthForm(false);
+    setShowAuthorizationDrawer(false);
     toast.success(
       result.renewed
         ? `Lote anterior cerrado (${result.closedReason}) — nuevas sesiones autorizadas con ${result.companyName}.`
@@ -1198,6 +1321,7 @@ export default function DelegatedAppointmentModal({
       const updatedPatient = await res.json();
 
       setSelectedPatientFull({
+        ...selectedPatientFull,
         id: updatedPatient.id,
         firstName: updatedPatient.firstName,
         lastName: updatedPatient.lastName,
@@ -1215,6 +1339,55 @@ export default function DelegatedAppointmentModal({
     } finally {
       setIsProvisioning(false);
     }
+  };
+
+  const handleChangePsychologistComplete = async (result: ChangePsychologistResult) => {
+    const patientId = form.patientId;
+    setHistoryDrawer(null);
+    setSelectedPatientFull((current) => current?.id === patientId ? {
+      ...current,
+      psychologistId: result.psychologistId,
+      psychologist: { id: result.psychologistId, name: result.psychologistName },
+    } : current);
+    setForm((current) => ({ ...current, userId: result.psychologistId }));
+    setSlotDates(['']);
+    setAvailabilityRefreshKey((current) => current + 1);
+    try {
+      const response = await apiFetch(`/api/patients/${patientId}/schedule-summary`);
+      if (response.ok) setScheduleSummary(await response.json() as ScheduleSummary);
+    } catch {
+      toast.error('El tratante cambió, pero no se pudo actualizar la ficha. Vuelve a abrir el modal para verla al día.');
+    }
+    onSuccess?.();
+    toast.success(`Tratante actualizado a ${result.psychologistName}.`);
+  };
+
+  const handleNewAgreementComplete = (result: NewAgreementResult, selection: NewAgreementSelection) => {
+    setHistoryDrawer(null);
+    setSelectedPatientFull((current) => current ? {
+      ...current,
+      id: result.newPatientId,
+      recordNumber: result.recordNumber,
+      companyId: selection.companyId,
+      corporateClient: result.companyName,
+      psychologistId: selection.proposedPsychologistId || null,
+      psychologist: selection.proposedPsychologistId ? { id: selection.proposedPsychologistId, name: result.psychologistName || 'Profesional propuesto' } : null,
+    } : current);
+    setScheduleSummary(null);
+    setIsConsultaExterna(selection.isConsultaExterna);
+    setForm((current) => ({
+      ...current,
+      patientId: result.newPatientId,
+      corporateClient: result.companyName,
+      agreementType: selection.agreementType,
+      userId: selection.proposedPsychologistId,
+    }));
+    setAuthCompanyId(selection.companyId);
+    setSlotDates(['']);
+    lastAutoSizedPatientId.current = null;
+    setAvailabilityRefreshKey((current) => current + 1);
+    onSuccess?.();
+    toast.success(`Historia ${result.recordNumber} creada en ${result.companyName}.`);
   };
 
   // ── Hint del footer: qué sesión(es) se está(n) registrando ─────────────
@@ -1253,6 +1426,15 @@ export default function DelegatedAppointmentModal({
   // igual el cambio si lo intenta un ESPECIALISTA_B2B; esto es solo para que
   // el checkbox se vea deshabilitado en vez de fallar en silencio.
   const canEditConsultaExterna = storedUser?.role === 'CEO' || storedUser?.role === 'DIRECTIVO' || storedUser?.role === 'OPERATIVO';
+  const canManageHistory = (storedUser?.role === 'CEO' || storedUser?.role === 'DIRECTIVO')
+    && !!form.patientId && !!selectedPatientFull && !isCreatingPatient && !isEditingPatient && !isEditingAppointment;
+  const historyCompanyName = companies.find((company) => company.id === selectedPatientFull?.companyId)?.name
+    || selectedPatientFull?.corporateClient || scheduleSummary?.patient.companyName || 'Sin convenio';
+  const historyPsychologistId = selectedPatientFull?.psychologistId || selectedPatientFull?.psychologist?.id || null;
+  const historyPsychologistName = selectedPatientFull?.psychologist?.name
+    || specialists.find((specialist) => specialist.id === historyPsychologistId)?.name || 'Sin tratante asignado';
+  const historyPatientName = `${selectedPatientFull?.firstName || scheduleSummary?.patient.firstName || ''} ${selectedPatientFull?.lastName || scheduleSummary?.patient.lastName || ''}`.trim();
+  const historyChannel = (scheduleSummary?.patient.isConsultaExterna ?? isConsultaExterna) ? 'Consulta externa' : 'Convenio';
 
   const handleToggleConsultaExterna = async (checked: boolean) => {
     if (!form.patientId) return;
@@ -1287,144 +1469,17 @@ export default function DelegatedAppointmentModal({
   // misma altura, color y fuente en cualquier caja de solo lectura.
   const lockedBoxClass = 'flex min-h-[42px] w-full items-center border border-slate-200 rounded-lg p-2.5 text-sm bg-slate-100 text-slate-600';
 
-  const companySelect = (
-    <select
-      value={authCompanyId}
-      onChange={(e) => setAuthCompanyId(e.target.value)}
-      className="min-h-[42px] w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-    >
-      <option value="" disabled>Seleccione un convenio</option>
-      {companies.filter((c) => c.status === 'activo').map((c) => (
-        <option key={c.id} value={c.id}>{c.name}</option>
-      ))}
-    </select>
-  );
-
-  const authorizeControls = !canAuthorizeSessions ? (
-    <div className="rounded-lg border border-slate-200 bg-slate-100 p-2.5 text-[11px] leading-relaxed text-slate-500">
-      No puedes agregar sesiones — contacta al centro administrativo.
-    </div>
-  ) : pendingChangeRequestId ? (
-    // Código ya enviado al aprobador elegido — este paso solo verifica lo
-    // que él dicte, no aplica nada por sí mismo.
-    <div className="space-y-1.5 rounded-lg border border-indigo-200 bg-indigo-50 p-2.5">
-      <p className="text-[11px] font-semibold text-indigo-700">
-        Código enviado{pendingChangeExpiresInMinutes ? ` — vence en ${pendingChangeExpiresInMinutes} min` : ''}. Pídele el código a quien lo recibió.
-      </p>
-      <div className="flex items-center gap-1.5">
-        <input
-          type="text" inputMode="numeric" maxLength={6} value={verifyCodeInput}
-          onChange={(e) => setVerifyCodeInput(e.target.value.replace(/\D/g, ''))}
-          placeholder="Código de 6 dígitos"
-          className="min-w-0 flex-1 border border-indigo-300 rounded-lg p-2 text-xs font-mono tracking-widest focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-        />
-        <button
-          type="button"
-          onClick={handleVerifySessionChange}
-          disabled={verifyingCode}
-          className="shrink-0 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold px-2.5 py-2 disabled:opacity-50"
-        >
-          {verifyingCode ? '...' : 'Confirmar'}
-        </button>
-      </div>
-      <button
-        type="button"
-        onClick={() => { setPendingChangeRequestId(null); setPendingChangeExpiresInMinutes(null); setVerifyCodeInput(''); }}
-        className="text-[10px] font-semibold text-slate-500 hover:text-slate-700"
-      >
-        Cancelar y pedir un código nuevo
-      </button>
-    </div>
-  ) : (
-    <div className="space-y-1.5">
-      <div className="flex overflow-hidden rounded-lg border border-slate-200 text-[10px] font-bold">
-        <button
-          type="button"
-          onClick={() => setAuthChangeType('ADD')}
-          className={`flex-1 py-1.5 transition-colors ${authChangeType === 'ADD' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
-        >
-          Agregar
-        </button>
-        <button
-          type="button"
-          onClick={() => { setAuthChangeType('SUBTRACT'); setAuthLibres(false); }}
-          className={`flex-1 py-1.5 transition-colors ${authChangeType === 'SUBTRACT' ? 'bg-rose-600 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
-        >
-          Restar
-        </button>
-      </div>
-      <div className="flex items-center gap-1.5">
-        {authLibres ? (
-          <div className="flex-1 rounded-lg border border-emerald-300 bg-emerald-50 p-2 text-xs font-semibold text-emerald-700">Libres</div>
-        ) : (
-          <input
-            type="number" min={1} value={authSessionsInput}
-            onChange={(e) => setAuthSessionsInput(e.target.value)}
-            placeholder="Ej. 3"
-            className="min-w-0 flex-1 border border-slate-200 rounded-lg p-2 text-xs focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-          />
-        )}
-        <button
-          type="button"
-          onClick={handleAuthorizeSessions}
-          disabled={authorizingSessions}
-          className={`shrink-0 rounded-lg text-white text-[11px] font-bold px-2.5 py-2 disabled:opacity-50 ${authChangeType === 'SUBTRACT' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}
-        >
-          {authorizingSessions
-            ? '...'
-            : !isSelfAuthorize
-              ? 'Solicitar código'
-              : authChangeType === 'SUBTRACT' ? 'Restar sesiones' : 'Agregar sesiones'}
-        </button>
-      </div>
-      {authChangeType === 'ADD' && (
-        <label className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500">
-          <input type="checkbox" checked={authLibres} onChange={(e) => { setAuthLibres(e.target.checked); if (e.target.checked) setAuthSessionsInput(''); }} />
-          Libres (sin tope)
-        </label>
-      )}
-      {isSelfAuthorize ? (
-        <p className="text-[10px] text-emerald-600">
-          {authChangeType === 'SUBTRACT' ? 'Resta sesiones de tu paciente' : 'Agrega sesiones a tu paciente'}
-        </p>
-      ) : (
-        <>
-          <select
-            value={authApproverId}
-            onChange={(e) => setAuthApproverId(e.target.value)}
-            className="w-full border border-slate-200 rounded-lg p-2 text-[11px] focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-          >
-            <option value="">¿A quién le llega el código?</option>
-            {approvers.map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
-          </select>
-          {approvers.length === 0 && (
-            <p className="text-[10px] text-amber-600">
-              Nadie en tu equipo tiene el permiso de aprobador todavía — actívalo desde Equipo y Accesos.
-            </p>
-          )}
-        </>
-      )}
-    </div>
-  );
-
   return (
     <div
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 bg-slate-950/40 z-50 flex items-center justify-center p-4"
       onClick={(e) => { if (e.target === e.currentTarget && !isSubmitting) resetAndClose(); }}
     >
-      <div className="bg-white rounded-2xl w-full max-w-7xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+      <div className="bg-white rounded-2xl w-full max-w-[1500px] shadow-2xl flex flex-col max-h-[96vh] overflow-hidden">
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center rounded-t-2xl shrink-0">
-          <div>
-            <h3 className="text-base font-bold text-slate-800">
-              {isEditingAppointment ? 'Editar Cita Delegada' : 'Agendamiento de paciente'}
-            </h3>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              Registre la cita, valide las sesiones autorizadas y consulte el historial del paciente.
-            </p>
-          </div>
+        <div className="px-6 py-2.5 border-b border-slate-200 bg-white flex justify-between items-center rounded-t-2xl shrink-0">
+          <h3 className="text-2xl font-bold text-slate-900">
+            {isEditingAppointment ? 'Editar cita' : 'Agendar'}
+          </h3>
           <button
             onClick={resetAndClose}
             className="text-slate-400 hover:text-slate-600 cursor-pointer"
@@ -1439,65 +1494,30 @@ export default function DelegatedAppointmentModal({
             Cargando especialistas y pacientes del tenant…
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-[2fr_3fr] overflow-hidden flex-1">
-            <form onSubmit={handleSubmit} className="p-6 space-y-4 text-left overflow-y-auto">
-              {/* ── Especialidad + Especialista ────────────────────────── */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                    Especialidad
-                  </label>
-                  <select
-                    required
-                    value={form.specialtyId}
-                    onChange={(e) => setForm({ ...form, specialtyId: e.target.value })}
-                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                  >
-                    <option value="" disabled>Seleccione especialidad</option>
-                    {specialties.map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                    Especialista (Psicólogo)
-                  </label>
-                  <select
-                    required
-                    value={form.userId}
-                    onChange={(e) => setForm({ ...form, userId: e.target.value })}
-                    disabled={storedUser?.role === 'ESPECIALISTA_B2B'}
-                    title={storedUser?.role === 'ESPECIALISTA_B2B' ? 'Solo puedes agendarte a ti mismo.' : undefined}
-                    className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-600"
-                  >
-                    <option value="" disabled>Seleccione un especialista</option>
-                    {visibleSpecialists.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                        {s.specialty ? ` – ${s.specialty}` : ''}
-                        {s.level ? ` (Nivel ${s.level})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
+          <div className="grid min-h-0 grid-cols-1 lg:grid-cols-[minmax(350px,35%)_minmax(0,1fr)] overflow-y-auto lg:overflow-hidden flex-1">
+            <form id="delegated-appointment-form" onSubmit={handleSubmit} className="p-6 space-y-4 text-left lg:overflow-y-auto">
               {/* ── Selector de Paciente ──────────────────────────────────── */}
               <div>
                 <div className="flex justify-between items-end mb-1">
-                  <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
+                  <label htmlFor="delegated-patient-search" className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
                     Paciente
                   </label>
-                  {!isCreatingPatient && !isEditingAppointment && (
-                    <button
-                      type="button"
-                      onClick={() => setIsCreatingPatient(true)}
-                      className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
-                    >
-                      <Plus className="w-3 h-3" /> Crear nuevo paciente
-                    </button>
-                  )}
+                  <div className="flex items-center gap-3">
+                    {form.patientId && !isCreatingPatient && !isEditingPatient && (
+                      <button type="button" onClick={startEditPatient} className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:underline">
+                        <Pencil className="w-3 h-3" /> Corregir datos de este paciente
+                      </button>
+                    )}
+                    {!isCreatingPatient && !isEditingAppointment && (
+                      <button
+                        type="button"
+                        onClick={() => setIsCreatingPatient(true)}
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+                      >
+                        <Plus className="w-3 h-3" /> Crear nuevo paciente
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {isCreatingPatient ? (
@@ -1556,10 +1576,13 @@ export default function DelegatedAppointmentModal({
                       </div>
                       <div>
                         <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">Parentesco *</label>
-                        <select value={emergencyParentesco} onChange={e => setEmergencyParentesco(e.target.value)} className="w-full border border-slate-200 rounded-lg p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 bg-white">
-                          <option value="">— Seleccione parentesco —</option>
-                          {PARENTESCO_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
-                        </select>
+                        <div className="relative">
+                          <select value={emergencyParentesco} onChange={e => setEmergencyParentesco(e.target.value)} className="w-full appearance-none border border-slate-200 rounded-lg p-2.5 pr-9 text-sm outline-none focus:ring-2 focus:ring-indigo-500 bg-white">
+                            <option value="">— Seleccione parentesco —</option>
+                            {PARENTESCO_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                          </select>
+                          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                        </div>
                       </div>
                     </div>
 
@@ -1622,9 +1645,10 @@ export default function DelegatedAppointmentModal({
                   <>
                     <div className="relative">
                       <input
+                        id="delegated-patient-search"
                         type="text"
                         required={!form.patientId}
-                        value={form.patientId ? `${selectedPatientFull?.firstName || ''} ${selectedPatientFull?.lastName || ''} — ${selectedPatientFull?.documentType || 'CC'} ${selectedPatientFull?.documentId || ''}` : patientSearchTerm}
+                        value={form.patientId ? `${selectedPatientFull?.firstName || ''} ${selectedPatientFull?.lastName || ''} — ${selectedPatientFull?.documentType || 'CC'} ${selectedPatientFull?.documentId || ''}${selectedPatientFull?.recordNumber ? ` · ${selectedPatientFull.recordNumber}` : ''}` : patientSearchTerm}
                         onChange={(e) => {
                           if (form.patientId) setForm(prev => ({ ...prev, patientId: '', corporateClient: '', agreementType: '' }));
                           setSelectedPatientFull(null);
@@ -1671,13 +1695,33 @@ export default function DelegatedAppointmentModal({
                                   // así el clic registra aunque el blur cierre el dropdown.
                                   onMouseDown={() => {
                                     setSelectedPatientFull(p);
-                                    setForm(prev => ({ ...prev, patientId: p.id, corporateClient: '', agreementType: '' }));
+                                    // Precarga el tratante registrado del paciente — evita que el
+                                    // administrativo tenga que recordarlo/buscarlo manualmente cada
+                                    // vez. Solo si sigue activo en el tenant (está en `specialists`)
+                                    // y el usuario logueado no es un ESPECIALISTA_B2B (ese select
+                                    // queda bloqueado siempre a sí mismo).
+                                    const patientPsychologistId = p.psychologistId || p.psychologist?.id || '';
+                                    const canPreselect = !!patientPsychologistId
+                                      && storedUser?.role !== 'ESPECIALISTA_B2B'
+                                      && specialists.some((s) => s.id === patientPsychologistId);
+                                    setForm(prev => ({
+                                      ...prev,
+                                      patientId: p.id,
+                                      corporateClient: '',
+                                      agreementType: '',
+                                      userId: canPreselect ? patientPsychologistId : prev.userId,
+                                    }));
                                     setPatientSearchTerm('');
                                     setShowPatientResults(false);
                                   }}
                                   className="block w-full border-b border-slate-100 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-indigo-50"
                                 >
-                                  {p.firstName} {p.lastName} — {p.documentType || 'CC'} {p.documentId}
+                                  <span>{p.firstName} {p.lastName} — {p.documentType || 'CC'} {p.documentId}</span>
+                                  {(p.recordNumber || p.corporateClient) && (
+                                    <span className="block text-[11px] text-slate-400 mt-0.5">
+                                      {p.recordNumber || ''}{p.recordNumber && p.corporateClient ? ' · ' : ''}{p.corporateClient || ''}
+                                    </span>
+                                  )}
                                 </button>
                               ))}
                               {patientSearchResults.length >= 20 && (
@@ -1690,82 +1734,104 @@ export default function DelegatedAppointmentModal({
                         </div>
                       )}
                     </div>
-                    {form.patientId && !isCreatingPatient && !isEditingPatient && (
-                      <div className="flex gap-4 mt-1.5">
-                        <button type="button" onClick={startEditPatient} className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:underline">
-                          <Pencil className="w-3 h-3" /> Corregir datos de este paciente
-                        </button>
-                      </div>
-                    )}
                   </>
                 )}
               </div>
 
-              {/* ── Fila 1: Convenio / Cliente Corporativo + Convenio actual ── */}
-              <div className="grid grid-cols-2 gap-3">
+              {/* ── Especialidad + Especialista ────────────────────────── */}
+              <div className="grid grid-cols-1 gap-3">
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                    Convenio / Cliente Corporativo
+                    Especialidad
                   </label>
+                  <div className="relative">
+                    <select
+                      required
+                      value={form.specialtyId}
+                      onChange={(e) => setForm({ ...form, specialtyId: e.target.value })}
+                      className="w-full appearance-none border border-slate-200 rounded-lg p-2.5 pr-9 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                    >
+                      <option value="" disabled>Seleccione especialidad</option>
+                      {specialties.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  </div>
+                </div>
+                <div>
+                  <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                    <label htmlFor="appointment-specialist" className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Especialista (Psicólogo)</label>
+                    {canManageHistory && <button type="button" onClick={() => { setShowAuthorizationDrawer(false); closeSlotEdit(); setHistoryDrawer('change'); }} className="text-xs font-semibold text-indigo-700 hover:underline">Cambiar de tratante</button>}
+                  </div>
+                  <div className="relative">
+                    <select
+                      id="appointment-specialist"
+                      required
+                      value={form.userId}
+                      onChange={(e) => setForm({ ...form, userId: e.target.value })}
+                      disabled={storedUser?.role === 'ESPECIALISTA_B2B'}
+                      title={storedUser?.role === 'ESPECIALISTA_B2B' ? 'Solo puedes agendarte a ti mismo.' : undefined}
+                      className="w-full appearance-none border border-slate-200 rounded-lg p-2.5 pr-9 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-600"
+                    >
+                      <option value="" disabled>Seleccione un especialista</option>
+                      {visibleSpecialists.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                          {s.specialty ? ` – ${s.specialty}` : ''}
+                          {s.level ? ` (Nivel ${s.level})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  </div>
+                  {canManageHistory && <p className="mt-1 text-[10.5px] text-slate-500">Tratante de esta historia: <b>{historyPsychologistName}</b></p>}
+                </div>
+              </div>
+
+              {/* ── Convenio y tipo de convenio ── */}
+              <div className="grid grid-cols-1 gap-3">
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <label className="min-w-0 text-[11px] font-semibold uppercase tracking-wider text-slate-600">Convenio para agendar</label>
+                    {canManageHistory && <button type="button" onClick={() => { setShowAuthorizationDrawer(false); closeSlotEdit(); setHistoryDrawer('agreement'); }} className="shrink-0 text-xs font-semibold text-indigo-700 hover:underline">+ Nuevo convenio</button>}
+                  </div>
                   {form.patientId && !isCreatingPatient ? (
                     <>
                       <div className={lockedBoxClass}>
                         {form.corporateClient || '—'}
                       </div>
-                      <p className="mt-1 text-[10.5px] text-slate-400">Último convenio que registra el paciente.</p>
+                      <p className="mt-1 text-[10.5px] text-slate-500">Convenio de esta historia: <b>{historyCompanyName}</b></p>
                     </>
                   ) : (
-                    <select
-                      required
-                      value={form.corporateClient}
-                      onChange={(e) => setForm({ ...form, corporateClient: e.target.value, locationId: '', agreementType: '' })}
-                      className="min-h-[42px] w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                    >
-                      <option value="" disabled>Seleccione un convenio</option>
-                      <option value="Particular">Particular (sin convenio)</option>
-                      {companies.filter((c) => c.status === 'activo' && c.clientType === 'EMPRESA').length > 0 && (
-                        <optgroup label="Empresas">
-                          {companies.filter((c) => c.status === 'activo' && c.clientType === 'EMPRESA').map((c) => (
-                            <option key={c.id} value={c.name}>{c.name}</option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {companies.filter((c) => c.status === 'activo' && c.clientType === 'PARTICULAR').length > 0 && (
-                        <optgroup label="Particulares con convenio/paquete">
-                          {companies.filter((c) => c.status === 'activo' && c.clientType === 'PARTICULAR').map((c) => (
-                            <option key={c.id} value={c.name}>{c.name}</option>
-                          ))}
-                        </optgroup>
-                      )}
-                    </select>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                    Convenio actual
-                  </label>
-                  {isCreatingPatient || !form.patientId ? (
-                    <div className="p-2.5 text-xs text-slate-400">Crea o selecciona el paciente para gestionar sus sesiones.</div>
-                  ) : loadingSummary || !scheduleSummary ? (
-                    <div className="p-2.5 text-xs text-slate-400 animate-pulse">Cargando cupo…</div>
-                  ) : isEditingAppointment ? (
-                    // Reprogramando una cita existente: solo se muestra el estado.
-                    <div className={lockedBoxClass}>
-                      {!activeAuth ? 'Sin autorización vigente' : isUnlimitedAuth ? `Libres - ${activeAuth.companyName}` : `${remainingSessions} disponibles - ${activeAuth.companyName}`}
-                    </div>
-                  ) : (!hasUsableBatch || showAuthForm) && !(hasUsableBatch && showAuthForm && authChangeType === 'SUBTRACT') ? (
-                    // "Restar" siempre opera sobre el convenio del lote vigente — nunca
-                    // deja elegir otro, a diferencia de "Agregar" (que sí puede abrir un
-                    // lote nuevo con un convenio distinto).
-                    companySelect
-                  ) : (
-                    <div className={lockedBoxClass}>
-                      {isUnlimitedAuth ? `Libres - ${activeAuth!.companyName}` : `${remainingSessions} disponibles - ${activeAuth!.companyName}`}
+                    <div className="relative">
+                      <select
+                        required
+                        value={form.corporateClient}
+                        onChange={(e) => setForm({ ...form, corporateClient: e.target.value, locationId: '', agreementType: '' })}
+                        className="min-h-[42px] w-full appearance-none border border-slate-200 rounded-lg p-2.5 pr-9 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      >
+                        <option value="" disabled>Seleccione un convenio</option>
+                        <option value="Particular">Particular (sin convenio)</option>
+                        {companies.filter((c) => c.status === 'activo' && c.clientType === 'EMPRESA').length > 0 && (
+                          <optgroup label="Empresas">
+                            {companies.filter((c) => c.status === 'activo' && c.clientType === 'EMPRESA').map((c) => (
+                              <option key={c.id} value={c.name}>{c.name}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {companies.filter((c) => c.status === 'activo' && c.clientType === 'PARTICULAR').length > 0 && (
+                          <optgroup label="Particulares con convenio/paquete">
+                            {companies.filter((c) => c.status === 'activo' && c.clientType === 'PARTICULAR').map((c) => (
+                              <option key={c.id} value={c.name}>{c.name}</option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     </div>
                   )}
                 </div>
-              </div>
-
               {/* ── Tipo de convenio — catálogo propio del convenio elegido arriba
                   (ver AdminPortal → Editar convenio/cliente → "Tipos de convenio").
                   Se copia como texto plano a la cita al agendar/reprogramar, igual
@@ -1773,7 +1839,7 @@ export default function DelegatedAppointmentModal({
                   aunque el catálogo cambie después. Opcional: no todos los
                   convenios distinguen tipos, así que el bloque entero se oculta
                   si el convenio elegido no tiene ninguno registrado. ── */}
-              {form.corporateClient && (
+              {form.corporateClient ? (
                 <div>
                   <div className="flex justify-between items-end mb-1">
                     <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
@@ -1791,9 +1857,11 @@ export default function DelegatedAppointmentModal({
                       <button
                         type="button"
                         onClick={() => setIsCreatingAgreementType(true)}
-                        className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
+                        aria-label="Agregar tipo de convenio"
+                        title="Agregar tipo de convenio"
+                        className="inline-flex items-center text-indigo-600 hover:text-indigo-800 transition-colors"
                       >
-                        <Plus className="w-3 h-3" /> Agregar tipo de convenio
+                        <Plus className="h-4 w-4" />
                       </button>
                     )}
                   </div>
@@ -1827,23 +1895,27 @@ export default function DelegatedAppointmentModal({
                       </button>
                     </div>
                   ) : agreementTypes.length > 0 ? (
-                    <select
-                      value={form.agreementType}
-                      onChange={(e) => setForm({ ...form, agreementType: e.target.value })}
-                      className="min-h-[42px] w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                    >
-                      <option value="">Sin especificar</option>
-                      {agreementTypes.map((t) => (
-                        <option key={t.id} value={t.name}>{t.name}</option>
-                      ))}
-                    </select>
+                    <div className="relative">
+                      <select
+                        value={form.agreementType}
+                        onChange={(e) => setForm({ ...form, agreementType: e.target.value })}
+                        className="min-h-[42px] w-full appearance-none border border-slate-200 rounded-lg p-2.5 pr-9 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
+                      >
+                        <option value="">Sin especificar</option>
+                        {agreementTypes.map((t) => (
+                          <option key={t.id} value={t.name}>{t.name}</option>
+                        ))}
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    </div>
                   ) : (
-                    <p className="text-[11px] text-slate-400 italic py-1">
-                      Este convenio todavía no tiene tipos configurados.
-                    </p>
+                    <div className={lockedBoxClass}>No aplica</div>
                   )}
                 </div>
+              ) : (
+                <div className="min-h-[42px]" />
               )}
+              </div>
 
               {/* ── Consulta Externa — convenio/relación del paciente NO cambian;
                   solo marca que ESTE episodio llegó por Consulta Externa en vez
@@ -1852,180 +1924,55 @@ export default function DelegatedAppointmentModal({
                   Administrativo, no clínico — ver canEditConsultaExterna. ── */}
               {form.patientId && !isCreatingPatient && (
                 <label
-                  className={`flex items-start gap-2.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 ${canEditConsultaExterna ? 'cursor-pointer' : 'cursor-not-allowed opacity-75'}`}
+                  className={`flex items-center gap-2.5 py-1 text-xs text-slate-900 ${canEditConsultaExterna ? 'cursor-pointer' : 'cursor-not-allowed opacity-75'}`}
                 >
                   <input
                     type="checkbox"
                     checked={isConsultaExterna}
                     disabled={!canEditConsultaExterna || savingConsultaExterna}
                     onChange={(e) => handleToggleConsultaExterna(e.target.checked)}
-                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    className="h-4 w-4 shrink-0 rounded border-slate-300 accent-indigo-700 focus:ring-indigo-500"
                   />
-                  <span>
-                    <span className="block text-xs font-bold text-slate-700">
-                      ¿Consulta externa?{savingConsultaExterna ? ' (guardando…)' : ''}
-                    </span>
-                    <span className="mt-0.5 block text-[11px] text-slate-500">
-                      Este paciente viene como Consulta Externa de su mismo convenio — el convenio y la
-                      relación de arriba no cambian.
-                      {!canEditConsultaExterna && ' Solo CEO/administrativos pueden modificar esto.'}
-                    </span>
-                  </span>
+                  <span>Consulta externa{savingConsultaExterna ? ' (guardando…)' : ''}</span>
+                  <Info className="h-4 w-4 text-slate-500" aria-label="El convenio y la relación del paciente no cambian" />
                 </label>
               )}
 
-              {/* ── Fila 2: Sesiones (estado) + Agregar sesión / agendar ahora ── */}
               {!isCreatingPatient && form.patientId && !isEditingAppointment && !loadingSummary && scheduleSummary && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                      Sesiones
-                    </label>
-                    <div className={!hasUsableBatch ? 'flex min-h-[42px] w-full items-center rounded-lg border border-rose-300 bg-rose-50 p-2.5 text-sm text-rose-700' : lockedBoxClass}>
-                      {!activeAuth
-                        ? 'Sin autorización vigente.'
-                        : !hasUsableBatch
-                          ? `0 sesiones disponibles con ${activeAuth.companyName}.`
-                          : isUnlimitedAuth
-                            ? `Libres - ${activeAuth.companyName}`
-                            : `${remainingSessions} disponibles - ${activeAuth.companyName}`}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                    <div className="text-xs text-slate-500">
+                      <span className="block">Sesiones autorizadas</span>
+                      <b className={!hasUsableBatch ? 'text-amber-700' : 'text-slate-900'}>
+                        {!activeAuth ? 'Sin autorización vigente' : isUnlimitedAuth ? 'Sesiones libres' : `${remainingSessions} disponibles`}
+                      </b>
                     </div>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                      {hasUsableBatch && !showAuthForm ? '¿Cuántas agendar ahora?' : 'Agendar sesión'}
-                    </label>
-                    {!hasUsableBatch ? (
-                      authorizeControls
-                    ) : showAuthForm ? (
-                      <div>
-                        <div className="mb-1.5 flex items-center justify-between">
-                          {/* La advertencia de cierre de lote solo aplica a "Agregar" con
-                              convenio distinto — "Restar" nunca cierra ni cambia convenio,
-                              mostrarla ahí sería confuso (ver authChangeType arriba). */}
-                          <span className="text-[10px] text-slate-400">
-                            {authChangeType === 'SUBTRACT' ? 'Ajusta el cupo del lote vigente.' : 'Convenio distinto = cierra el lote actual (pierde lo que quede).'}
-                          </span>
-                          <button type="button" onClick={() => setShowAuthForm(false)} className="text-[10px] font-semibold text-slate-400 hover:text-slate-600">Cancelar</button>
-                        </div>
-                        {authorizeControls}
-                      </div>
-                    ) : (
-                      <>
-                        <input
-                          type="number" min={1} max={isUnlimitedAuth ? undefined : remainingSessions}
-                          value={slotDates.length}
-                          onChange={(e) => {
-                            const n = Math.max(1, Math.min(Number(e.target.value) || 1, isUnlimitedAuth ? Infinity : remainingSessions));
-                            setSlotDates((prev) => resizeSlotDates(prev, n));
-                          }}
-                          className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none bg-white"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowAuthForm(true)}
-                          className="mt-1.5 text-[10px] font-semibold text-indigo-600 hover:text-indigo-800"
-                        >
-                          Agregar o restar sesiones
-                        </button>
-                      </>
+                    {canAuthorizeSessions && (
+                      <button type="button" onClick={() => { setAuthCompanyId((current) => current || companies.find((company) => company.name === form.corporateClient)?.id || ''); setShowAuthorizationDrawer(true); }} className="shrink-0 rounded-lg border border-indigo-400 bg-white px-3 py-2 text-xs font-bold text-indigo-700 hover:bg-indigo-50">
+                        Gestionar autorización
+                      </button>
                     )}
                   </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-semibold text-slate-900">Citas a programar</label>
+                    <div className="flex items-center rounded-lg border border-slate-200">
+                      <button type="button" aria-label="Reducir citas" disabled={slotDates.length <= 1} onClick={() => setSlotDates((prev) => resizeSlotDates(prev, prev.length - 1))} className="px-3 py-1.5 font-bold text-indigo-700 disabled:text-slate-300">−</button>
+                      <span className="min-w-8 text-center text-xs font-semibold">{slotDates.length}</span>
+                      <button type="button" aria-label="Aumentar citas" disabled={hasUsableBatch && !isUnlimitedAuth && slotDates.length >= remainingSessions} onClick={() => setSlotDates((prev) => resizeSlotDates(prev, prev.length + 1))} className="px-3 py-1.5 font-bold text-indigo-700 disabled:text-slate-300">+</button>
+                    </div>
+                  </div>
                 </div>
               )}
-
-              {/* ── Fecha y Hora ──────────────────────────────────────────── */}
-              {isEditingAppointment ? (
+              {isEditingAppointment && (
                 <div>
-                  <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
-                    Fecha y Hora
-                  </label>
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">Fecha y hora</label>
                   {isLockedForReschedule ? (
-                    <div className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-sm font-semibold text-amber-700">
-                      {lockedRescheduleReason}
-                    </div>
+                    <div className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-sm font-semibold text-amber-700">{lockedRescheduleReason}</div>
                   ) : (
-                    <input
-                      type="datetime-local"
-                      required
-                      value={form.dateTime || ''}
-                      onChange={(e) =>
-                        setForm(prev => ({ ...prev, dateTime: e.target.value }))
-                      }
-                      className="w-full border border-slate-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
-                    />
+                    <input type="datetime-local" required value={form.dateTime || ''} onChange={(e) => setForm((prev) => ({ ...prev, dateTime: e.target.value }))} className="w-full rounded-lg border border-slate-200 p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
                   )}
                 </div>
-              ) : !hasUsableBatch ? (
-                <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-3 text-center text-[11px] text-slate-400">
-                  Autoriza sesiones disponibles arriba para habilitar el calendario de agendamiento.
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider">
-                    Fecha y Hora {slotDates.length > 1 ? `— ${slotDates.length} sesiones` : ''}
-                  </label>
-                  {slotDates.map((slot, i) => {
-                    const isBusy = !!slot && psychologistBusyTimes.has(slot);
-                    // Si esta sesión quedó vacía porque la cascada semanal
-                    // (basada en la Sesión 1) encontró ocupado el horario que le
-                    // tocaba, lo indicamos aunque el campo esté en blanco — si
-                    // no, no hay ninguna pista de por qué no se autocompletó.
-                    const cascadeSuggestion = !slot && i > 0 && slotDates[0] ? addWeeks(slotDates[0], i) : null;
-                    const cascadeSkipped = !!cascadeSuggestion && psychologistBusyTimes.has(cascadeSuggestion);
-                    return (
-                      <div key={i}>
-                        <div className="flex items-center gap-2">
-                          <span className="w-14 shrink-0 text-[10.5px] font-semibold text-slate-400">
-                            Sesión {(scheduleSummary?.appointments?.length || 0) + i + 1}
-                          </span>
-                          <input
-                            type="datetime-local"
-                            required
-                            value={slot}
-                            onChange={(e) => {
-                              const newValue = e.target.value;
-                              setSlotDates((prev) => prev.map((s, idx) => {
-                                if (idx === i) return newValue;
-                                // Al fijar la sesión 1, sugiere semanalmente las
-                                // siguientes (misma hora, +7 días cada una) —
-                                // solo en las que sigan vacías, para no pisar
-                                // fechas que el administrativo ya haya ajustado.
-                                // Si ese horario ya está ocupado, no lo autocompleta:
-                                // la deja pendiente en vez de chocar en silencio.
-                                if (i === 0 && idx > 0 && !s) {
-                                  const suggested = addWeeks(newValue, idx);
-                                  return psychologistBusyTimes.has(suggested) ? '' : suggested;
-                                }
-                                return s;
-                              }));
-                            }}
-                            className={`w-full rounded-lg border p-2.5 text-sm outline-none focus:ring-2 ${
-                              isBusy || cascadeSkipped
-                                ? 'border-red-300 bg-red-50 focus:ring-red-400'
-                                : 'border-slate-200 focus:ring-indigo-500'
-                            }`}
-                          />
-                        </div>
-                        {isBusy && (
-                          <p className="ml-16 mt-1 text-[10.5px] font-semibold text-red-600">
-                            Este horario ya está ocupado para este psicólogo — elige otro.
-                          </p>
-                        )}
-                        {cascadeSkipped && (() => {
-                          const { dateLabel, timeLabel } = formatDateTime(cascadeSuggestion!);
-                          return (
-                            <p className="ml-16 mt-1 text-[10.5px] font-semibold text-red-600">
-                              El horario sugerido ({dateLabel}, {timeLabel}) ya está ocupado — elige otro para esta sesión.
-                            </p>
-                          );
-                        })()}
-                      </div>
-                    );
-                  })}
-                </div>
               )}
-
               {/* ── Selector de Modalidad ─────────────────────────────────── */}
               <div>
                 <label className="block text-[11px] font-semibold text-slate-600 mb-1 uppercase tracking-wider">
@@ -2039,11 +1986,11 @@ export default function DelegatedAppointmentModal({
                     }
                     className={`p-2.5 rounded-lg text-sm font-medium border flex items-center justify-center gap-2 transition-all ${
                       form.modality === 'Virtual'
-                        ? 'bg-indigo-50 border-indigo-500 text-indigo-700 shadow-sm'
-                        : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                        ? 'bg-indigo-50 border-indigo-600 text-indigo-700'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
                     }`}
                   >
-                    <Video className="w-4 h-4" /> Telepsicología
+                    <span className={`flex h-4 w-4 items-center justify-center rounded-full border ${form.modality === 'Virtual' ? 'border-indigo-700' : 'border-slate-400'}`}>{form.modality === 'Virtual' && <span className="h-2 w-2 rounded-full bg-indigo-700" />}</span><Video className="w-4 h-4" /> Telepsicología
                   </button>
                   <button
                     type="button"
@@ -2052,23 +1999,19 @@ export default function DelegatedAppointmentModal({
                     }
                     className={`p-2.5 rounded-lg text-sm font-medium border flex items-center justify-center gap-2 transition-all ${
                       form.modality === 'Presencial'
-                        ? 'bg-emerald-50 border-emerald-500 text-emerald-700 shadow-sm'
-                        : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                        ? 'bg-indigo-50 border-indigo-600 text-indigo-700'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
                     }`}
                   >
-                    <Building2 className="w-4 h-4" /> Presencial
+                    <span className={`flex h-4 w-4 items-center justify-center rounded-full border ${form.modality === 'Presencial' ? 'border-indigo-700' : 'border-slate-400'}`}>{form.modality === 'Presencial' && <span className="h-2 w-2 rounded-full bg-indigo-700" />}</span><Building2 className="w-4 h-4" /> Presencial
                   </button>
                 </div>
               </div>
 
               {/* ── Campo condicional de modalidad ────────────────────────── */}
               {form.modality === 'Virtual' ? (
-                <div className="flex items-center gap-2 p-2.5 rounded-lg bg-indigo-50/50 border border-indigo-100">
-                  <Link2 className="w-4 h-4 text-indigo-500 shrink-0" />
-                  <span className="text-[11px] text-indigo-600 font-medium">
-                    La sala virtual será asignada automáticamente por el
-                    enrutador WebRTC al confirmar la cita.
-                  </span>
+                <div className="text-[11px] text-slate-500">
+                  El enlace se generará al confirmar la cita.
                 </div>
               ) : (
                 <div>
@@ -2092,10 +2035,11 @@ export default function DelegatedAppointmentModal({
                       );
                     }
                     return (
+                      <div className="relative">
                       <select
                         value={form.locationId}
                         onChange={(e) => setForm({ ...form, locationId: e.target.value })}
-                        className="w-full border border-emerald-200 rounded-lg p-2.5 text-sm focus:ring-2 focus:ring-emerald-500 bg-emerald-50/30 outline-none"
+                        className="w-full appearance-none border border-emerald-200 rounded-lg p-2.5 pr-9 text-sm focus:ring-2 focus:ring-emerald-500 bg-emerald-50/30 outline-none"
                       >
                         <option value="">— Seleccione una sede —</option>
                         {locations.map((loc) => (
@@ -2104,6 +2048,8 @@ export default function DelegatedAppointmentModal({
                           </option>
                         ))}
                       </select>
+                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-emerald-500" />
+                      </div>
                     );
                   })()}
                 </div>
@@ -2123,51 +2069,19 @@ export default function DelegatedAppointmentModal({
                 />
               </div>
 
-              {/* ── Acciones ─────────────────────────────────────────────── */}
-              <div className="pt-3 flex items-center justify-between gap-2 border-t border-slate-100">
-                <span className="text-[11px] text-slate-400">{footerHint}</span>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    onClick={resetAndClose}
-                    className="px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors whitespace-nowrap"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={
-                      isSubmitting || isLoadingData || isLockedForReschedule ||
-                      (!isEditingAppointment && !!form.patientId && !isCreatingPatient && !loadingSummary &&
-                        (!scheduleSummary?.activeAuthorization ||
-                          (scheduleSummary.activeAuthorization.sessionsAuthorized !== null && (scheduleSummary.sessionsRemaining ?? 0) <= 0))) ||
-                      (!isEditingAppointment && slotDates.some((s) => s && psychologistBusyTimes.has(s)))
-                    }
-                    className={`inline-flex items-center gap-1.5 whitespace-nowrap px-3.5 py-2 rounded-lg text-xs font-bold transition-all ${
-                      isSubmitting
-                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed'
-                        : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm'
-                    }`}
-                  >
-                    <CalendarClock className="w-3.5 h-3.5" />
-                    {isSubmitting
-                      ? 'Procesando...'
-                      : isEditingAppointment
-                        ? 'Guardar Cambios'
-                        : slotDates.length > 1
-                          ? `Confirmar ${slotDates.length} agendamientos`
-                          : 'Confirmar agendamiento'}
-                  </button>
-                </div>
-              </div>
             </form>
 
             {/* ── Disponibilidad del psicólogo + Ficha del paciente ─────────── */}
-            <div className="border-l border-slate-100 bg-slate-50/50 p-5 overflow-y-auto space-y-5">
-              {form.userId && (
+            <div className="min-w-0 border-l border-slate-200 bg-white px-5 py-4 lg:overflow-y-auto">
+              <div className="mb-3 flex gap-2 border-b border-slate-200">
+                <button type="button" onClick={() => setAvailabilityTab('availability')} className={`px-3 pb-2 text-sm font-semibold ${availabilityTab === 'availability' ? 'border-b-2 border-indigo-700 text-indigo-700' : 'text-slate-500'}`}>Disponibilidad</button>
+                <button type="button" onClick={() => setAvailabilityTab('history')} className={`px-3 pb-2 text-sm font-semibold ${availabilityTab === 'history' ? 'border-b-2 border-indigo-700 text-indigo-700' : 'text-slate-500'}`}>Historial del paciente</button>
+              </div>
+              {availabilityTab === 'availability' && (
                 <PsychologistAvailabilityGrid
                   psychologistId={form.userId}
                   psychologistName={specialists.find((s) => s.id === form.userId)?.name}
+                  sessionNumberStart={(scheduleSummary?.appointments?.length || 0) + 1}
                   initialWeekDate={isEditingAppointment && form.dateTime ? new Date(form.dateTime) : undefined}
                   excludeAppointmentId={isEditingAppointment && !isLockedForReschedule ? initialData?.id : undefined}
                   onSlotPick={isEditingAppointment
@@ -2177,10 +2091,17 @@ export default function DelegatedAppointmentModal({
                   onSlotClear={isEditingAppointment
                     ? (isLockedForReschedule ? () => {} : () => setForm((prev) => ({ ...prev, dateTime: '' })))
                     : clearSlotFromAvailability}
+                  onSlotEdit={isEditingAppointment ? undefined : startSlotEdit}
+                  editingIndex={editingSlotIndex}
+                  previewDateTime={editingSlotDateTime}
+                  focusDateTime={editingSlotIndex !== null ? editingSlotDateTime : undefined}
+                  activeDateTime={editingSlotIndex !== null ? editingSlotDateTime : isEditingAppointment ? form.dateTime : activeSlotIndex !== null ? slotDates[activeSlotIndex] : undefined}
+                  busyDateTimes={psychologistBusyTimes}
+                  refreshKey={availabilityRefreshKey}
                 />
               )}
 
-              {!form.userId && (!form.patientId || isCreatingPatient) ? (
+              {availabilityTab === 'availability' ? null : !form.userId && (!form.patientId || isCreatingPatient) ? (
                 <div className="flex h-full flex-col items-center justify-center text-center text-slate-400">
                   <CalendarClock className="mb-3 h-8 w-8 text-slate-300" />
                   <p className="text-xs">Seleccione un especialista y un paciente para ver disponibilidad, historial de agendamientos y sesiones autorizadas.</p>
@@ -2281,7 +2202,192 @@ export default function DelegatedAppointmentModal({
             </div>
           </div>
         )}
+        <div className="flex flex-wrap items-center gap-3 border-t border-slate-200 bg-white px-6 py-3">
+          <div className="min-w-0">
+            <p className="text-base font-bold text-slate-900">
+              {isEditingAppointment ? 'Cita lista para guardar' : !hasUsableBatch && form.patientId ? 'Autoriza sesiones para continuar' : editingSlotIndex !== null ? `${slotDates.filter(Boolean).length} citas seleccionadas · Edición en curso` : `${slotDates.filter(Boolean).length} citas listas para agendar`}
+            </p>
+            <p className="text-xs text-slate-500">{form.modality === 'Virtual' ? 'Telepsicología' : 'Presencial'} · {form.corporateClient || 'Sin convenio'}</p>
+          </div>
+          <span className="ml-auto text-xs text-slate-500">{footerHint}</span>
+          <button type="button" onClick={resetAndClose} className="rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-50">Cancelar</button>
+          <button
+            type="submit"
+            form="delegated-appointment-form"
+            disabled={isSubmitting || isLoadingData || isLockedForReschedule || editingSlotIndex !== null || (!isEditingAppointment && (!hasUsableBatch || slotDates.some((s, index) => !s || slotConflicts(s, [...psychologistBusyTimes, ...slotDates.filter((_, otherIndex) => otherIndex !== index)])) || (!isUnlimitedAuth && slotDates.length > remainingSessions)))}
+            className="inline-flex items-center gap-2 rounded-lg bg-indigo-700 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-slate-600"
+          >
+            <CalendarClock className="h-4 w-4" />
+            {isSubmitting ? 'Procesando…' : isEditingAppointment ? 'Guardar cambios' : `Confirmar ${slotDates.length} ${slotDates.length === 1 ? 'cita' : 'citas'}`}
+          </button>
+        </div>
       </div>
+      {editingSlotIndex !== null && (
+        <div className="pointer-events-none fixed inset-0 z-[60]">
+          <aside role="dialog" aria-labelledby="edit-slot-title" onKeyDown={(event) => { if (event.key === 'Escape') closeSlotEdit(); }} className="pointer-events-auto absolute inset-y-0 right-0 flex w-full max-w-[470px] flex-col rounded-l-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-6 py-4">
+              <div>
+                <h3 id="edit-slot-title" className="text-xl font-bold text-slate-900">Editar horario</h3>
+                <p className="text-sm text-slate-500">Sesión {(scheduleSummary?.appointments?.length || 0) + editingSlotIndex + 1} · Selección sin guardar</p>
+              </div>
+              <button type="button" onClick={closeSlotEdit} aria-label="Cerrar edición de horario" className="rounded-lg border border-slate-200 p-2 text-slate-500 hover:bg-slate-50"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto px-6 py-4 text-sm text-slate-900">
+              <dl className="grid grid-cols-[110px_1fr] gap-x-4 gap-y-1.5">
+                <dt className="font-semibold">Paciente</dt><dd>{scheduleSummary?.patient.firstName || selectedPatientFull?.firstName} {scheduleSummary?.patient.lastName || selectedPatientFull?.lastName}</dd>
+                <dt className="font-semibold">Profesional</dt><dd>{specialists.find((specialist) => specialist.id === form.userId)?.name || 'Profesional seleccionado'}</dd>
+              </dl>
+              <div className="border-y border-slate-200 py-2">
+                <p className="text-xs text-slate-500">Horario actual</p>
+                <p className="mt-0.5 font-semibold capitalize">{formatScheduleDate(editingSlotOriginal, true)} · {formatSlotTime(editingSlotOriginal)}</p>
+              </div>
+              <div>
+                <label htmlFor="edit-slot-date" className="mb-1 block font-semibold">Fecha</label>
+                <input id="edit-slot-date" type="date" value={editingSlotDateTime.slice(0, 10)} onChange={(event) => setEditingSlotDateTime(`${event.target.value}T${editingSlotDateTime.slice(11) || '08:00'}`)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 outline-none focus:border-indigo-600 focus:ring-1 focus:ring-indigo-600" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="edit-slot-time" className="mb-1 block font-semibold">Hora de inicio</label>
+                  <input id="edit-slot-time" type="time" step="60" value={editingSlotDateTime.slice(11, 16)} onChange={(event) => setEditingSlotDateTime(`${editingSlotDateTime.slice(0, 10)}T${event.target.value}`)} className="w-full rounded-lg border border-indigo-500 bg-white px-3 py-2 outline-none focus:ring-1 focus:ring-indigo-600" />
+                </div>
+                <div>
+                  <label className="mb-1 block font-semibold">Duración</label>
+                  <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-slate-600"><LockKeyhole className="h-4 w-4" /> {APPOINTMENT_DURATION_MINUTES} min</div>
+                  <p className="mt-0.5 text-xs text-slate-500">Según el servicio</p>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <p>Finaliza a las <b>{editingSlotDateTime && !Number.isNaN(new Date(editingSlotDateTime).getTime()) ? new Date(new Date(editingSlotDateTime).getTime() + APPOINTMENT_DURATION_MINUTES * 60_000).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: false }) : '—'}</b></p>
+                <p className={`flex items-center gap-1.5 font-semibold ${editingSlotConflicts || editingSlotIsPast || editingDayError ? 'text-red-700' : !editingDayReady ? 'text-slate-500' : 'text-emerald-700'}`}>
+                  {editingSlotConflicts || editingSlotIsPast || editingDayError ? <CircleAlert className="h-4 w-4" /> : !editingDayReady ? <Loader2 className="h-4 w-4 animate-spin" /> : <CircleCheck className="h-4 w-4" />}
+                  {editingDayError ? 'No se pudo comprobar' : editingSlotIsPast ? 'Horario pasado' : editingSlotConflicts ? 'Se cruza con otra cita' : !editingDayReady ? 'Comprobando…' : 'Horario disponible'}
+                </p>
+              </div>
+              <div className="rounded-xl bg-indigo-50 p-3.5">
+                <p className="text-xs font-semibold text-indigo-700">Nuevo horario</p>
+                <p className="mt-0.5 font-semibold capitalize">{formatScheduleDate(editingSlotDateTime)}</p>
+                <p className="text-xl font-bold tabular-nums text-slate-900">{editingSlotDateTime && !Number.isNaN(new Date(editingSlotDateTime).getTime()) ? formatSlotTime(editingSlotDateTime) : '—'}</p>
+                <p className="mt-0.5 text-xs text-slate-600">Bogotá (UTC−5)</p>
+              </div>
+              <p className="flex items-center gap-2 text-xs text-slate-500"><Info className="h-4 w-4 shrink-0" /> La cita se registrará al confirmar el agendamiento.</p>
+            </div>
+            <div className="flex items-center justify-end gap-3 border-t border-slate-200 px-6 py-4">
+              <button type="button" onClick={closeSlotEdit} className="rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-50">Cancelar</button>
+              <button type="button" disabled={!editingDayReady || editingSlotConflicts || editingSlotIsPast} onClick={() => { setSlotDates((prev) => prev.map((value, index) => index === editingSlotIndex ? editingSlotDateTime : value)); closeSlotEdit(); }} className="rounded-lg bg-indigo-700 px-5 py-2.5 text-sm font-bold text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-slate-400">Aplicar horario</button>
+            </div>
+          </aside>
+        </div>
+      )}
+      {showAuthorizationDrawer && (
+        <div className="fixed inset-0 z-[60] bg-slate-950/35" onClick={() => setShowAuthorizationDrawer(false)}>
+          <aside role="dialog" aria-modal="true" aria-labelledby="authorization-title" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Escape') setShowAuthorizationDrawer(false); }} className="absolute inset-y-0 right-0 flex w-full max-w-[590px] flex-col rounded-l-2xl bg-white shadow-2xl">
+            <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5">
+              <div>
+                <h3 id="authorization-title" className="text-2xl font-bold text-slate-900">Gestionar autorización</h3>
+                <p className="text-sm text-slate-500">{scheduleSummary?.patient.firstName} {scheduleSummary?.patient.lastName} · {form.corporateClient || 'Sin convenio'}</p>
+              </div>
+              <button type="button" onClick={() => setShowAuthorizationDrawer(false)} aria-label="Cerrar gestión de autorización" className="rounded-lg border border-slate-200 p-2 text-slate-500 hover:bg-slate-50"><X className="h-5 w-5" /></button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 py-8">
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
+                <p className="text-xs font-semibold text-slate-600">Estado actual</p>
+                <p className="mt-1 flex items-center gap-2 text-base font-bold text-amber-700">
+                  {!activeAuth ? 'Sin autorización vigente' : isUnlimitedAuth ? 'Sesiones libres' : `${remainingSessions} sesiones disponibles`}
+                  <Info className="h-4 w-4" />
+                </p>
+              </div>
+              {pendingChangeRequestId ? (
+                <div className="space-y-4">
+                  <p className="text-sm text-slate-600">Código enviado{pendingChangeExpiresInMinutes ? ` · vence en ${pendingChangeExpiresInMinutes} min` : ''}. Pídele el código a quien lo recibió.</p>
+                  <div>
+                    <label htmlFor="authorization-code" className="mb-2 block text-sm font-semibold text-slate-900">Código de confirmación</label>
+                    <input id="authorization-code" type="text" inputMode="numeric" maxLength={6} value={verifyCodeInput} onChange={(event) => setVerifyCodeInput(event.target.value.replace(/\D/g, ''))} placeholder="Código de 6 dígitos" className="w-full rounded-lg border border-slate-300 p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500" />
+                  </div>
+                  <button type="button" onClick={() => { setPendingChangeRequestId(null); setPendingChangeExpiresInMinutes(null); setVerifyCodeInput(''); }} className="text-sm font-semibold text-indigo-700 hover:underline">Cancelar y pedir un código nuevo</button>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <p className="mb-2 text-sm font-semibold text-slate-900">Operación</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['ADD', 'SUBTRACT'] as const).map((changeType) => (
+                        <label key={changeType} className={`flex cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 text-sm font-semibold ${authChangeType === changeType ? 'border-indigo-600 bg-indigo-50 text-indigo-700' : 'border-slate-200 text-slate-800'}`}>
+                          <input type="radio" name="authorization-operation" checked={authChangeType === changeType} disabled={changeType === 'SUBTRACT' && (!activeAuth || isUnlimitedAuth)} onChange={() => { setAuthChangeType(changeType); if (changeType === 'SUBTRACT') setAuthLibres(false); }} className="accent-indigo-700" />
+                          {changeType === 'ADD' ? 'Agregar' : 'Restar'}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label htmlFor="authorization-quantity" className="mb-2 block text-sm font-semibold text-slate-900">Cantidad de sesiones</label>
+                    <div className="flex overflow-hidden rounded-lg border border-slate-300">
+                      <input id="authorization-quantity" type="number" min={1} step={1} disabled={authLibres} value={authSessionsInput} onChange={(event) => setAuthSessionsInput(event.target.value)} className="min-w-0 flex-1 p-3 text-sm outline-none disabled:bg-slate-50" placeholder="3" />
+                      <div className="flex flex-col border-l border-slate-200">
+                        <button type="button" aria-label="Aumentar sesiones" disabled={authLibres} onClick={() => setAuthSessionsInput(String(Math.max(0, Number(authSessionsInput) || 0) + 1))} className="px-3 hover:bg-slate-50 disabled:text-slate-300"><ChevronUp className="h-4 w-4" /></button>
+                        <button type="button" aria-label="Reducir sesiones" disabled={authLibres || Number(authSessionsInput) <= 1} onClick={() => setAuthSessionsInput(String(Math.max(1, (Number(authSessionsInput) || 1) - 1)))} className="border-t border-slate-200 px-3 hover:bg-slate-50 disabled:text-slate-300"><ChevronDown className="h-4 w-4" /></button>
+                      </div>
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-3 text-sm text-slate-900">
+                    <input type="checkbox" checked={authLibres} disabled={authChangeType === 'SUBTRACT'} onChange={(event) => setAuthLibres(event.target.checked)} className="h-4 w-4 accent-indigo-700" />
+                    Sesiones libres (sin tope)
+                  </label>
+                  {!isSelfAuthorize && (
+                    <div>
+                      <label htmlFor="authorization-approver" className="mb-2 block text-sm font-semibold text-slate-900">Destinatario del código</label>
+                      <div className="relative">
+                        <select id="authorization-approver" value={authApproverId} onChange={(event) => setAuthApproverId(event.target.value)} className="w-full appearance-none rounded-lg border border-slate-300 bg-white p-3 pr-9 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500">
+                          <option value="">Selecciona un destinatario</option>
+                          {approvers.map((approver) => <option key={approver.id} value={approver.id}>{approver.name}</option>)}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">{approvers.length ? 'Selecciona a quién se enviará el código.' : 'No hay aprobadores disponibles. Configúralos desde Equipo y Accesos.'}</p>
+                    </div>
+                  )}
+                </>
+              )}
+              <p className="flex items-center gap-2 border-t border-slate-200 pt-5 text-xs text-slate-500"><Info className="h-4 w-4 shrink-0" /> La autorización y la selección de citas se gestionan por separado.</p>
+            </div>
+            <div className="flex items-center gap-3 border-t border-slate-200 px-6 py-4">
+              <p className="mr-auto max-w-44 text-xs text-slate-500">{pendingChangeRequestId ? 'Ingresa el código recibido para continuar.' : !isSelfAuthorize && !authApproverId ? 'Selecciona un destinatario para continuar.' : 'Confirma el cambio de sesiones.'}</p>
+              <button type="button" onClick={() => setShowAuthorizationDrawer(false)} className="rounded-lg border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-50">Cerrar</button>
+              <button type="button" onClick={pendingChangeRequestId ? handleVerifySessionChange : handleAuthorizeSessions} disabled={authorizingSessions || verifyingCode || (pendingChangeRequestId ? verifyCodeInput.length !== 6 : (!isSelfAuthorize && !authApproverId) || (authChangeType === 'ADD' && !authCompanyId) || (!authLibres && (!Number.isInteger(Number(authSessionsInput)) || Number(authSessionsInput) <= 0)))} className="inline-flex items-center gap-2 rounded-lg bg-indigo-700 px-5 py-2.5 text-sm font-bold text-white hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-slate-600">
+                <Send className="h-4 w-4" /> {pendingChangeRequestId ? 'Confirmar código' : isSelfAuthorize ? 'Aplicar cambio' : 'Solicitar código'}
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
+      {historyDrawer === 'change' && canManageHistory && (
+        <ChangePsychologistDrawer
+          patientId={form.patientId}
+          patientName={historyPatientName}
+          recordNumber={selectedPatientFull?.recordNumber}
+          currentCompanyName={historyCompanyName}
+          currentPsychologistId={historyPsychologistId}
+          currentPsychologistName={historyPsychologistName}
+          channel={historyChannel}
+          specialists={visibleSpecialists}
+          onClose={() => setHistoryDrawer(null)}
+          onComplete={handleChangePsychologistComplete}
+        />
+      )}
+      {historyDrawer === 'agreement' && canManageHistory && (
+        <NewAgreementDrawer
+          patientId={form.patientId}
+          patientName={historyPatientName}
+          recordNumber={selectedPatientFull?.recordNumber}
+          currentCompanyName={historyCompanyName}
+          currentCompanyId={selectedPatientFull?.companyId}
+          currentPsychologistName={historyPsychologistName}
+          specialists={visibleSpecialists}
+          companies={companies}
+          onClose={() => setHistoryDrawer(null)}
+          onComplete={handleNewAgreementComplete}
+          onOpenExisting={onViewPatientProfile ? (patientId) => { resetAndClose(); onViewPatientProfile(patientId); } : undefined}
+        />
+      )}
     </div>
   );
 }

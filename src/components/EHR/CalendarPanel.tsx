@@ -50,9 +50,13 @@ export function normalizeStatus(status: string): ApptStatusKey {
   const s = (status || '').toLowerCase();
   // Un "no atendido" histórico (statuses previos ya guardados así) cae en
   // Cancelada — la categoría más cercana ahora que el estado se retiró.
-  if (s.includes('cancel') || s.includes('no atend')) return 'cancelada';
+  // 'Anulada' y 'Reasignada' (cierres administrativos, 2026-11-18) tampoco
+  // son citas vivas — sin esto caían al default "pendiente".
+  if (s.includes('cancel') || s.includes('no atend') || s.includes('anulad') || s.includes('reasignad')) return 'cancelada';
   if (s.includes('atend')) return 'atendida';
-  if (s.includes('reprogram')) return 'reprogramada';
+  // 'Por reagendar' (2026-11-18): viva pero sin hora válida — se agrupa con
+  // las reprogramadas, que es la acción que la resuelve.
+  if (s.includes('reprogram') || s.includes('reagend')) return 'reprogramada';
   return 'pendiente';
 }
 
