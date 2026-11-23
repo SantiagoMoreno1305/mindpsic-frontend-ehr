@@ -21,6 +21,10 @@ interface ResponseOption {
   value: number;
   label: string;
   order: number;
+  // Opción que se responde pero NO puntúa: el ítem 28 del PDQ-39 ("no tengo
+  // esposo/a ni pareja"). Lleva un valor centinela que no debe mostrarse como
+  // si fuera un puntaje.
+  notApplicable?: boolean;
 }
 
 interface Item {
@@ -144,8 +148,12 @@ function isVisible(condition: string | null, answers: Record<string, Answer>): b
 // Recodificación de un ítem inverso: mismo cálculo que hace el motor en el
 // backend (mínimo + máximo − valor), replicado aquí SOLO para mostrarlo. El
 // puntaje real lo sigue calculando el servidor.
+//
+// Las opciones que no puntúan quedan fuera del rango, igual que en el motor:
+// su valor centinela entraría al mínimo y mostraría una inversión equivocada.
 function valorEfectivo(valor: number, options: ResponseOption[]): number {
-  const valores = options.map((o) => o.value);
+  const valores = options.filter((o) => !o.notApplicable).map((o) => o.value);
+  if (!valores.length) return valor;
   return Math.min(...valores) + Math.max(...valores) - valor;
 }
 
@@ -562,7 +570,11 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
                           {selected && <span className="h-2 w-2 rounded-full bg-toast-500" />}
                         </span>
                         <span className="flex-1 leading-relaxed">{option.label}</span>
-                        {item.reversed ? (
+                        {option.notApplicable ? (
+                          <span className="shrink-0 whitespace-nowrap text-xs font-semibold text-slate-400">
+                            no puntúa
+                          </span>
+                        ) : item.reversed ? (
                           <span className="shrink-0 whitespace-nowrap text-xs font-bold text-indigo-600">
                             {option.value} <span className="font-normal text-indigo-400">→</span>{' '}
                             {valorEfectivo(option.value, options)}
