@@ -254,6 +254,7 @@ const ETIQUETA_AREA: Record<string, string> = {
   ansiedad: 'Ansiedad',
   transdiagnostico: 'Transdiagnóstico',
   estres: 'Estrés',
+  resiliencia: 'Resiliencia',
   calidad_de_vida: 'Calidad de vida',
   neuropsicologia: 'Neuropsicología',
   psicooncologia: 'Psicooncología',

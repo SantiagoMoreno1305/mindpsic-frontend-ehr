@@ -47,6 +47,10 @@ interface Scale {
   maxTheoretical: number;
   direction: string;
   isPrimary: boolean;
+  // Unidad en la que viene `transformed` del resultado. null = no hay
+  // transformado. '0_100' = indice de 0 a 100 (PDQ-39);
+  // 'PROMEDIO_ITEMS' = promedio por item (BRS, 1 a 5).
+  transform: string | null;
 }
 
 interface Instrument {
@@ -70,6 +74,7 @@ interface ScoreResult {
   scaleId: string;
   scaleName: string;
   rawScore: number;
+  transformed: number | null;
   label: string | null;
   severity: string | null;
   color: string | null;
@@ -412,8 +417,27 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
 
           <div className="grid gap-3 sm:grid-cols-2">
             {administration.results.map((r) => {
-              const pct = r.maxTheoretical > 0
-                ? Math.round((r.rawScore / r.maxTheoretical) * 100) : 0;
+              // El porcentaje se mide sobre el RANGO de la escala, no sobre su
+              // techo: la BRS va de 6 a 30 y el BEAQ de 15 a 90, asi que su
+              // puntaje minimo posible pintaba 20% y 17% de barra llena en vez
+              // de vacia. Quien lee la barra la lee como "que tan arriba esta
+              // dentro de lo posible".
+              const rango = r.maxTheoretical - r.minTheoretical;
+              const pct = rango > 0
+                ? Math.round(((r.rawScore - r.minTheoretical) / rango) * 100) : 0;
+              // En una escala ALTO_MEJOR la barra llena es BUENA, al contrario
+              // del resto del catalogo. Sin decirlo, un 28/30 de resiliencia se
+              // lee como un 28/30 de depresion.
+              const altoMejor = r.direction === 'ALTO_MEJOR';
+              // `transformed` llega sin unidad: el 0-100 del PDQ-39 y el
+              // promedio 1-5 de la BRS son el mismo campo. La escala dice cual.
+              const escala = instrument.scales.find((s) => s.scaleId === r.scaleId);
+              const comparable = r.transformed === null ? null
+                : escala?.transform === 'PROMEDIO_ITEMS'
+                  ? `${r.transformed.toFixed(2)} de 5 por ítem`
+                  : escala?.transform === '0_100'
+                    ? `${r.transformed} de 100`
+                    : null;
               return (
                 <div key={r.scaleId} className="rounded-xl border border-slate-100 bg-white p-4">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
@@ -423,9 +447,20 @@ export default function AssessmentRunner({ administrationId, onBack, onCompleted
                     {r.rawScore}
                     <span className="text-base font-medium text-slate-400"> / {r.maxTheoretical}</span>
                   </p>
+                  {comparable && (
+                    <p className="mt-0.5 text-xs font-medium text-slate-500">{comparable}</p>
+                  )}
                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100">
-                    <div className="h-full rounded-full bg-toast-500" style={{ width: `${pct}%` }} />
+                    <div
+                      className={`h-full rounded-full ${altoMejor ? 'bg-emerald-500' : 'bg-toast-500'}`}
+                      style={{ width: `${pct}%` }}
+                    />
                   </div>
+                  {altoMejor && (
+                    <p className="mt-1 text-[11px] font-medium text-emerald-700">
+                      En esta escala, más puntaje es mejor
+                    </p>
+                  )}
                   {r.label && (
                     <span className={`mt-3 inline-block rounded-lg border px-2.5 py-1 text-xs font-bold ${
                       SEVERITY_STYLES[r.severity || ''] || 'bg-slate-50 text-slate-600 border-slate-200'
