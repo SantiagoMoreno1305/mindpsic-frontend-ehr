@@ -80,6 +80,8 @@ import {
   Clock,
   User2,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Check,
   KeyRound,
   Tag,
@@ -411,11 +413,21 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   // antiguo primero) — "Recientes" invierte para encontrar rápido a alguien
   // que se acaba de crear, sin tener que ir a la última página.
   const [staffRecentFirst, setStaffRecentFirst] = useState(false);
+  // Búsqueda libre (cliente): filtra sobre lo que ya llegó de /api/users, no
+  // hace petición aparte — nombre, correo, tarjeta profesional y
+  // especialidad son los campos por los que alguien reconoce a un
+  // colaborador a simple vista en esta tabla.
+  const [staffSearchQuery, setStaffSearchQuery] = useState('');
   const STAFF_PAGE_SIZE = 10;
   const [staffPage, setStaffPage] = useState(1);
-  const sortedTeamUsers = staffRecentFirst
-    ? [...teamUsers].sort((a, b) => b.joinedDate.localeCompare(a.joinedDate))
+  const normalizedStaffSearch = staffSearchQuery.trim().toLowerCase();
+  const searchedTeamUsers = normalizedStaffSearch
+    ? teamUsers.filter((m) => [m.name, m.email, m.professionalCard, m.specialtyName, m.documentId]
+        .some((field) => field?.toLowerCase().includes(normalizedStaffSearch)))
     : teamUsers;
+  const sortedTeamUsers = staffRecentFirst
+    ? [...searchedTeamUsers].sort((a, b) => b.joinedDate.localeCompare(a.joinedDate))
+    : searchedTeamUsers;
   const staffTotalPages = Math.max(1, Math.ceil(sortedTeamUsers.length / STAFF_PAGE_SIZE));
   const staffRangeStart = sortedTeamUsers.length === 0 ? 0 : (staffPage - 1) * STAFF_PAGE_SIZE + 1;
   const staffRangeEnd = Math.min(staffPage * STAFF_PAGE_SIZE, sortedTeamUsers.length);
@@ -1211,10 +1223,18 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
   const [dashRipsLoading, setDashRipsLoading] = useState(false);
   const dashRipsAutoAdjustedRef = useRef(false);
 
-  const fetchDashRipsSummary = async () => {
+  // Acepta overrides de fecha para el reencuadre automático de abajo — así
+  // esa corrección puede disparar su propio fetch sin depender de un efecto
+  // reactivo a dashRipsStartDate/dashRipsEndDate (ver useEffect de abajo:
+  // ahora solo carga al entrar al tab, no en cada cambio de fecha/convenio —
+  // pedido de Oscar 2026-11-17, mismo fix que ya se hizo en AdminCenter
+  // ClinicalMetricsView, pero aplicado aquí que es donde realmente se usa).
+  const fetchDashRipsSummary = async (overrides?: { startDate?: string; endDate?: string }) => {
+    const effectiveStart = overrides?.startDate ?? dashRipsStartDate;
+    const effectiveEnd = overrides?.endDate ?? dashRipsEndDate;
     setDashRipsLoading(true);
     try {
-      const params = new URLSearchParams({ startDate: dashRipsStartDate, endDate: dashRipsEndDate });
+      const params = new URLSearchParams({ startDate: effectiveStart, endDate: effectiveEnd });
       if (dashRipsCompanyId !== 'all') params.set('companyId', dashRipsCompanyId);
       const res = await apiFetch(`/api/rips-diagnosis/dashboard-summary?${params.toString()}`);
       if (!res.ok) {
@@ -1231,9 +1251,11 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
         dashRipsAutoAdjustedRef.current = true;
         const latest = new Date(`${data.latestDiagnosisDate}T00:00:00.000Z`);
         const newStart = new Date(Date.UTC(latest.getUTCFullYear(), latest.getUTCMonth(), 1)).toISOString().slice(0, 10);
-        if (newStart !== dashRipsStartDate || data.latestDiagnosisDate !== dashRipsEndDate) {
+        if (newStart !== effectiveStart || data.latestDiagnosisDate !== effectiveEnd) {
           setDashRipsStartDate(newStart);
           setDashRipsEndDate(data.latestDiagnosisDate);
+          await fetchDashRipsSummary({ startDate: newStart, endDate: data.latestDiagnosisDate });
+          return;
         }
       }
     } catch (err) {
@@ -1244,12 +1266,21 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
     }
   };
 
+  // Solo carga al entrar al tab — antes también dependía de
+  // dashRipsStartDate/dashRipsEndDate/dashRipsCompanyId, así que cambiar
+  // cualquier filtro refrescaba la tabla sola sin pasar por "Actualizar".
   useEffect(() => {
     if ((activeTab === 'metrics' || activeTab === 'billing_rips') && currentUser && (currentUser.role === 'CEO' || currentUser.role === 'DIRECTIVO')) {
       fetchDashRipsSummary();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, currentUser, dashRipsStartDate, dashRipsEndDate, dashRipsCompanyId]);
+  }, [activeTab, currentUser]);
+
+  const DASH_RIPS_PAGE_SIZE = 10;
+  const [dashRipsPage, setDashRipsPage] = useState(1);
+  useEffect(() => {
+    setDashRipsPage(1);
+  }, [dashRipsSummary]);
 
   const dashRipsCellMap = new Map<string, number>();
   (dashRipsSummary?.rows || []).forEach((r) => dashRipsCellMap.set(`${r.date}|${r.category}`, r.count));
@@ -1337,11 +1368,22 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
     }
   };
 
+  // Solo carga al entrar al tab — antes también dependía de
+  // pendingRipsStartDate/pendingRipsEndDate/pendingRipsCompanyId, así que
+  // cambiar cualquier filtro refrescaba la lista sola sin pasar por
+  // "Actualizar" (mismo fix que el panel de diagnósticos por RIPS, pedido de
+  // Oscar 2026-11-17).
   useEffect(() => {
     if (activeTab !== 'billing_rips' || !currentUser || (currentUser.role !== 'CEO' && currentUser.role !== 'DIRECTIVO')) return;
     fetchPendingRipsList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, currentUser, pendingRipsStartDate, pendingRipsEndDate, pendingRipsCompanyId]);
+  }, [activeTab, currentUser]);
+
+  const PENDING_RIPS_PAGE_SIZE = 10;
+  const [pendingRipsPage, setPendingRipsPage] = useState(1);
+  useEffect(() => {
+    setPendingRipsPage(1);
+  }, [pendingRipsList]);
 
   // Agrupado por psicólogo — solo para mostrar en pantalla cuántos mensajes
   // saldrían al notificar (el backend recalcula y agrupa de nuevo por su cuenta).
@@ -1865,7 +1907,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
           </select>
         </div>
         <button
-          onClick={fetchDashRipsSummary}
+          onClick={() => fetchDashRipsSummary()}
           disabled={dashRipsLoading}
           className="bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold text-xs px-3 py-2 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
         >
@@ -1917,7 +1959,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                 </tr>
               </thead>
               <tbody>
-                {dashRipsSummary.dates.map((date) => (
+                {dashRipsSummary.dates.slice((dashRipsPage - 1) * DASH_RIPS_PAGE_SIZE, dashRipsPage * DASH_RIPS_PAGE_SIZE).map((date) => (
                   <tr key={date} className="border-b border-slate-100 hover:bg-slate-50">
                     <td className="p-3 font-mono font-bold text-slate-800 sticky left-0 bg-white">{date}</td>
                     {dashRipsSummary.categories.map((cat) => (
@@ -1940,6 +1982,33 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
               </tfoot>
             </table>
           </div>
+
+          {dashRipsSummary.dates.length > DASH_RIPS_PAGE_SIZE && (
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-[10px] text-slate-400 font-mono">
+                Mostrando {(dashRipsPage - 1) * DASH_RIPS_PAGE_SIZE + 1}–{Math.min(dashRipsPage * DASH_RIPS_PAGE_SIZE, dashRipsSummary.dates.length)} de {dashRipsSummary.dates.length} fechas
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setDashRipsPage((p) => Math.max(1, p - 1))}
+                  disabled={dashRipsPage === 1}
+                  className="p-1.5 border border-slate-200 rounded-lg text-slate-700 hover:border-slate-400 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="text-[10px] font-mono font-bold text-slate-800 px-1">
+                  {dashRipsPage} / {Math.max(1, Math.ceil(dashRipsSummary.dates.length / DASH_RIPS_PAGE_SIZE))}
+                </span>
+                <button
+                  onClick={() => setDashRipsPage((p) => Math.min(Math.ceil(dashRipsSummary.dates.length / DASH_RIPS_PAGE_SIZE), p + 1))}
+                  disabled={dashRipsPage === Math.ceil(dashRipsSummary.dates.length / DASH_RIPS_PAGE_SIZE)}
+                  className="p-1.5 border border-slate-200 rounded-lg text-slate-700 hover:border-slate-400 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
         </>
       )}
       </>
@@ -3118,6 +3187,16 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                   <p className="text-[10.5px] text-slate-400 mt-0.5">Datos sensibles enmascarados por defecto (principio de acceso mínimo).</p>
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={staffSearchQuery}
+                      onChange={(e) => { setStaffSearchQuery(e.target.value); setStaffPage(1); }}
+                      placeholder="Buscar por nombre, correo, tarjeta..."
+                      className="text-xs font-semibold rounded-lg pl-8 pr-3 py-1.5 border border-slate-200 text-slate-700 bg-white placeholder:text-slate-400 placeholder:font-normal w-56 focus:ring-2 focus:ring-toast-500 outline-none"
+                    />
+                  </div>
                   {tenantsForFilter.length > 0 && (
                     <select
                       value={staffTenantFilter}
@@ -3187,6 +3266,8 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                       <tr><td colSpan={5} className="p-8 text-center text-red-600">⚠️ {teamUsersError}</td></tr>
                     ) : teamUsers.length === 0 ? (
                       <tr><td colSpan={5} className="p-8 text-center text-slate-400">Todavía no has creado colaboradores.</td></tr>
+                    ) : sortedTeamUsers.length === 0 ? (
+                      <tr><td colSpan={5} className="p-8 text-center text-slate-400">Ningún colaborador coincide con "{staffSearchQuery}".</td></tr>
                     ) : (
                       paginatedTeamUsers.map((member) => (
                         <tr key={member.id} className="hover:bg-slate-50 align-top">
@@ -4641,7 +4722,7 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {pendingRipsList.map((p) => (
+                          {pendingRipsList.slice((pendingRipsPage - 1) * PENDING_RIPS_PAGE_SIZE, pendingRipsPage * PENDING_RIPS_PAGE_SIZE).map((p) => (
                             <tr key={p.id} className="hover:bg-slate-50">
                               <td className="p-3 font-semibold text-slate-900">{p.firstName} {p.lastName}</td>
                               <td className="p-3 text-slate-600">{p.corporateClient || 'Particular'}</td>
@@ -4656,6 +4737,33 @@ export default function AdminPortal({ navRequest, onUserUpdated }: AdminPortalPr
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                  )}
+
+                  {pendingRipsList.length > PENDING_RIPS_PAGE_SIZE && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[10px] text-slate-400 font-mono">
+                        Mostrando {(pendingRipsPage - 1) * PENDING_RIPS_PAGE_SIZE + 1}–{Math.min(pendingRipsPage * PENDING_RIPS_PAGE_SIZE, pendingRipsList.length)} de {pendingRipsList.length}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => setPendingRipsPage((p) => Math.max(1, p - 1))}
+                          disabled={pendingRipsPage === 1}
+                          className="p-1.5 border border-slate-200 rounded-lg text-slate-700 hover:border-slate-400 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="text-[10px] font-mono font-bold text-slate-800 px-1">
+                          {pendingRipsPage} / {Math.max(1, Math.ceil(pendingRipsList.length / PENDING_RIPS_PAGE_SIZE))}
+                        </span>
+                        <button
+                          onClick={() => setPendingRipsPage((p) => Math.min(Math.ceil(pendingRipsList.length / PENDING_RIPS_PAGE_SIZE), p + 1))}
+                          disabled={pendingRipsPage === Math.ceil(pendingRipsList.length / PENDING_RIPS_PAGE_SIZE)}
+                          className="p-1.5 border border-slate-200 rounded-lg text-slate-700 hover:border-slate-400 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   )}
 

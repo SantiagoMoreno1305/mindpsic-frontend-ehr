@@ -35,6 +35,8 @@ interface CatalogItem {
   publisher: string | null;
   minAge: number;
   maxAge: number;
+  /** "F" | "M" | null. Instrumentos que solo aplican a un sexo (la EPDS). */
+  restrictedToSex?: string | null;
   durationMin: number | null;
   modality: string;
   itemCount: number;
@@ -66,6 +68,8 @@ interface PatientOption {
   recordNumber?: string | null;
   companyId?: string | null;
   birthDate?: string | null;
+  sexoBiologico?: string | null;
+  gender?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -93,12 +97,48 @@ function calcularEdad(birthDate?: string | null): number | null {
 
 type MotivoBloqueo = { bloquea: boolean; razon: string | null };
 
-function evaluarPaciente(edad: number | null, min: number, max: number): MotivoBloqueo {
+/**
+ * Espejo de normalizeSex() del backend. El EHR guarda el sexo en texto libre
+ * ("Femenino", "Mujer", "F"…) y aquí solo se usa para avisar antes de pulsar
+ * Asignar — quien decide de verdad es el servidor.
+ */
+function normalizarSexo(valor?: string | null): 'F' | 'M' | null {
+  if (!valor) return null;
+  const v = String(valor).trim().toUpperCase();
+  if (v.startsWith('MUJER') || v.startsWith('FEM') || v === 'F') return 'F';
+  if (v.startsWith('HOMBRE') || v.startsWith('MASC') || v === 'M') return 'M';
+  return null;
+}
+
+const SEXO_LARGO: Record<string, string> = { F: 'mujeres', M: 'hombres' };
+
+function evaluarPaciente(
+  paciente: Pick<PatientOption, 'birthDate' | 'sexoBiologico' | 'gender'>,
+  instrumento: Pick<CatalogItem, 'minAge' | 'maxAge' | 'restrictedToSex'>,
+): MotivoBloqueo {
+  const edad = calcularEdad(paciente.birthDate);
   if (edad === null) {
     return { bloquea: true, razon: 'Sin fecha de nacimiento registrada' };
   }
-  if (edad < min || edad > max) {
-    return { bloquea: true, razon: `${edad} años — el instrumento es para ${min}-${max}` };
+  if (edad < instrumento.minAge || edad > instrumento.maxAge) {
+    return {
+      bloquea: true,
+      razon: `${edad} años — el instrumento es para ${instrumento.minAge}-${instrumento.maxAge}`,
+    };
+  }
+  // El criterio es el sexo biológico, no el género: la EPDS mide depresión
+  // posparto, así que una persona trans en posparto SÍ debe poder recibirla.
+  if (instrumento.restrictedToSex) {
+    const sexo = normalizarSexo(paciente.sexoBiologico || paciente.gender);
+    if (!sexo) {
+      return { bloquea: true, razon: 'Sin sexo biológico registrado — la prueba lo requiere' };
+    }
+    if (sexo !== instrumento.restrictedToSex) {
+      return {
+        bloquea: true,
+        razon: `El instrumento está validado solo para ${SEXO_LARGO[instrumento.restrictedToSex]}`,
+      };
+    }
   }
   return { bloquea: false, razon: null };
 }
@@ -214,6 +254,7 @@ const ETIQUETA_AREA: Record<string, string> = {
   ansiedad: 'Ansiedad',
   transdiagnostico: 'Transdiagnóstico',
   estres: 'Estrés',
+  resiliencia: 'Resiliencia',
   calidad_de_vida: 'Calidad de vida',
   neuropsicologia: 'Neuropsicología',
   psicooncologia: 'Psicooncología',
@@ -560,9 +601,17 @@ export default function AssessmentsPanel() {
                           </p>
                           <p className="truncate text-xs text-slate-500">{test.nameEs || test.name}</p>
                           <p className="mt-1 text-xs text-slate-400">
-                            {test.area} · {test.itemCount} ítems · {test.minAge}-{test.maxAge} años
+                            {etiquetaArea(test.area)} · {test.itemCount} ítems · {test.minAge}-{test.maxAge} años
                             {test.durationMin && ` · ~${test.durationMin} min`}
                           </p>
+                          {/* La restricción se ve en el catálogo y no solo al fallar
+                              el envío: evita que el profesional abra el modal, busque
+                              al paciente y recién ahí descubra que no aplica. */}
+                          {test.restrictedToSex && (
+                            <p className="mt-1.5 inline-flex items-center gap-1 rounded bg-toast-50 px-1.5 py-0.5 text-[10px] font-semibold text-toast-500">
+                              Solo {SEXO_LARGO[test.restrictedToSex] ?? test.restrictedToSex}
+                            </p>
+                          )}
                           {!test.applicable && (
                             <p className="mt-1.5 inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500">
                               <Lock className="h-3 w-3" />
@@ -838,7 +887,7 @@ function AssignModal({
             patients.map((p) => {
               const active = selected?.id === p.id;
               const edad = calcularEdad(p.birthDate);
-              const { bloquea, razon } = evaluarPaciente(edad, instrument.minAge, instrument.maxAge);
+              const { bloquea, razon } = evaluarPaciente(p, instrument);
               const menor = edad !== null && edad < MAYORIA_DE_EDAD;
               return (
                 <button
